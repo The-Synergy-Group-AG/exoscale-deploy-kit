@@ -279,6 +279,27 @@ def stage_exoscale():
     # on a fresh cluster. Always create WITHOUT SG first (Step A), then update the
     # SG association after the pool reaches 'running' state (Step B).
     #
+
+    # LESSON 13: SKS node pools reject tiny and micro instance sizes (HTTP 409)
+    # Auto-upgrade to 'small' which is the minimum supported size.
+    _SKS_FORBIDDEN_SIZES = {"tiny", "micro"}
+    if cfg.get("node_type_size", "").lower() in _SKS_FORBIDDEN_SIZES:
+        _upgraded = "small"
+        warn(f"Instance size '{cfg['node_type_size']}' is NOT supported for SKS node pools.")
+        warn(f"Auto-upgrading to '{_upgraded}' (minimum supported size).")
+        cfg["node_type_size"] = _upgraded
+        # Re-select instance type with upgraded size
+        selected_id = None
+        for t in types:
+            fam  = (t.get("family") or "").lower()
+            size = (t.get("size") or "").lower()
+            if cfg["node_type_family"] in fam and cfg["node_type_size"] in size:
+                selected_id = t.get("id")
+                ok(f"Upgraded instance type: {t.get('size')} ({t.get('cpus')}cpu) — {selected_id}")
+                break
+        if not selected_id and types:
+            selected_id = types[0].get("id")
+
     # Step A: Create nodepool WITHOUT security_groups
     log(f"Creating node pool: {POOL_NAME} ({cfg['node_count']} x {cfg['node_type_size']})...")
     log("  (Step A: creating without SG — will update SG after pool is running)")

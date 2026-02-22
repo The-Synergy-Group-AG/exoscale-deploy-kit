@@ -47,7 +47,7 @@ INSTANCE_FAMILIES = [
     ("gpu",      "GPU instances — ML training, AI workloads"),
 ]
 INSTANCE_SIZES = [
-    ("tiny",        " 1 vCPU,   512 MB RAM  — dev/test only, not for production"),
+    ("tiny",        " 1 vCPU,   512 MB RAM  — dev/test only — NOT for SKS node pools (API restriction)"),
     ("small",       " 2 vCPU,   2 GB  RAM   — lightweight apps"),
     ("medium",      " 4 vCPU,   4 GB  RAM   — recommended for most services"),
     ("large",       " 4 vCPU,   8 GB  RAM   — production workloads"),
