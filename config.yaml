@@ -1,0 +1,65 @@
+# ═══════════════════════════════════════════════════════════════
+# Exoscale Deploy Kit — Configuration
+# ═══════════════════════════════════════════════════════════════
+# Edit this file for your project. Credentials go in .env (not here).
+# Usage: python3 deploy_pipeline.py
+# ═══════════════════════════════════════════════════════════════
+
+# ── Project Identity ──────────────────────────────────────────
+# project_name: used as prefix for ALL cloud resources (SG, cluster, NLB)
+#   e.g. "myapp" → "myapp-sg-XXXXXX", "myapp-cluster-XXXXXX", "myapp-nlb-XXXXXX"
+project_name: exoscale-kit-test
+
+# service_name: Docker image name + K8s Deployment name
+service_name: deploy-kit-svc
+
+# service_version: Semantic version — pushed as both :version and :latest tags
+service_version: "1.0.0"
+
+# docker_hub_user: Your Docker Hub username (token goes in .env)
+docker_hub_user: iandrewitz
+
+# ── Exoscale Cloud ────────────────────────────────────────────
+# exoscale_zone: Available zones: ch-gva-2, ch-dk-2, at-vie-1, de-fra-1, bg-sof-1
+# CRITICAL: The Python SDK uses api-{zone}.exoscale.com — zone MUST be correct
+exoscale_zone: ch-gva-2
+
+# SKS Cluster settings (Scalable Kubernetes Service)
+sks_cni: calico            # Container network interface
+sks_level: pro             # starter or pro (pro recommended for production)
+sks_addons:
+  - exoscale-cloud-controller   # Required for NLB auto-provisioning
+  - metrics-server              # Required for HPA (autoscaling)
+
+# ── Compute / Node Pool ───────────────────────────────────────
+# node_count: Number of worker nodes (minimum 2 for HA)
+node_count: 2
+
+# node_disk_gb: Disk size per node in GB
+node_disk_gb: 50
+
+# node_type_family + node_type_size: Used to select instance type at runtime
+# Available families: standard, memory, cpu, storage, gpu
+# Available sizes: small, medium, large, extra-large, huge
+# LESSON: Instance type IDs change — always query at runtime, never hardcode
+node_type_family: standard
+node_type_size: medium
+
+# ── Kubernetes ────────────────────────────────────────────────
+# k8s_namespace: Kubernetes namespace for your deployment
+k8s_namespace: exoscale-kit-production
+
+# k8s_replicas: Number of pod replicas (minimum 2 for HA)
+k8s_replicas: 2
+
+# k8s_port: Container port your app listens on (INTERNAL — inside the container)
+k8s_port: 5000
+
+# k8s_service_port: Kubernetes Service port (external-facing service port)
+k8s_service_port: 5000
+
+# k8s_nodeport: NodePort for direct node access
+# CRITICAL LESSON: Exoscale default Security Group pre-approves specific NodePorts:
+#   30671, 30888, 30999 — USE ONE OF THESE or add custom SG rules
+# Using any other NodePort will be BLOCKED by the default SG without custom rules.
+k8s_nodeport: 30671
