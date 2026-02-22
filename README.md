@@ -429,6 +429,80 @@ Set `exoscale_zone` in `config.yaml` to any of the above.
 
 ---
 
+---
+
+## Using This Kit in Another Project
+
+This kit is published as a standalone repository:
+**[github.com/The-Synergy-Group-AG/exoscale-deploy-kit](https://github.com/The-Synergy-Group-AG/exoscale-deploy-kit)**
+
+### Option A — Clone as a standalone deploy directory
+
+Use this when starting a new project from scratch.
+
+```bash
+git clone https://github.com/The-Synergy-Group-AG/exoscale-deploy-kit.git my-project-deploy
+cd my-project-deploy
+
+cp .env.example .env
+# Edit .env:       EXO_API_KEY, EXO_API_SECRET, DOCKER_HUB_TOKEN
+# Edit config.yaml: project_name, service_name, docker_hub_user, exoscale_zone
+
+pip install -r requirements.txt
+python3 deploy_pipeline.py   # full deploy (~5-20 min)
+python3 teardown.py --force  # clean teardown when done
+```
+
+### Option B — Embed into an existing repo as a git subtree
+
+Use this when you want the kit to live inside your existing project repository
+(e.g. at `deploy/`) and still receive upstream kit updates.
+
+**Initial setup (one-time, run from your project root):**
+
+```bash
+git subtree add \
+  --prefix=deploy \
+  https://github.com/The-Synergy-Group-AG/exoscale-deploy-kit.git \
+  main --squash
+git push
+```
+
+The full kit is now at `your-project/deploy/`. Use it immediately:
+
+```bash
+cd deploy/
+cp .env.example .env
+# Edit .env and config.yaml for your project
+pip install -r requirements.txt
+python3 deploy_pipeline.py
+```
+
+**Pulling future kit updates into your project:**
+
+```bash
+# Run from your project root:
+git subtree pull \
+  --prefix=deploy \
+  https://github.com/The-Synergy-Group-AG/exoscale-deploy-kit.git \
+  main --squash
+git push
+```
+
+### What to customise per project
+
+| File | What to change |
+|------|---------------|
+| `.env` | `EXO_API_KEY`, `EXO_API_SECRET`, `DOCKER_HUB_TOKEN` — your credentials |
+| `config.yaml` | `project_name`, `service_name`, `docker_hub_user`, `exoscale_zone` |
+| `service/app.py` | Replace with your actual application code |
+| `service/Dockerfile` | Adjust base image, port, startup command for your app |
+| `service/requirements.txt` | Your app's Python dependencies |
+
+`deploy_pipeline.py`, `teardown.py`, and `k8s_manifest_generator.py` work
+out of the box with **zero modification** — all behaviour is controlled by `config.yaml`.
+
+
 ## License
 
 MIT — free to use, modify, and distribute.
