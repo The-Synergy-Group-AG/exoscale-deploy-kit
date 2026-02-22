@@ -9,6 +9,7 @@ Usage:
   python3 deploy_pipeline.py            # Wizard auto-runs before deploy
   python3 deploy_pipeline.py --auto     # Skip wizard, use existing config.yaml
 """
+import re
 import sys, os, subprocess
 from datetime import datetime
 from pathlib import Path
@@ -181,6 +182,11 @@ def run_wizard(existing: dict | None = None) -> dict:
     sec(1, TOTAL, "PROJECT IDENTITY")
     cfg["project_name"]    = prompt("Project name (prefix for all cloud resources)",
                                      existing.get("project_name", "my-project"), required=True)
+    # LESSON 14/16: warn if project_name has uppercase — resource names are slugified
+    _pn_slug = re.sub(r'-+', '-', re.sub(r'[^a-z0-9-]', '-', cfg["project_name"].lower())).strip('-')
+    if cfg["project_name"] != _pn_slug:
+        print(f'\n  ⚠️  Note: project_name will be auto-slugified to \"{_pn_slug}\" for resource names')
+        print(f'      Consider setting project_name: {_pn_slug} to avoid surprises')
     cfg["service_name"]    = prompt("Service / Docker image name",
                                      existing.get("service_name", "my-service"), required=True)
     cfg["service_version"] = prompt("Service version",
@@ -445,7 +451,8 @@ def print_summary(cfg: dict):
     print(f"  {bold('Estimated cost:')} {yellow(estimate_cost(cfg))}")
     print()
     print(f"  {yellow(bold('WARNING: This will CREATE real Exoscale cloud resources and INCUR COSTS.'))}")
-    print(f"  {dim('All resources will be prefixed with:')} {bold(cfg['project_name'])}-*")
+    _disp_slug = re.sub(r'-+', '-', re.sub(r'[^a-z0-9-]', '-', cfg['project_name'].lower())).strip('-')
+    print(f"  {dim('All resources will be prefixed with:')} {bold(_disp_slug)}-*  (slugified)")
 
 
 def write_config(cfg: dict, path: "Path | None" = None) -> Path:
