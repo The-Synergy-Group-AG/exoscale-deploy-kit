@@ -32,6 +32,15 @@ CRITICAL LESSONS LEARNED (battle-tested 2026-02-20 — do not repeat these mista
  10. Worker nodes take 3-8 minutes to boot, register, and become Ready after pool creation
  11. Create Docker Hub pull secret BEFORE applying K8s manifests (ErrImagePull otherwise)
  12. Use --dry-run=client -o yaml | kubectl apply -f - pattern for secret creation
+ 13. SKS node pools reject 'tiny' and 'micro' instance sizes (HTTP 409) — auto-upgrade to 'small'
+ 14. Exoscale resource names must be lowercase DNS-label format — slugify project_name
+ 15. Teardown: use slugified project_name for resource matching (e.g. 'jtp-test1', not 'JTP-test1')
+ 16. project_name in config.yaml is display name; derive slug via re.sub for all API resource names
+ 17. update_sks_nodepool(security_groups=...) ALSO returns HTTP 500 — Exoscale API bug.
+     FIX: Attach SG to each nodepool instance individually via per-instance API:
+       nodepool["instance-pool"]["id"] → get_instance_pool(id=...).instances
+       → attach_instance_to_security_group(id=sg_id, instance={"id": inst_id})
+     CRITICAL: args are (id=SG_id, instance={"id": inst_id}) — SG id first, NOT instance-first.
 
 CONFIGURATION:
   Edit config.yaml for all non-secret settings.
@@ -210,6 +219,7 @@ def stage_docker_push():
 #  LESSON 3: Query instance type IDs at runtime — never hardcode them
 #  LESSON 5: Create nodepool WITHOUT SG first, then update SG after pool is running
 #  LESSON 6: NLB is auto-created by K8s cloud controller — NEVER create manually
+#  LESSON 17: update_sks_nodepool(security_groups=...) HTTP 500 — use per-instance API instead
 # ═══════════════════════════════════════════════════════════════════════════════
 def stage_exoscale():
     section("STAGE 3: Exoscale Infrastructure")
@@ -280,8 +290,8 @@ def stage_exoscale():
 
     # LESSON 5 (DEFINITIVE STRATEGY):
     # Exoscale returns HTTP 500 when security_groups is specified in create_sks_nodepool
-    # on a fresh cluster. Always create WITHOUT SG first (Step A), then update the
-    # SG association after the pool reaches 'running' state (Step B).
+    # on a fresh cluster. Always create WITHOUT SG first (Step A), then attach SG to each
+    # instance individually after pool is running (Step B — see LESSON 17).
     #
 
     # LESSON 13: SKS node pools reject tiny and micro instance sizes (HTTP 409)
@@ -306,7 +316,7 @@ def stage_exoscale():
 
     # Step A: Create nodepool WITHOUT security_groups
     log(f"Creating node pool: {POOL_NAME} ({cfg['node_count']} x {cfg['node_type_size']})...")
-    log("  (Step A: creating without SG — will update SG after pool is running)")
+    log("  (Step A: creating without SG — will attach SG per-instance after pool is running)")
     op = c.create_sks_nodepool(
         id=cluster_id,
         name=POOL_NAME,
@@ -326,26 +336,50 @@ def stage_exoscale():
         "id": pool_id, "name": POOL_NAME, "size": cfg["node_count"]
     }
 
-    # Step B: Update nodepool with security group (works after pool is running)
-    log(f"(Step B) Updating nodepool with security group {sg_id}...")
-    _sg_attempts = 0
+    # Step B: LESSON 17 — Per-instance SG attachment
+    # update_sks_nodepool(security_groups=...) always returns HTTP 500 (Exoscale API bug).
+    # FIX: Discover nodepool instances via instance-pool ID, then attach SG to each one.
+    #   API: attach_instance_to_security_group(id=sg_id, instance={"id": instance_id})
+    #   CRITICAL: id=SG_id (first), instance={"id": inst_id} (second) — NOT instance-first!
+    log(f"(Step B LESSON17) Attaching SG {sg_id} to nodepool instances individually...")
     _sg_success = False
-    while _sg_attempts < 5:
-        try:
-            c.update_sks_nodepool(
-                id=cluster_id,
-                sks_nodepool_id=pool_id,
-                security_groups=[{"id": sg_id}],
-            )
-            ok(f"Nodepool security group updated: {sg_id}")
-            _sg_success = True
-            break
-        except Exception as _e:
-            _sg_attempts += 1
-            warn(f"SG update attempt {_sg_attempts}/5: {str(_e)[:60]} — retrying in 30s")
-            time.sleep(30)
+    _attached = 0
+    try:
+        # Get the underlying instance-pool ID from the nodepool details
+        _cluster_detail = c.get_sks_cluster(id=cluster_id)
+        _pool_detail = next(
+            (p for p in _cluster_detail.get("nodepools", []) if p.get("id") == pool_id),
+            {}
+        )
+        _inst_pool_id = _pool_detail.get("instance-pool", {}).get("id")
+        if _inst_pool_id:
+            _inst_pool = c.get_instance_pool(id=_inst_pool_id)
+            _instances = _inst_pool.get("instances", [])
+            log(f"  Found {len(_instances)} instance(s) in nodepool (instance-pool: {_inst_pool_id[:8]}...)")
+            for _inst in _instances:
+                _inst_id = _inst.get("id")
+                _inst_name = _inst.get("name", _inst_id)
+                c.attach_instance_to_security_group(
+                    id=sg_id,
+                    instance={"id": _inst_id},
+                )
+                ok(f"SG attached to {_inst_name}")
+                _attached += 1
+            if _attached == len(_instances) and _instances:
+                ok(f"SG attached to all {_attached} nodepool instance(s)")
+                _sg_success = True
+            elif _attached > 0:
+                ok(f"SG attached to {_attached}/{len(_instances)} instances (partial)")
+                _sg_success = True
+            else:
+                warn("No instances found in instance-pool (pool may still be initializing)")
+        else:
+            warn("instance-pool ref missing from nodepool detail — skipping SG attachment")
+    except Exception as _e:
+        warn(f"SG per-instance attachment failed: {str(_e)[:80]}")
+
     if not _sg_success:
-        warn("SG update failed — will need manual SG assignment in Exoscale console")
+        warn("SG attachment failed — will need manual SG assignment in Exoscale console")
         RESULTS["resources"]["node_pool"]["sg_update_failed"] = True
 
     # LESSON 6: NO manual NLB creation.
