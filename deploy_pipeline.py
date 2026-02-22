@@ -60,6 +60,29 @@ from config_loader import load_config
 cfg = load_config()
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  WIZARD — runs unless --auto flag is passed
+#  python3 deploy_pipeline.py         → wizard prompts for all parameters
+#  python3 deploy_pipeline.py --auto  → skip wizard, use existing config.yaml
+# ═══════════════════════════════════════════════════════════════════════════════
+import argparse as _ap
+_parser = _ap.ArgumentParser(add_help=False)
+_parser.add_argument("--auto", action="store_true", help="Skip wizard")
+_args, _ = _parser.parse_known_args()
+
+if not _args.auto:
+    import wizard as _wiz
+    _existing = _wiz.load_existing()
+    _wizard_cfg = _wiz.run_wizard(_existing)
+    _wiz.print_summary(_wizard_cfg)
+    if not _wiz.prompt_bool("Proceed with deployment?", True):
+        sys.exit(0)
+    _wiz.write_config(_wizard_cfg)
+    # Reload config from the freshly written file
+    cfg = load_config()
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  RUNTIME SETUP — derived from config
 # ═══════════════════════════════════════════════════════════════════════════════
 TS        = datetime.now().strftime("%Y%m%d_%H%M%S")

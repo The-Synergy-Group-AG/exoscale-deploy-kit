@@ -100,6 +100,25 @@ def load_config(config_path: str = "config.yaml") -> dict[str, Any]:
     # Derive convenience values
     cfg.setdefault("k8s_service_port", cfg["k8s_port"])
 
+    # Optional keys — set safe defaults so callers can always read them
+    cfg.setdefault("environment", "production")
+    cfg.setdefault("load_balancer", {"enabled": True, "type": "nlb"})
+    cfg.setdefault("ingress", {"enabled": False, "provider": "nginx", "tls": False, "domain": "", "cert_email": ""})
+    cfg.setdefault("database", {"enabled": False, "type": "postgres", "deployment": "managed", "version": "16"})
+    cfg.setdefault("autoscaling", {
+        "enabled": True,
+        "min_replicas": cfg.get("k8s_replicas", 2),
+        "max_replicas": 10,
+        "cpu_target_percent": 70,
+        "memory_target_percent": 80,
+    })
+    cfg.setdefault("resources", {
+        "requests": {"cpu": "100m", "memory": "128Mi"},
+        "limits":   {"cpu": "500m", "memory": "512Mi"},
+    })
+    cfg.setdefault("pod_disruption_budget", {"enabled": False, "min_available": 1})
+    cfg.setdefault("monitoring", {"metrics_server": True})
+
     return cfg
 
 

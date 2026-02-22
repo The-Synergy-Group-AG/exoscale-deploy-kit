@@ -1,65 +1,99 @@
-# ═══════════════════════════════════════════════════════════════
+# =============================================================
 # Exoscale Deploy Kit — Configuration
-# ═══════════════════════════════════════════════════════════════
-# Edit this file for your project. Credentials go in .env (not here).
-# Usage: python3 deploy_pipeline.py
-# ═══════════════════════════════════════════════════════════════
+# Run: python3 wizard.py   to set all values interactively
+# Run: python3 deploy_pipeline.py --auto   to deploy directly
+# Credentials go in .env (NEVER commit .env to git)
+# =============================================================
 
 # ── Project Identity ──────────────────────────────────────────
-# project_name: used as prefix for ALL cloud resources (SG, cluster, NLB)
-#   e.g. "myapp" → "myapp-sg-XXXXXX", "myapp-cluster-XXXXXX", "myapp-nlb-XXXXXX"
-project_name: exoscale-kit-test
-
-# service_name: Docker image name + K8s Deployment name
-service_name: deploy-kit-svc
-
-# service_version: Semantic version — pushed as both :version and :latest tags
-service_version: "1.0.0"
-
-# docker_hub_user: Your Docker Hub username (token goes in .env)
+project_name: exoscale-kit-test      # prefix for ALL cloud resources
+service_name: deploy-kit-svc         # Docker image name + K8s Deployment name
+service_version: "1.0.0"             # pushed as :version and :latest
 docker_hub_user: iandrewitz
 
+# ── Environment Profile ───────────────────────────────────────
+# dev | staging | production  (wizard uses this to set sensible defaults)
+environment: production
+
 # ── Exoscale Cloud ────────────────────────────────────────────
-# exoscale_zone: Available zones: ch-gva-2, ch-dk-2, at-vie-1, de-fra-1, bg-sof-1
-# CRITICAL: The Python SDK uses api-{zone}.exoscale.com — zone MUST be correct
+# Available zones: ch-gva-2, ch-dk-2, at-vie-1, de-fra-1, bg-sof-1
 exoscale_zone: ch-gva-2
 
-# SKS Cluster settings (Scalable Kubernetes Service)
-sks_cni: calico            # Container network interface
-sks_level: pro             # starter or pro (pro recommended for production)
+# SKS Cluster
+sks_level: pro              # starter | pro
+sks_cni: calico             # calico | cilium
 sks_addons:
   - exoscale-cloud-controller   # Required for NLB auto-provisioning
-  - metrics-server              # Required for HPA (autoscaling)
+  - metrics-server              # Required for HPA
 
-# ── Compute / Node Pool ───────────────────────────────────────
-# node_count: Number of worker nodes (minimum 2 for HA)
-node_count: 2
-
-# node_disk_gb: Disk size per node in GB
-node_disk_gb: 50
-
-# node_type_family + node_type_size: Used to select instance type at runtime
-# Available families: standard, memory, cpu, storage, gpu
-# Available sizes: small, medium, large, extra-large, huge
-# LESSON: Instance type IDs change — always query at runtime, never hardcode
+# ── Compute — Worker Nodes ────────────────────────────────────
+# node_type_family: standard | memory | cpu | storage | gpu
+# node_type_size:   tiny | small | medium | large | extra-large | huge
 node_type_family: standard
 node_type_size: medium
+node_count: 2         # min 2 for HA in production
+node_disk_gb: 50      # GB per node
 
 # ── Kubernetes ────────────────────────────────────────────────
-# k8s_namespace: Kubernetes namespace for your deployment
 k8s_namespace: exoscale-kit-production
-
-# k8s_replicas: Number of pod replicas (minimum 2 for HA)
 k8s_replicas: 2
-
-# k8s_port: Container port your app listens on (INTERNAL — inside the container)
-k8s_port: 5000
-
-# k8s_service_port: Kubernetes Service port (external-facing service port)
+k8s_port: 5000        # container port (inside the container)
 k8s_service_port: 5000
-
-# k8s_nodeport: NodePort for direct node access
-# CRITICAL LESSON: Exoscale default Security Group pre-approves specific NodePorts:
-#   30671, 30888, 30999 — USE ONE OF THESE or add custom SG rules
-# Using any other NodePort will be BLOCKED by the default SG without custom rules.
+# Pre-approved NodePorts in Exoscale default SG: 30671, 30888, 30999
 k8s_nodeport: 30671
+
+# ── Load Balancer ─────────────────────────────────────────────
+# enabled: true = NLB auto-provisioned via K8s type:LoadBalancer (~EUR 8/mo)
+# LESSON: Do NOT create NLB manually — the cloud controller does it automatically
+load_balancer:
+  enabled: true
+  type: nlb
+
+# ── Ingress / Web Server ──────────────────────────────────────
+# enabled: true = deploy an Ingress controller (nginx or traefik)
+# Required for: custom domains, TLS/HTTPS, path-based routing, multiple services
+ingress:
+  enabled: false
+  provider: nginx       # nginx | traefik
+  tls: false
+  domain: ""            # e.g. myapp.example.com (required if tls: true)
+  cert_email: ""        # Let's Encrypt email (required if tls: true)
+
+# ── Database ──────────────────────────────────────────────────
+# enabled: true = include a database in the deployment
+# type:       postgres | mysql | redis
+# deployment: managed (Exoscale DBaaS) | self-hosted (K8s StatefulSet)
+database:
+  enabled: false
+  type: postgres
+  deployment: managed   # managed (DBaaS) | self-hosted (K8s StatefulSet)
+  version: "16"
+  storage_gb: 20        # only used for self-hosted
+  replicas: 1           # only used for self-hosted (1=single, 3=HA)
+
+# ── Autoscaling (HPA) ─────────────────────────────────────────
+# Requires metrics-server addon (included in sks_addons above)
+autoscaling:
+  enabled: true
+  min_replicas: 2
+  max_replicas: 10
+  cpu_target_percent: 70      # scale out when CPU > this %
+  memory_target_percent: 80   # scale out when memory > this %
+
+# ── Container Resource Limits ─────────────────────────────────
+resources:
+  requests:
+    cpu: "200m"         # guaranteed CPU (1000m = 1 core)
+    memory: "256Mi"     # guaranteed memory
+  limits:
+    cpu: "1000m"        # hard CPU cap
+    memory: "1Gi"       # hard memory cap
+
+# ── Resilience ────────────────────────────────────────────────
+pod_disruption_budget:
+  enabled: true         # recommended for production
+  min_available: 1      # always keep at least 1 pod running during maintenance
+
+# ── Monitoring ────────────────────────────────────────────────
+monitoring:
+  metrics_server: true  # required for HPA — included via sks_addons
