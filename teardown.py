@@ -26,6 +26,7 @@ Usage:
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -79,13 +80,16 @@ def teardown(args: argparse.Namespace) -> None:
 
     # Load config — credentials and project_name come from here
     cfg = load_config()
-    project   = cfg["project_name"]   # Used as resource name filter
-    k8s_ns    = cfg["k8s_namespace"]
-    exo_zone  = cfg["exoscale_zone"]
+    # LESSON 16: resource names are slugified to lowercase (LESSON 14) so
+    # teardown must use the slug for discovery — else orphaned SGs are missed.
+    _slug    = re.sub(r'-+', '-', re.sub(r'[^a-z0-9-]', '-', cfg['project_name'].lower())).strip('-')
+    project  = _slug              # Use lowercase slug for resource name matching
+    k8s_ns   = cfg["k8s_namespace"]
+    exo_zone = cfg["exoscale_zone"]
 
     print("\n" + "═"*60)
     print(f"  EXOSCALE DEPLOY KIT — TEARDOWN")
-    print(f"  Project: {project}")
+    print(f"  Project: {cfg['project_name']} (slug: {project})")
     print(f"  Zone:    {exo_zone}")
     if dry_run:
         print("  *** DRY RUN MODE — No changes will be made ***")
