@@ -43,6 +43,7 @@ PREREQUISITES:
   kubectl installed
 """
 import json
+import re
 import os
 import subprocess
 import sys
