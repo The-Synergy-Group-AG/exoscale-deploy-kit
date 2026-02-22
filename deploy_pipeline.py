@@ -90,10 +90,13 @@ IMAGE     = f"{cfg['docker_hub_user']}/{cfg['service_name']}:{cfg['service_versi
 IMAGE_LTS = f"{cfg['docker_hub_user']}/{cfg['service_name']}:latest"
 
 # Resource names — all prefixed with project_name (no hardcoded names)
-SG_NAME   = f"{cfg['project_name']}-sg-{TS[-6:]}"
-CLUSTER_N = f"{cfg['project_name']}-cluster-{TS[-6:]}"
+# LESSON 14: Exoscale resource names must be lowercase DNS-label format
+# Slugify project_name: lowercase, replace non-alphanumeric with '-', collapse '--'
+_slug = re.sub(r'-+', '-', re.sub(r'[^a-z0-9-]', '-', cfg['project_name'].lower())).strip('-')
+SG_NAME   = f"{_slug}-sg-{TS[-6:]}"
+CLUSTER_N = f"{_slug}-cluster-{TS[-6:]}"
 NLB_NAME  = f"{cfg['project_name']}-nlb-{TS[-6:]}"
-POOL_NAME = f"{cfg['project_name']}-workers"
+POOL_NAME = f"{_slug}-workers"
 
 # Paths — all relative to this file (no absolute paths)
 KIT_DIR     = Path(__file__).parent
