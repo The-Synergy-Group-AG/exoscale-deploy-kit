@@ -1,8 +1,8 @@
 # AZD-005 Template Testing Checkpoint
 ## Exoscale Deploy Kit — Infra Provisioner Agent
 
-**Last Updated:** 2026-02-23 20:22 CET  
-**Current Status:** ✅ Phase 1 + Phase 2 COMPLETE — ready for Phase 3
+**Last Updated:** 2026-02-23 20:35 CET  
+**Current Status:** ✅ Phase 1 + Phase 2 + Phase 3 COMPLETE — ready for Phase 4
 
 ---
 
@@ -12,7 +12,8 @@
 |-------|-------|--------|--------|
 | Phase 1 | Infra Provisioner Agent (AZ-INFRA-001 v1.0.0) | ✅ COMPLETE | `d3a66a3` |
 | Phase 2 | NATS Wiring, Secrets, CI | ✅ COMPLETE | `482a9b8` |
-| Phase 3 | Orchestrator Routing + Live Deploy | 🔲 PENDING | — |
+| Phase 3 | Orchestrator Routing, Grafana Dashboard, Alerts | ✅ COMPLETE | (this commit) |
+| Phase 4 | Credentials + Live Deploy | 🔲 PENDING | — |
 
 ---
 
@@ -49,7 +50,6 @@
 | NATS `infra` user | `communication/nats.conf` | ✅ |
 | Infra secrets placeholders | `.env.prod` (gitignored) | ✅ |
 | CI workflow | `.github/workflows/az-infra-provisioner-tests.yml` | ✅ |
-| Phase 2 plan doc | `plans/AZD-005/PHASE_2_IMPLEMENTATION_PLAN.md` | ✅ |
 
 ### NATS `infra` User Permissions
 
@@ -60,9 +60,44 @@ subscribe: infra.> | orchestrator.> | broadcast.> | az.> | _INBOX.> | _JS.ACK.>
 
 ---
 
+## Phase 3 Deliverables ✅
+
+| Item | File | Status |
+|------|------|--------|
+| Orchestrator infra routing | `agents/orchestrator/orchestrator.py` | ✅ |
+| Prometheus alert group 8 | `monitoring/alerts.yml` | ✅ |
+| Grafana dashboard d6 | `dashboards/d6-infra-provisioner.json` | ✅ |
+| Phase 3 plan doc | `plans/AZD-005/PHASE_3_IMPLEMENTATION_PLAN.md` | ✅ |
+
+### Orchestrator Routing Summary
+
+| NATS Subject | Handler | Security Gate |
+|---|---|---|
+| `infra.provision` | `_handle_infra_provision` | T3+ requires `approval_token` |
+| `infra.teardown` | `_handle_infra_teardown` | Always requires `approval_token` |
+| `infra.status.list` | `_handle_infra_status_list` | Read-only, no gate |
+| `infra.approve` | `_handle_infra_approve` | Audit logged → forwards to infra-provisioner |
+
+### Grafana Dashboard `d6-infra-provisioner` (10 panels)
+
+Row 1 — Stat panels: Provision Requests · Active Clusters · Approval Queue · Teardown Requests · Errors · Agent Status  
+Row 2 — Time-series: Provision Duration p50/p95/p99 · Request Rates  
+Row 3 — Stacked bars: Requests by Template · Approval Queue depth over time  
+
+### Prometheus Alerts (Group 8: AZ-Infra-Provisioner)
+
+| Alert | Threshold | Severity |
+|-------|-----------|---------|
+| `InfraProvisionerDown` | metric absent 2m | critical |
+| `InfraProvisionErrorRate` | >0.1/s for 3m | warning |
+| `InfraApprovalQueueDepthHigh` | >3 for 5m | warning |
+| `InfraActiveClustersHigh` | >10 for 2m | warning |
+
+---
+
 ## Template Tests Reference
 
-All 7 exoscale-deploy-kit templates were validated on 2026-02-23:
+All 7 exoscale-deploy-kit templates validated on 2026-02-23:
 
 | Template | Status | Run File |
 |----------|--------|----------|
@@ -76,12 +111,12 @@ All 7 exoscale-deploy-kit templates were validated on 2026-02-23:
 
 ---
 
-## Phase 3 — Next Steps
+## Phase 4 — Next Steps (Credentials + Live Deploy)
 
-| Priority | Item | Notes |
-|----------|------|-------|
-| HIGH | Wire `infra.*` into orchestrator task routing | `orchestrator.py` subject table |
-| HIGH | Set real EXO credentials in Vault + `.env.prod` | `console.exoscale.com → IAM → API Keys` |
-| MED | Grafana panel for infra-provisioner | Add to `d1-command-centre.json` |
-| MED | Live deploy test on staging | `docker-compose up az-infra-provisioner` |
-| LOW | Rotate NATS `infra` password from placeholder | Update both `nats.conf` + `.env.prod` |
+| Priority | Item | Owner | Notes |
+|----------|------|-------|-------|
+| HIGH | Set real `EXO_API_KEY` / `EXO_API_SECRET` | Operator | console.exoscale.com → IAM → API Keys |
+| HIGH | Rotate NATS `infra` password from placeholder | Operator | Update `nats.conf` + `.env.prod` |
+| MED | Live deploy test on staging | Dev | `docker-compose up az-infra-provisioner` |
+| MED | End-to-end smoke test | Dev | Send `infra.provision` with T1 → verify cluster in registry |
+| LOW | Add infra panel to d1-command-centre.json | Dev | Link to d6 dashboard |
