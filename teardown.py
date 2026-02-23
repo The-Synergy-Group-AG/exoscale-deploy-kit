@@ -79,7 +79,7 @@ def teardown(args: argparse.Namespace) -> None:
     ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     # Load config — credentials and project_name come from here
-    cfg = load_config()
+    cfg = load_config(args.config)
     # LESSON 16: resource names are slugified to lowercase (LESSON 14) so
     # teardown must use the slug for discovery — else orphaned SGs are missed.
     _slug    = re.sub(r'-+', '-', re.sub(r'[^a-z0-9-]', '-', cfg['project_name'].lower())).strip('-')
@@ -412,5 +412,7 @@ if __name__ == "__main__":
     parser.add_argument("--force",      action="store_true", help="No confirmation prompts")
     parser.add_argument("--dry-run",    action="store_true", help="Show what would be deleted without deleting")
     parser.add_argument("--cluster-id", help="Target specific cluster ID only")
+    parser.add_argument("--config",     default="config.yaml",
+                        help="Path to config YAML (relative to kit dir or absolute)")
     args = parser.parse_args()
     teardown(args)
