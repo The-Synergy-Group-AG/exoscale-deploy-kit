@@ -67,17 +67,21 @@ from config_loader import load_config
 #  Edit config.yaml to change project settings.
 #  Copy .env.example to .env and fill in credentials.
 # ═══════════════════════════════════════════════════════════════════════════════
-cfg = load_config()
-
 # ═══════════════════════════════════════════════════════════════════════════════
 #  WIZARD — runs unless --auto flag is passed
-#  python3 deploy_pipeline.py         → wizard prompts for all parameters
-#  python3 deploy_pipeline.py --auto  → skip wizard, use existing config.yaml
+#  python3 deploy_pipeline.py                                      → wizard
+#  python3 deploy_pipeline.py --auto                               → use config.yaml
+#  python3 deploy_pipeline.py --config templates/runs/T1-20260223.yaml --auto
+#                                                                  → use T1 config
 # ═══════════════════════════════════════════════════════════════════════════════
 import argparse as _ap
 _parser = _ap.ArgumentParser(add_help=False)
-_parser.add_argument("--auto", action="store_true", help="Skip wizard")
+_parser.add_argument("--auto",   action="store_true", help="Skip wizard")
+_parser.add_argument("--config", default="config.yaml",
+                     help="Path to config YAML (relative to kit dir or absolute)")
 _args, _ = _parser.parse_known_args()
+
+cfg = load_config(_args.config)
 
 if not _args.auto:
     import wizard as _wiz
@@ -88,7 +92,7 @@ if not _args.auto:
         sys.exit(0)
     _wiz.write_config(_wizard_cfg)
     # Reload config from the freshly written file
-    cfg = load_config()
+    cfg = load_config(_args.config)
 
 
 
