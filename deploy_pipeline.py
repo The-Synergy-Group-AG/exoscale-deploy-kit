@@ -41,6 +41,10 @@ CRITICAL LESSONS LEARNED (battle-tested 2026-02-20 — do not repeat these mista
        nodepool["instance-pool"]["id"] → get_instance_pool(id=...).instances
        → attach_instance_to_security_group(id=sg_id, instance={"id": inst_id})
      CRITICAL: args are (id=SG_id, instance={"id": inst_id}) — SG id first, NOT instance-first.
+ 18. Exoscale SOS endpoint (sos-{zone}.exoscale.com) may be unresolvable on some networks
+     (corporate DNS, VPN, Windows DNS cache). The botocore EndpointConnectionError is NOT
+     a ClientError so it bypasses the boto3 except block. FIX: wrap boto3 client + create_bucket
+     in a broad except Exception that warns + returns None (non-fatal) so the pipeline continues.
 
 CONFIGURATION:
   Edit config.yaml for all non-secret settings.
@@ -635,15 +639,16 @@ def stage_object_storage() -> dict | None:
     log(f"SOS endpoint: {sos_endpoint}")
     log(f"Creating bucket: {bucket_name}")
 
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=sos_endpoint,
-        aws_access_key_id=cfg["exo_key"],
-        aws_secret_access_key=cfg["exo_secret"],
-        region_name=zone,
-    )
-
+    # LESSON 18: Wrap entire boto3 block in broad except so EndpointConnectionError
+    # (DNS failure, VPN, firewall) does NOT crash the pipeline — warn + continue.
     try:
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=sos_endpoint,
+            aws_access_key_id=cfg["exo_key"],
+            aws_secret_access_key=cfg["exo_secret"],
+            region_name=zone,
+        )
         s3.create_bucket(Bucket=bucket_name)
         ok(f"SOS bucket created: {bucket_name}")
     except ClientError as e:
@@ -654,6 +659,19 @@ def stage_object_storage() -> dict | None:
             warn(f"SOS bucket creation failed: {e}")
             warn("Object Storage skipped — continuing pipeline")
             return None
+    except Exception as e:
+        # LESSON 18: botocore.EndpointConnectionError is NOT a ClientError.
+        # DNS resolution failures + network errors land here — non-fatal.
+        warn(f"SOS endpoint unreachable: {str(e)[:120]}")
+        warn(f"  Endpoint: {sos_endpoint}")
+        warn("  Create bucket manually: Exoscale Console → Object Storage → New Bucket")
+        warn("  Object Storage skipped — continuing pipeline")
+        RESULTS["resources"]["object_storage"] = {
+            "bucket": bucket_name,
+            "endpoint": sos_endpoint,
+            "status": "skipped_network_error",
+        }
+        return None
 
     # Set ACL if public-read requested
     if sos_cfg.get("acl") == "public-read":

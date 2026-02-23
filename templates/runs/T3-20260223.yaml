@@ -1,0 +1,89 @@
+# T3 Run Config — Persistent State Store — 2026-02-23
+# Generated from templates/T3-persistent-store.yaml
+# DO NOT teardown until instructed
+
+project_name: stargate-t3-20260223
+service_name: stargate-store
+service_version: '1'
+docker_hub_user: iandrewitz
+environment: production
+
+exoscale_zone: ch-dk-2
+
+sks_level: starter
+sks_cni: calico
+sks_addons:
+  - exoscale-cloud-controller
+  - metrics-server
+
+node_type_family: standard
+node_type_size: small
+node_count: 2
+node_disk_gb: 50
+
+node_labels:
+  enabled: true
+  labels:
+    stargate.io/project: stargate-t3-20260223
+    stargate.io/role: persistent-worker
+    stargate.io/zone: ch-dk-2
+    stargate.io/template: T3-persistent-store
+    stargate.io/agents: librarian,performance-manager
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+
+k8s_namespace: exo-stargate-store
+k8s_replicas: 2
+k8s_port: 5000
+k8s_service_port: 5000
+k8s_nodeport: 30003
+
+load_balancer:
+  enabled: true
+  type: nlb
+ingress:
+  enabled: true
+  provider: nginx
+  tls: true
+  domain: synergy-group.ch
+  cert_email: andrewitz@gmail.com
+
+object_storage:
+  enabled: true
+  bucket_name: state
+  acl: private
+
+block_storage:
+  enabled: true
+  storage_class: exoscale-ssd
+  size_gb: 10
+  access_mode: ReadWriteOnce
+  mount_path: /data
+
+database:
+  enabled: true
+  type: pg
+  version: '16'
+  plan: startup-4
+  termination_protection: false
+
+autoscaling:
+  enabled: true
+  min_replicas: 2
+  max_replicas: 6
+  cpu_target_percent: 70
+  memory_target_percent: 80
+
+resources:
+  requests:
+    cpu: '200'
+    memory: '256'
+  limits:
+    cpu: '1000'
+    memory: 1Gi
+
+monitoring:
+  metrics_server: true
+
+pod_disruption_budget:
+  enabled: true
+  min_available: 1
