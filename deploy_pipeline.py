@@ -45,6 +45,30 @@ CRITICAL LESSONS LEARNED (battle-tested 2026-02-20 — do not repeat these mista
      (corporate DNS, VPN, Windows DNS cache). The botocore EndpointConnectionError is NOT
      a ClientError so it bypasses the boto3 except block. FIX: wrap boto3 client + create_bucket
      in a broad except Exception that warns + returns None (non-fatal) so the pipeline continues.
+ 19. Kubernetes label values must match [a-zA-Z0-9_.-] — commas and spaces are NOT allowed.
+     config.yaml label values like "agent1,agent2" fail with kubectl label error.
+     FIX: sanitize all label values via re.sub before applying — replace invalid chars with '-',
+     collapse '--', strip leading/trailing '-', truncate to 63 chars.
+ 20. Exoscale CSI driver manifest URL changes between releases — do NOT hardcode a single path.
+     FIX: try a list of candidate URLs in order; first one that kubectl apply succeeds is used.
+     If all fail, fall back to manual StorageClass creation only (pipeline still succeeds).
+ 21. Exoscale SDK Client has NO method 'terminate_dbaas_service_pg' — AttributeError on teardown.
+     The actual delete method name is unknown at SDK install time (changes between versions).
+     FIX: In teardown.py, iterate candidate method names ['terminate_dbaas_service_pg',
+     'delete_dbaas_service_pg', 'terminate_dbaas_service'] via getattr() with None fallback.
+     If none exist, emit a WARN with Exoscale Console URL for manual deletion.
+ 22. Windows cp1252 encoding crashes when ANY script prints Unicode chars (->  arrows, emojis,
+     box-drawing chars, etc.) OR when the Exoscale SDK opens its bundled JSON API spec file.
+     BOTH issues share the same root cause: Python defaulting to cp1252 on Windows.
+     FIX (two-part):
+       a) Replace any Unicode-only chars in print/warn/fail/log strings with ASCII equivalents
+          (e.g. replace U+2192 -> with ASCII ->).
+       b) Always run all kit scripts with: python -X utf8 <script.py>
+          This forces UTF-8 for ALL file I/O including SDK internals — NOT just stdout.
+          (PYTHONIOENCODING=utf-8 only fixes stdout/stderr, not file open() calls)
+          (PYTHONUTF8=1 via 'set' in cmd.exe does NOT propagate correctly)
+          The -X utf8 flag is the ONLY reliable solution on Python 3.7+/Windows.
+     LESSON: Any script that imports exoscale.api.v2 WILL crash on Windows without -X utf8.
 
 CONFIGURATION:
   Edit config.yaml for all non-secret settings.
@@ -664,7 +688,7 @@ def stage_object_storage() -> dict | None:
         # DNS resolution failures + network errors land here — non-fatal.
         warn(f"SOS endpoint unreachable: {str(e)[:120]}")
         warn(f"  Endpoint: {sos_endpoint}")
-        warn("  Create bucket manually: Exoscale Console → Object Storage → New Bucket")
+        warn("  Create bucket manually: Exoscale Console -> Object Storage -> New Bucket")
         warn("  Object Storage skipped — continuing pipeline")
         RESULTS["resources"]["object_storage"] = {
             "bucket": bucket_name,
@@ -832,7 +856,14 @@ def stage_label_nodes(kubeconfig: str) -> None:
     nodes = [n.strip() for n in r.stdout.strip().split("\n") if n.strip()]
     log(f"Applying StarGate labels to {len(nodes)} node(s)...")
 
-    label_args = [f"{k}={v}" for k, v in labels_map.items()]
+    # LESSON 19: Sanitize label values — commas, spaces, slashes are NOT valid.
+    # K8s label values must match [a-zA-Z0-9_.-] max 63 chars.
+    def _sanitize_label_value(v: str) -> str:
+        s = re.sub(r'[^a-zA-Z0-9_.\-]', '-', str(v))
+        s = re.sub(r'-+', '-', s).strip('-')
+        return s[:63]
+
+    label_args = [f"{k}={_sanitize_label_value(v)}" for k, v in labels_map.items()]
 
     for node in nodes:
         r = subprocess.run(
@@ -909,19 +940,29 @@ stringData:
         warn(f"CSI secret: {r.stderr[:100]}")
 
     # Step 3: Apply official Exoscale CSI driver via kubectl
-    CSI_MANIFEST_URL = "https://raw.githubusercontent.com/exoscale/exoscale-csi-driver/main/deploy/manifests/csi-driver.yaml"
-    log(f"Applying CSI driver from: {CSI_MANIFEST_URL}")
-    r = subprocess.run(
-        ["kubectl", "apply", "-f", CSI_MANIFEST_URL],
-        env=env, capture_output=True, text=True,
-    )
-    if r.returncode == 0:
-        ok("Exoscale CSI driver applied")
-        for line in r.stdout.strip().split("\n"):
-            log(f"  {line}")
-    else:
-        warn(f"CSI driver apply warning (may need internet access): {r.stderr[:150]}")
-        warn("Falling back to manual StorageClass creation")
+    # LESSON 20: Try multiple candidate URLs — path changes between releases.
+    _CSI_CANDIDATE_URLS = [
+        "https://raw.githubusercontent.com/exoscale/exoscale-csi-driver/main/deploy/k8s/csi-driver.yaml",
+        "https://raw.githubusercontent.com/exoscale/exoscale-csi-driver/main/deploy/manifests/csi-driver.yaml",
+        "https://raw.githubusercontent.com/exoscale/exoscale-csi-driver/main/deploy/exoscale-csi-driver.yaml",
+    ]
+    _csi_applied = False
+    for _csi_url in _CSI_CANDIDATE_URLS:
+        log(f"Trying CSI manifest: {_csi_url}")
+        r = subprocess.run(
+            ["kubectl", "apply", "-f", _csi_url],
+            env=env, capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            ok(f"Exoscale CSI driver applied from: {_csi_url}")
+            for line in r.stdout.strip().split("\n"):
+                log(f"  {line}")
+            _csi_applied = True
+            break
+        else:
+            warn(f"  URL failed: {r.stderr[:80]}")
+    if not _csi_applied:
+        warn("All CSI manifest URLs failed — falling back to manual StorageClass creation")
 
     # Step 4: Create StorageClass (works independently of driver install)
     storage_class_yaml = f"""apiVersion: storage.k8s.io/v1

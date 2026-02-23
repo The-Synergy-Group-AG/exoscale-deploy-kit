@@ -210,15 +210,41 @@ def teardown(args: argparse.Namespace) -> None:
         db_svc_name = db["name"]
         db_type     = db.get("type", "pg")
         log(f"Deleting DBaaS service: {db_svc_name} (type={db_type})...")
+        # LESSON 21: The SDK method name for DBaaS deletion is NOT terminate_dbaas_service_pg.
+        # Try multiple candidate names in order — the SDK may expose it as delete_* or terminate_*.
+        # If all SDK methods fail, warn + guide user to manual console deletion.
         try:
-            if db_type == "pg":
-                c.terminate_dbaas_service_pg(name=db_svc_name)
-            elif db_type == "mysql":
-                c.terminate_dbaas_service_mysql(name=db_svc_name)
-            elif db_type == "redis":
-                c.terminate_dbaas_service_redis(name=db_svc_name)
-            ok(f"DBaaS service '{db_svc_name}' deletion initiated")
-            results["deleted"].append({"type": "dbaas", "name": db_svc_name})
+            _deleted = False
+            _candidates = [
+                f"terminate_dbaas_service_{db_type}",
+                f"delete_dbaas_service_{db_type}",
+                f"terminate_dbaas_service",
+            ]
+            for _method_name in _candidates:
+                _method = getattr(c, _method_name, None)
+                if _method:
+                    try:
+                        _method(name=db_svc_name)
+                        ok(f"DBaaS service '{db_svc_name}' deletion initiated (via {_method_name})")
+                        results["deleted"].append({"type": "dbaas", "name": db_svc_name})
+                        _deleted = True
+                        break
+                    except Exception as _e:
+                        if "404" in str(_e) or "not found" in str(_e).lower():
+                            ok(f"DBaaS service '{db_svc_name}' already deleted")
+                            results["deleted"].append({"type": "dbaas", "name": db_svc_name})
+                            _deleted = True
+                            break
+                        # Wrong method signature or transient error — try next candidate
+                        continue
+            if not _deleted:
+                warn(f"DBaaS '{db_svc_name}': no working SDK method found for type='{db_type}'")
+                warn(f"  Manual deletion: Exoscale Console → DBaaS → {db_svc_name} → Terminate")
+                warn(f"  https://portal.exoscale.com → DBaaS → {db_svc_name}")
+                results["errors"].append({
+                    "type": "dbaas", "name": db_svc_name,
+                    "error": "No SDK delete method found — manual console deletion required"
+                })
         except Exception as e:
             warn(f"DBaaS {db_svc_name}: {str(e)[:100]}")
             results["errors"].append({"type": "dbaas", "name": db_svc_name, "error": str(e)[:100]})

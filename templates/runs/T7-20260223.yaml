@@ -1,0 +1,110 @@
+# =============================================================
+# T7 RUN CONFIG — Full Stack Integration Testing
+# Generated: 2026-02-23
+# Template:  templates/T7-full-stack-integration.yaml
+# =============================================================
+# Deploy:    python deploy_pipeline.py --config templates/runs/T7-20260223.yaml --auto
+# Teardown:  python teardown.py --config templates/runs/T7-20260223.yaml --force
+# ⚠️  COST: ~$0.55/hr — FINAL template, tear down promptly after validation
+# ⚠️  PRE-CHECK: Confirm T5 and T6 are fully torn down before deploying
+# =============================================================
+
+# --- Project Identity ---
+project_name: stargate-t7-20260223
+service_name: stargate-full
+service_version: '1'
+docker_hub_user: iandrewitz
+environment: production
+
+# --- Exoscale Zone ---
+exoscale_zone: ch-dk-2
+
+# --- SKS Kubernetes Cluster ---
+sks_level: starter
+sks_cni: calico
+sks_addons:
+  - exoscale-cloud-controller
+  - metrics-server
+
+# --- Worker Nodes — 3× medium: balanced power across all agents ---
+node_type_family: standard
+node_type_size: medium                # 2vCPU / 4GB — full agent suite coexistence
+node_count: 3
+node_disk_gb: 50
+
+# --- Node Labels — 'all' is a valid single label value (LESSON 19 compliant) ---
+node_labels:
+  enabled: true
+  labels:
+    stargate.io/project: stargate-t7
+    stargate.io/role: integration-worker
+    stargate.io/zone: ch-dk-2
+    stargate.io/template: T7-full-stack-integration
+    stargate.io/agents: all
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+
+# --- Kubernetes Namespace & Service ---
+k8s_namespace: exo-stargate-integration
+k8s_replicas: 3
+k8s_port: 5000
+k8s_service_port: 5000
+k8s_nodeport: 30007
+
+# --- Load Balancer & Ingress — full production config ---
+load_balancer:
+  enabled: true
+  type: nlb
+ingress:
+  enabled: true
+  provider: nginx
+  tls: true
+  domain: synergy-group.ch
+  cert_email: andrewitz@gmail.com
+
+# --- Object Storage — full private bucket for integration artefacts ---
+object_storage:
+  enabled: true
+  bucket_name: integration
+  acl: private
+
+# --- Block Storage — 50GB shared persistent volume ---
+block_storage:
+  enabled: true
+  storage_class: exoscale-ssd
+  size_gb: 50
+  access_mode: ReadWriteOnce
+  mount_path: /data
+
+# --- Database — PostgreSQL 16 (primary integration datastore) ---
+database:
+  enabled: true
+  type: pg
+  version: '16'
+  plan: startup-4
+  termination_protection: false
+
+# --- Autoscaling — wide range to exercise all autoscaling paths ---
+autoscaling:
+  enabled: true
+  min_replicas: 3
+  max_replicas: 20
+  cpu_target_percent: 65
+  memory_target_percent: 75
+
+# --- Resource Quotas — production-representative limits ---
+resources:
+  requests:
+    cpu: '300'
+    memory: '512'
+  limits:
+    cpu: '1500'
+    memory: 2Gi
+
+# --- Monitoring ---
+monitoring:
+  metrics_server: true
+
+# --- Availability — full PDB: ensures rolling updates work ---
+pod_disruption_budget:
+  enabled: true
+  min_available: 2

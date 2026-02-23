@@ -1,0 +1,108 @@
+# =============================================================
+# T4 RUN CONFIG — Compute Heavy / Data Analytics
+# Generated: 2026-02-23
+# Template:  templates/T4-compute-heavy.yaml
+# =============================================================
+# Deploy:    python deploy_pipeline.py --config templates/runs/T4-20260223.yaml --auto
+# Teardown:  python teardown.py --config templates/runs/T4-20260223.yaml --force
+# =============================================================
+
+# --- Project Identity ---
+project_name: stargate-t4-20260223
+service_name: stargate-compute
+service_version: '1'
+docker_hub_user: iandrewitz
+environment: production
+
+# --- Exoscale Zone ---
+exoscale_zone: ch-dk-2
+
+# --- SKS Kubernetes Cluster ---
+sks_level: starter
+sks_cni: calico
+sks_addons:
+  - exoscale-cloud-controller
+  - metrics-server
+
+# --- Worker Nodes — 3× large: 4vCPU/8GB per node ---
+node_type_family: standard
+node_type_size: large
+node_count: 3
+node_disk_gb: 100
+
+# --- Node Labels (all values are K8s-safe — no commas, LESSON 19 fix applied) ---
+node_labels:
+  enabled: true
+  labels:
+    stargate.io/project: stargate-t4
+    stargate.io/role: compute-worker
+    stargate.io/zone: ch-dk-2
+    stargate.io/template: T4-compute-heavy
+    stargate.io/agent: data-analyst
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+
+# --- Kubernetes Namespace & Service ---
+k8s_namespace: exo-stargate-compute
+k8s_replicas: 3
+k8s_port: 5000
+k8s_service_port: 5000
+k8s_nodeport: 30004
+
+# --- Load Balancer & Ingress ---
+load_balancer:
+  enabled: true
+  type: nlb
+ingress:
+  enabled: true
+  provider: nginx
+  tls: true
+  domain: synergy-group.ch
+  cert_email: andrewitz@gmail.com
+
+# --- Object Storage — results + profiling artefacts ---
+object_storage:
+  enabled: true
+  bucket_name: analytics
+  acl: private
+
+# --- Block Storage — 100GB for large datasets + model weights ---
+block_storage:
+  enabled: true
+  storage_class: exoscale-ssd
+  size_gb: 100
+  access_mode: ReadWriteOnce
+  mount_path: /data
+
+# --- Database — PostgreSQL 16 for analytics results ---
+database:
+  enabled: true
+  type: pg
+  version: '16'
+  plan: startup-4
+  termination_protection: false
+
+# --- Autoscaling ---
+autoscaling:
+  enabled: true
+  min_replicas: 2
+  max_replicas: 15
+  cpu_target_percent: 60
+  memory_target_percent: 70
+
+# --- Resource Quotas ---
+resources:
+  requests:
+    cpu: '500'
+    memory: '1024'
+  limits:
+    cpu: '2000'
+    memory: 4Gi
+
+# --- Monitoring ---
+monitoring:
+  metrics_server: true
+
+# --- Availability ---
+pod_disruption_budget:
+  enabled: true
+  min_available: 2

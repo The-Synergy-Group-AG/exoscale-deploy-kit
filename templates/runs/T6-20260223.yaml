@@ -1,0 +1,110 @@
+# =============================================================
+# T6 RUN CONFIG — Observability Stack
+# Generated: 2026-02-23
+# Template:  templates/T6-observability.yaml
+# =============================================================
+# Deploy:    python deploy_pipeline.py --config templates/runs/T6-20260223.yaml --auto
+# Teardown:  python teardown.py --config templates/runs/T6-20260223.yaml --force
+# ⚠️  NOTE: k8s_port is 3000 (Grafana) — NOT 5000
+# =============================================================
+
+# --- Project Identity ---
+project_name: stargate-t6-20260223
+service_name: stargate-obs
+service_version: '1'
+docker_hub_user: iandrewitz
+environment: production
+
+# --- Exoscale Zone ---
+exoscale_zone: ch-dk-2
+
+# --- SKS Kubernetes Cluster ---
+sks_level: starter
+sks_cni: calico
+sks_addons:
+  - exoscale-cloud-controller
+  - metrics-server                    # Required: Prometheus scrapes metrics-server
+
+# --- Worker Nodes — 2× medium: 2vCPU/4GB for metrics overhead ---
+node_type_family: standard
+node_type_size: medium                # 2vCPU / 4GB
+node_count: 2
+node_disk_gb: 50
+
+# --- Node Labels (all K8s-safe, LESSON 19) ---
+node_labels:
+  enabled: true
+  labels:
+    stargate.io/project: stargate-t6
+    stargate.io/role: observability-worker
+    stargate.io/zone: ch-dk-2
+    stargate.io/template: T6-observability
+    stargate.io/agent: system-monitor
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+
+# --- Kubernetes Namespace & Service ---
+# ⚠️ PORT IS 3000 (Grafana default) — NOT 5000
+k8s_namespace: exo-stargate-obs
+k8s_replicas: 2
+k8s_port: 3000
+k8s_service_port: 3000
+k8s_nodeport: 30006
+
+# --- Load Balancer & Ingress ---
+load_balancer:
+  enabled: true
+  type: nlb
+ingress:
+  enabled: true
+  provider: nginx
+  tls: true
+  domain: synergy-group.ch
+  cert_email: andrewitz@gmail.com
+
+# --- Object Storage — telemetry exports + alert artefacts ---
+object_storage:
+  enabled: true
+  bucket_name: telemetry
+  acl: private
+
+# --- Block Storage — 50GB for Loki log chunks + Prometheus WAL/TSDB ---
+block_storage:
+  enabled: true
+  storage_class: exoscale-ssd
+  size_gb: 50
+  access_mode: ReadWriteOnce
+  mount_path: /data
+
+# --- Database — PostgreSQL 16 for Grafana state + alert history ---
+database:
+  enabled: true
+  type: pg
+  version: '16'
+  plan: startup-4
+  termination_protection: false
+
+# --- Autoscaling — conservative: observability stack needs stability ---
+autoscaling:
+  enabled: true
+  min_replicas: 2
+  max_replicas: 6
+  cpu_target_percent: 70
+  memory_target_percent: 75
+
+# --- Resource Quotas — generous memory for metric retention ---
+resources:
+  requests:
+    cpu: '300'
+    memory: '512'
+  limits:
+    cpu: '1500'
+    memory: 2Gi
+
+# --- Monitoring ---
+monitoring:
+  metrics_server: true
+
+# --- Availability ---
+pod_disruption_budget:
+  enabled: true
+  min_available: 1

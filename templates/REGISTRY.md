@@ -210,4 +210,33 @@ All templates default to `ch-dk-2` (Zurich). Change to `ch-gva-2` (Geneva) for:
 
 ---
 
+---
+
+## Test Run History — 2026-02-23
+
+| Template | Deployment ID | Cluster ID | Nodes | Duration | Result | Teardown Report |
+|----------|--------------|------------|-------|----------|--------|-----------------|
+| T1-minimal-test | 20260223_T1 | (deleted) | 1x small | ~4 min | ✅ PASS | Clean |
+| T2-orchestrator | 20260223_T2 | (deleted) | 2x small | ~5 min | ✅ PASS | Clean |
+| T3-persistent-store | 20260223_T3 | (deleted) | 2x small | ~8 min | ✅ PASS | ⚠️ DBaaS leftover (fixed) |
+| T4-compute-heavy | 20260223_152615 | d922a55e | 3x large | ~7 min | ✅ PASS | teardown_report_20260223_160455.json |
+| T5-security-hardened | 20260223_162157 | 5f29c216 | 2x small | ~5 min | ✅ PASS | teardown_report_20260223_163137.json |
+| T6-observability | 20260223_164621 | 3996c9c5 | 2x medium | ~6.5 min | ✅ PASS | teardown_report_20260223_165330.json |
+| T7-full-stack-integration | 20260223_165416 | f2bd5856 | 3x medium | ~7.75 min | ✅ PASS | teardown_report_20260223_174046.json |
+
+> Full session analysis: `../SUMMARY-20260223.md`
+
+---
+
+## Known Issues (2026-02-23)
+
+| # | Issue | Affected | Workaround |
+|---|-------|---------|------------|
+| L22 | Windows UnicodeEncodeError | All | Use `python -X utf8` flag |
+| L23 | SG per-instance 404 — nodepool SG not attached | T4–T7 | Manual SG in console; fix: use `update_sks_nodepool` |
+| L24 | DBaaS leftover on teardown | T3 (pre-fix) | Fixed in teardown.py — confirmed clean T4+ |
+| L25 | `cd && python` path on Windows CMD | All | Use full absolute path to script |
+
+---
+
 *Last updated: 2026-02-23 | exoscale-deploy-kit templates v1.0*
