@@ -31,22 +31,27 @@ def syntax(p: str) -> bool:
 
 
 def no_grep(pattern: str) -> bool:
-    """Return True if pattern NOT found in kit deliverable files.
-    Excludes: __pycache__/, validate_phase*.py (contain patterns as search strings).
+    """Return True if pattern NOT found in kit files.
+    Excludes: __pycache__/, validate_phase*.py, .env (credentials file).
+    Pure Python — no grep binary needed (Windows-compatible).
     """
-    r = subprocess.run(
-        [
-            "grep", "-rq",
-            "--exclude-dir=__pycache__",
-            "--exclude=validate_phase1.py",
-            "--exclude=validate_phase2.py",
-            "--exclude=validate_phase3.py",
-            pattern,
-            str(kit),
-        ],
-        capture_output=True,
-    )
-    return r.returncode != 0
+    EXCLUDE_FILES = {
+        "validate_phase1.py", "validate_phase2.py", "validate_phase3.py",
+        ".env",  # credentials file — intentionally contains real values
+    }
+    for f in kit.rglob("*"):
+        if not f.is_file():
+            continue
+        if "__pycache__" in f.parts:
+            continue
+        if f.name in EXCLUDE_FILES:
+            continue
+        try:
+            if pattern in f.read_text(encoding="utf-8", errors="ignore"):
+                return False
+        except Exception:
+            pass
+    return True
 
 
 print("=" * 52)

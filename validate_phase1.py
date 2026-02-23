@@ -20,12 +20,16 @@ DELIVERABLES = [
 
 
 def grep_deliverables(pattern: str) -> list[str]:
-    """Search pattern across deliverable files only (not this validator)."""
+    """Search pattern across deliverable files only (not this validator). Pure Python — no grep binary needed."""
     hits = []
     for f in DELIVERABLES:
-        r = subprocess.run(["grep", "-n", pattern, str(f)], capture_output=True, text=True)
-        if r.stdout.strip():
-            hits.append(f"{f.name}: {r.stdout.strip()}")
+        try:
+            lines = f.read_text(encoding="utf-8", errors="ignore").splitlines()
+            matched = [f"{i+1}: {line}" for i, line in enumerate(lines) if pattern in line]
+            if matched:
+                hits.append(f"{f.name}: " + " | ".join(matched))
+        except Exception:
+            pass
     return hits
 
 
@@ -37,7 +41,7 @@ print("=" * 44)
 print("\n5. JTP reference scan (deliverables only):")
 JTP_PATTERNS = [
     "jtp-bio", "jtp_bio",
-    "iandre",
+    "/home/iandre",    # avoid matching docker_hub_user 'iandrewitz'
     "EXO" + "cf9a",    # split to avoid self-match in this script
     "dckr_pat_F",
 ]

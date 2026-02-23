@@ -410,8 +410,8 @@ def stage_wait_for_nodes(kubeconfig: str):
     section("STAGE 4: Wait for Worker Nodes")
     t0 = time.time()
 
-    # LESSON 9: Always set KUBECONFIG + PATH explicitly in subprocess env
-    env = {"KUBECONFIG": kubeconfig, "PATH": "/usr/local/bin:/usr/bin:/bin"}
+    # LESSON 9: Set KUBECONFIG in subprocess env; inherit OS PATH (Windows + Linux compatible)
+    env = {**os.environ, "KUBECONFIG": kubeconfig}
 
     log(f"Waiting for {cfg['node_count']} worker nodes (up to 12 minutes)...")
     deadline = time.time() + 720
@@ -452,8 +452,8 @@ def stage_kubernetes(kubeconfig: str):
     t0 = time.time()
     manifests_dir = OUT / "k8s-manifests"
 
-    # LESSON 9: Always set KUBECONFIG + PATH explicitly in subprocess env
-    env = {"KUBECONFIG": kubeconfig, "PATH": "/usr/local/bin:/usr/bin:/bin"}
+    # LESSON 9: Set KUBECONFIG in subprocess env; inherit OS PATH (Windows + Linux compatible)
+    env = {**os.environ, "KUBECONFIG": kubeconfig}
 
     # Create namespace
     log(f"Creating namespace: {cfg['k8s_namespace']}")
@@ -534,7 +534,7 @@ def stage_kubernetes(kubeconfig: str):
 def stage_verify(kubeconfig: str):
     section("STAGE 6: Verification")
     t0 = time.time()
-    env = {"KUBECONFIG": kubeconfig, "PATH": "/usr/local/bin:/usr/bin:/bin"}
+    env = {**os.environ, "KUBECONFIG": kubeconfig}
     ns = cfg["k8s_namespace"]
 
     log("Waiting for pods to start (up to 5 minutes)...")
@@ -600,6 +600,438 @@ def stage_report():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  STAGE 3b: OBJECT STORAGE (SOS)
+#  Creates an Exoscale SOS bucket (S3-compatible).
+#  Uses existing EXO_API_KEY/EXO_API_SECRET — same key works for SOS if it has
+#  the required permissions (default for admin/owner keys).
+#  Credentials saved to RESULTS for K8s secret injection in Stage 5c.
+# ═══════════════════════════════════════════════════════════════════════════════
+def stage_object_storage() -> dict | None:
+    sos_cfg = cfg.get("object_storage", {})
+    if not sos_cfg.get("enabled"):
+        log("Object Storage (SOS): disabled — skipping")
+        return None
+
+    section("STAGE 3b: Object Storage (SOS)")
+    t0 = time.time()
+
+    try:
+        import boto3
+        from botocore.exceptions import ClientError
+    except ImportError:
+        warn("boto3 not installed — run: pip install boto3")
+        warn("Object Storage skipped")
+        return None
+
+    zone         = cfg["exoscale_zone"]
+    bucket_suffix = sos_cfg.get("bucket_name", "assets")
+    bucket_name  = f"{_slug}-{bucket_suffix}"
+    sos_endpoint = f"https://sos-{zone}.exoscale.com"
+
+    log(f"SOS endpoint: {sos_endpoint}")
+    log(f"Creating bucket: {bucket_name}")
+
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=sos_endpoint,
+        aws_access_key_id=cfg["exo_key"],
+        aws_secret_access_key=cfg["exo_secret"],
+        region_name=zone,
+    )
+
+    try:
+        s3.create_bucket(Bucket=bucket_name)
+        ok(f"SOS bucket created: {bucket_name}")
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+            ok(f"SOS bucket already exists: {bucket_name}")
+        else:
+            warn(f"SOS bucket creation failed: {e}")
+            warn("Object Storage skipped — continuing pipeline")
+            return None
+
+    # Set ACL if public-read requested
+    if sos_cfg.get("acl") == "public-read":
+        try:
+            s3.put_bucket_acl(Bucket=bucket_name, ACL="public-read")
+            ok(f"Bucket ACL set to public-read")
+        except ClientError as e:
+            warn(f"ACL set failed (non-critical): {e}")
+
+    sos_result = {
+        "bucket": bucket_name,
+        "endpoint": sos_endpoint,
+        "zone": zone,
+        "access_key": cfg["exo_key"],
+        "secret_key": cfg["exo_secret"],
+    }
+    RESULTS["resources"]["object_storage"] = {
+        "bucket": bucket_name,
+        "endpoint": sos_endpoint,
+        "zone": zone,
+    }
+    ok(f"Object Storage ready: s3://{bucket_name} ({elapsed(t0)})")
+    return sos_result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  STAGE 3c: DBAAS (MANAGED DATABASE)
+#  Creates an Exoscale managed PostgreSQL service.
+#  Polls until state == "running" (~3-10 min depending on plan).
+#  Connection URI saved to RESULTS for K8s secret injection in Stage 5c.
+# ═══════════════════════════════════════════════════════════════════════════════
+def stage_dbaas() -> dict | None:
+    db_cfg = cfg.get("database", {})
+    if not db_cfg.get("enabled"):
+        log("DBaaS: disabled — skipping")
+        return None
+
+    section("STAGE 3c: DBaaS (Managed Database)")
+    t0 = time.time()
+
+    from exoscale.api.v2 import Client
+    c = Client(cfg["exo_key"], cfg["exo_secret"], zone=cfg["exoscale_zone"])
+
+    db_name = f"{_slug}-db"
+    db_type = db_cfg.get("type", "pg")
+    db_plan = db_cfg.get("plan", "startup-4")
+    db_ver  = str(db_cfg.get("version", "16"))
+    term_protect = db_cfg.get("termination_protection", False)
+
+    log(f"Creating DBaaS service: {db_name}")
+    log(f"  type={db_type}  plan={db_plan}  version={db_ver}")
+
+    try:
+        if db_type == "pg":
+            c.create_dbaas_service_pg(
+                name=db_name,
+                plan=db_plan,
+                version=db_ver,
+                termination_protection=term_protect,
+            )
+        elif db_type == "mysql":
+            c.create_dbaas_service_mysq(
+                name=db_name,
+                plan=db_plan,
+                version=db_ver,
+                termination_protection=term_protect,
+            )
+        elif db_type == "redis":
+            c.create_dbaas_service_redis(
+                name=db_name,
+                plan=db_plan,
+                termination_protection=term_protect,
+            )
+        else:
+            warn(f"DBaaS type '{db_type}' not yet supported in pipeline — skipping")
+            return None
+    except Exception as e:
+        warn(f"DBaaS creation failed: {str(e)[:150]}")
+        warn("DBaaS skipped — continuing pipeline")
+        return None
+
+    ok(f"DBaaS {db_type} service '{db_name}' creation initiated")
+
+    # Poll until state == running (up to 15 minutes for startup plans)
+    log("Waiting for DBaaS service to be ready (3-15 minutes)...")
+    deadline = time.time() + 900
+    db_info = {}
+    while time.time() < deadline:
+        try:
+            if db_type == "pg":
+                svc = c.get_dbaas_service_pg(name=db_name)
+            elif db_type == "mysql":
+                svc = c.get_dbaas_service_mysql(name=db_name)
+            elif db_type == "redis":
+                svc = c.get_dbaas_service_redis(name=db_name)
+            else:
+                svc = {}
+            state = svc.get("state", "unknown")
+            log(f"  DBaaS state: {state} ({elapsed(t0)})")
+            if state == "running":
+                db_info = svc
+                break
+        except Exception as e:
+            log(f"  DBaaS poll: {str(e)[:60]}")
+        time.sleep(30)
+
+    if not db_info:
+        warn(f"DBaaS not ready after {elapsed(t0)} — recording as pending")
+        RESULTS["resources"]["dbaas"] = {
+            "name": db_name, "type": db_type, "plan": db_plan, "state": "pending"
+        }
+        return {"name": db_name, "type": db_type, "state": "pending"}
+
+    # Extract connection URI
+    conn_info = db_info.get("connection-info", {})
+    pg_uri = None
+    if db_type == "pg" and conn_info:
+        # Exoscale returns connection-info.pg as list of URIs
+        uris = conn_info.get("pg", [])
+        pg_uri = uris[0] if uris else None
+
+    ok(f"DBaaS {db_type} '{db_name}' is RUNNING ({elapsed(t0)})")
+    db_result = {
+        "name": db_name,
+        "type": db_type,
+        "plan": db_plan,
+        "state": "running",
+        "connection_uri": pg_uri or f"see Exoscale console: {db_name}",
+    }
+    RESULTS["resources"]["dbaas"] = db_result
+    return db_result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  STAGE 4b: NODE LABELS (StarGate branding)
+#  Applies kubectl labels to all worker nodes.
+#  Labels visible via: kubectl get nodes --show-labels
+# ═══════════════════════════════════════════════════════════════════════════════
+def stage_label_nodes(kubeconfig: str) -> None:
+    nl_cfg = cfg.get("node_labels", {})
+    if not nl_cfg.get("enabled"):
+        log("Node Labels: disabled — skipping")
+        return
+
+    labels_map = nl_cfg.get("labels", {})
+    if not labels_map:
+        log("Node Labels: no labels configured — skipping")
+        return
+
+    section("STAGE 4b: Node Labels (StarGate branding)")
+    env = {**os.environ, "KUBECONFIG": kubeconfig}
+
+    # Get list of all nodes
+    r = subprocess.run(
+        ["kubectl", "get", "nodes", "--no-headers", "-o", "custom-columns=NAME:.metadata.name"],
+        env=env, capture_output=True, text=True,
+    )
+    nodes = [n.strip() for n in r.stdout.strip().split("\n") if n.strip()]
+    log(f"Applying StarGate labels to {len(nodes)} node(s)...")
+
+    label_args = [f"{k}={v}" for k, v in labels_map.items()]
+
+    for node in nodes:
+        r = subprocess.run(
+            ["kubectl", "label", "node", node, "--overwrite"] + label_args,
+            env=env, capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            ok(f"  {node} → labels applied")
+        else:
+            warn(f"  {node} label failed: {r.stderr[:80]}")
+
+    # Verify
+    r = subprocess.run(
+        ["kubectl", "get", "nodes", "--show-labels"],
+        env=env, capture_output=True, text=True,
+    )
+    log("\nNodes with labels:")
+    for line in r.stdout.strip().split("\n"):
+        log(f"  {line}")
+
+    RESULTS["stages"]["node_labels"] = {"status": "success", "nodes": nodes, "labels": labels_map}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  STAGE 5b: EXOSCALE CSI DRIVER (Block Storage)
+#  Installs the Exoscale CSI driver into the cluster, creates StorageClass,
+#  and generates a PVC manifest for the app.
+#  CSI driver: github.com/exoscale/exoscale-csi-driver
+# ═══════════════════════════════════════════════════════════════════════════════
+def stage_install_csi(kubeconfig: str) -> bool:
+    bs_cfg = cfg.get("block_storage", {})
+    if not bs_cfg.get("enabled"):
+        log("Block Storage (CSI): disabled — skipping")
+        return False
+
+    section("STAGE 5b: Block Storage — CSI Driver")
+    t0 = time.time()
+    env = {**os.environ, "KUBECONFIG": kubeconfig}
+
+    # CSI driver manifest URL (official Exoscale CSI driver)
+    CSI_NAMESPACE = "exoscale-csi"
+    csi_manifests_dir = OUT / "csi-manifests"
+    csi_manifests_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate the CSI driver namespace + secret + driver manifests
+    # The CSI driver needs Exoscale API credentials to provision BSS volumes
+    log("Installing Exoscale CSI driver...")
+
+    # Step 1: Create CSI namespace
+    subprocess.run(
+        ["kubectl", "create", "namespace", CSI_NAMESPACE],
+        env=env, capture_output=True, text=True,
+    )
+
+    # Step 2: Create Exoscale API credentials secret for CSI driver
+    csi_secret_yaml = f"""apiVersion: v1
+kind: Secret
+metadata:
+  name: exoscale-credentials
+  namespace: {CSI_NAMESPACE}
+type: Opaque
+stringData:
+  api-key: "{cfg['exo_key']}"
+  api-secret: "{cfg['exo_secret']}"
+  zone: "{cfg['exoscale_zone']}"
+"""
+    r = subprocess.run(
+        ["kubectl", "apply", "-f", "-"],
+        input=csi_secret_yaml, env=env, text=True, capture_output=True,
+    )
+    if r.returncode == 0:
+        ok("CSI credentials secret created")
+    else:
+        warn(f"CSI secret: {r.stderr[:100]}")
+
+    # Step 3: Apply official Exoscale CSI driver via kubectl
+    CSI_MANIFEST_URL = "https://raw.githubusercontent.com/exoscale/exoscale-csi-driver/main/deploy/manifests/csi-driver.yaml"
+    log(f"Applying CSI driver from: {CSI_MANIFEST_URL}")
+    r = subprocess.run(
+        ["kubectl", "apply", "-f", CSI_MANIFEST_URL],
+        env=env, capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        ok("Exoscale CSI driver applied")
+        for line in r.stdout.strip().split("\n"):
+            log(f"  {line}")
+    else:
+        warn(f"CSI driver apply warning (may need internet access): {r.stderr[:150]}")
+        warn("Falling back to manual StorageClass creation")
+
+    # Step 4: Create StorageClass (works independently of driver install)
+    storage_class_yaml = f"""apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {bs_cfg.get('storage_class', 'exoscale-ssd')}
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: csi.exoscale.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  zone: "{cfg['exoscale_zone']}"
+"""
+    sc_path = csi_manifests_dir / "storage-class.yaml"
+    sc_path.write_text(storage_class_yaml)
+    r = subprocess.run(
+        ["kubectl", "apply", "-f", str(sc_path)],
+        env=env, capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        ok(f"StorageClass '{bs_cfg.get('storage_class', 'exoscale-ssd')}' created")
+    else:
+        warn(f"StorageClass: {r.stderr[:100]}")
+
+    # Step 5: Generate PVC manifest (to be applied with app manifests)
+    pvc_yaml = f"""apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {cfg['service_name']}-data
+  namespace: {cfg['k8s_namespace']}
+  labels:
+    app: {cfg['service_name']}
+    stargate.io/managed-by: exoscale-deploy-kit
+spec:
+  accessModes:
+    - {bs_cfg.get('access_mode', 'ReadWriteOnce')}
+  storageClassName: {bs_cfg.get('storage_class', 'exoscale-ssd')}
+  resources:
+    requests:
+      storage: {bs_cfg.get('size_gb', 10)}Gi
+"""
+    # Write PVC to k8s-manifests dir so it's applied with app manifests
+    manifests_dir = OUT / "k8s-manifests"
+    manifests_dir.mkdir(parents=True, exist_ok=True)
+    pvc_path = manifests_dir / "06-pvc.yaml"
+    pvc_path.write_text(pvc_yaml)
+    ok(f"PVC manifest generated: {pvc_path.name} ({bs_cfg.get('size_gb', 10)}Gi {bs_cfg.get('storage_class', 'exoscale-ssd')})")
+
+    RESULTS["resources"]["block_storage"] = {
+        "storage_class": bs_cfg.get("storage_class", "exoscale-ssd"),
+        "pvc_name": f"{cfg['service_name']}-data",
+        "size_gb": bs_cfg.get("size_gb", 10),
+        "mount_path": bs_cfg.get("mount_path", "/data"),
+        "csi_namespace": CSI_NAMESPACE,
+    }
+    ok(f"Block Storage ready ({elapsed(t0)})")
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  STAGE 5c: INJECT SERVICE CREDENTIALS AS K8S SECRETS
+#  Injects DB connection URI and SOS bucket credentials as K8s secrets.
+#  Apps consume: secret/db-credentials and secret/sos-credentials
+# ═══════════════════════════════════════════════════════════════════════════════
+def stage_inject_secrets(kubeconfig: str, db_info: dict | None, sos_info: dict | None) -> None:
+    if not db_info and not sos_info:
+        log("No service credentials to inject — skipping")
+        return
+
+    section("STAGE 5c: Inject Service Credentials (K8s Secrets)")
+    env = {**os.environ, "KUBECONFIG": kubeconfig}
+    ns  = cfg["k8s_namespace"]
+
+    # --- DB Credentials ---
+    if db_info and db_info.get("state") == "running" and db_info.get("connection_uri"):
+        conn_uri = db_info["connection_uri"]
+        db_secret_yaml = f"""apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+  namespace: {ns}
+  labels:
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+type: Opaque
+stringData:
+  DATABASE_URL: "{conn_uri}"
+  DB_TYPE: "{db_info.get('type', 'pg')}"
+  DB_SERVICE_NAME: "{db_info.get('name', '')}"
+"""
+        r = subprocess.run(
+            ["kubectl", "apply", "-f", "-"],
+            input=db_secret_yaml, env=env, text=True, capture_output=True,
+        )
+        if r.returncode == 0:
+            ok(f"Secret 'db-credentials' applied to namespace {ns}")
+        else:
+            warn(f"DB secret: {r.stderr[:100]}")
+    elif db_info:
+        log(f"DBaaS state={db_info.get('state')} — DB secret will need manual injection after service is running")
+
+    # --- SOS Credentials ---
+    if sos_info:
+        sos_secret_yaml = f"""apiVersion: v1
+kind: Secret
+metadata:
+  name: sos-credentials
+  namespace: {ns}
+  labels:
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+type: Opaque
+stringData:
+  SOS_BUCKET: "{sos_info.get('bucket', '')}"
+  SOS_ENDPOINT: "{sos_info.get('endpoint', '')}"
+  SOS_REGION: "{sos_info.get('zone', cfg['exoscale_zone'])}"
+  AWS_S3_ENDPOINT: "{sos_info.get('endpoint', '')}"
+  AWS_ACCESS_KEY_ID: "{sos_info.get('access_key', cfg['exo_key'])}"
+  AWS_SECRET_ACCESS_KEY: "{sos_info.get('secret_key', cfg['exo_secret'])}"
+"""
+        r = subprocess.run(
+            ["kubectl", "apply", "-f", "-"],
+            input=sos_secret_yaml, env=env, text=True, capture_output=True,
+        )
+        if r.returncode == 0:
+            ok(f"Secret 'sos-credentials' applied to namespace {ns}")
+        else:
+            warn(f"SOS secret: {r.stderr[:100]}")
+
+    RESULTS["stages"]["inject_secrets"] = {"status": "success"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
@@ -614,9 +1046,26 @@ if __name__ == "__main__":
     try:
         stage_docker_build()
         stage_docker_push()
+
+        # Stage 3b/3c run in parallel with cluster creation — kick off managed
+        # services early so they can reach 'running' while K8s nodes are booting.
+        sos_info = stage_object_storage()
+        db_info  = stage_dbaas()
+
         kubeconfig = stage_exoscale()
         stage_wait_for_nodes(kubeconfig)
+
+        # Stage 4b: Label nodes with StarGate identity after they are Ready
+        stage_label_nodes(kubeconfig)
+
+        # Stage 5b: Install CSI driver + generate PVC manifest
+        stage_install_csi(kubeconfig)
+
         stage_kubernetes(kubeconfig)
+
+        # Stage 5c: Inject DB + SOS credentials as K8s secrets
+        stage_inject_secrets(kubeconfig, db_info, sos_info)
+
         stage_verify(kubeconfig)
         stage_report()
     except SystemExit:

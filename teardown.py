@@ -114,7 +114,6 @@ def teardown(args: argparse.Namespace) -> None:
             log(f"    nodepool: {np.get('name')} ({np.get('id')}) size:{np.get('size')}")
 
     # Find NLBs matching {project_name}-*
-    # Includes both manual pattern and K8s cloud-controller auto-created pattern
     nlb_list  = c.list_load_balancers().get("load-balancers", [])
     proj_nlbs = [n for n in nlb_list if project in n.get("name", "")]
     log(f"Load balancers ({project}): {len(proj_nlbs)}")
@@ -128,7 +127,43 @@ def teardown(args: argparse.Namespace) -> None:
     for s in proj_sgs:
         log(f"  {s.get('name')} ({s.get('id')})")
 
-    total = len(proj_clusters) + len(proj_nlbs) + len(proj_sgs)
+    # Find DBaaS service: {project_slug}-db
+    db_name = f"{project}-db"
+    proj_dbaas = []
+    try:
+        svc = c.get_dbaas_service_pg(name=db_name)
+        if svc:
+            proj_dbaas.append({"name": db_name, "type": "pg", "state": svc.get("state")})
+            log(f"DBaaS service ({project}): {db_name} state:{svc.get('state')}")
+    except Exception:
+        pass  # 404 = no DBaaS service for this project
+    if not proj_dbaas:
+        log(f"DBaaS services ({project}): 0")
+
+    # Find SOS bucket: {project_slug}-assets (or any {project_slug}-* bucket)
+    proj_sos_buckets = []
+    try:
+        import boto3
+        zone = exo_zone
+        sos_endpoint = f"https://sos-{zone}.exoscale.com"
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=sos_endpoint,
+            aws_access_key_id=cfg["exo_key"],
+            aws_secret_access_key=cfg["exo_secret"],
+            region_name=zone,
+        )
+        resp = s3.list_buckets()
+        for b in resp.get("Buckets", []):
+            bname = b.get("Name", "")
+            if bname.startswith(project):
+                proj_sos_buckets.append(bname)
+                log(f"  SOS bucket: {bname}")
+        log(f"SOS buckets ({project}): {len(proj_sos_buckets)}")
+    except Exception as e:
+        log(f"SOS bucket discovery skipped (boto3 not installed or no access): {str(e)[:60]}")
+
+    total = len(proj_clusters) + len(proj_nlbs) + len(proj_sgs) + len(proj_dbaas) + len(proj_sos_buckets)
     if total == 0:
         ok(f"No {project} resources found — environment is clean!")
         return
@@ -168,6 +203,62 @@ def teardown(args: argparse.Namespace) -> None:
         warn("  If cluster still has running pods, delete namespace manually:")
         warn(f"  export KUBECONFIG=<path-to-kubeconfig>")
         warn(f"  kubectl delete namespace {k8s_ns}")
+
+    # ── Step 2b: Delete DBaaS Service ────────────────────────────────────
+    section("Step 2b: DBaaS Teardown")
+    for db in proj_dbaas:
+        db_svc_name = db["name"]
+        db_type     = db.get("type", "pg")
+        log(f"Deleting DBaaS service: {db_svc_name} (type={db_type})...")
+        try:
+            if db_type == "pg":
+                c.terminate_dbaas_service_pg(name=db_svc_name)
+            elif db_type == "mysql":
+                c.terminate_dbaas_service_mysql(name=db_svc_name)
+            elif db_type == "redis":
+                c.terminate_dbaas_service_redis(name=db_svc_name)
+            ok(f"DBaaS service '{db_svc_name}' deletion initiated")
+            results["deleted"].append({"type": "dbaas", "name": db_svc_name})
+        except Exception as e:
+            warn(f"DBaaS {db_svc_name}: {str(e)[:100]}")
+            results["errors"].append({"type": "dbaas", "name": db_svc_name, "error": str(e)[:100]})
+    if not proj_dbaas:
+        ok("No DBaaS services to delete")
+
+    # ── Step 2c: Delete SOS Buckets ───────────────────────────────────────
+    section("Step 2c: Object Storage (SOS) Teardown")
+    if proj_sos_buckets:
+        try:
+            import boto3
+            sos_endpoint = f"https://sos-{exo_zone}.exoscale.com"
+            s3 = boto3.client(
+                "s3",
+                endpoint_url=sos_endpoint,
+                aws_access_key_id=cfg["exo_key"],
+                aws_secret_access_key=cfg["exo_secret"],
+                region_name=exo_zone,
+            )
+            for bucket in proj_sos_buckets:
+                log(f"Emptying + deleting SOS bucket: {bucket}")
+                try:
+                    # Must delete all objects before deleting bucket
+                    paginator = s3.get_paginator("list_objects_v2")
+                    pages = paginator.paginate(Bucket=bucket)
+                    for page in pages:
+                        objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+                        if objects:
+                            s3.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+                            log(f"  Deleted {len(objects)} object(s)")
+                    s3.delete_bucket(Bucket=bucket)
+                    ok(f"SOS bucket deleted: {bucket}")
+                    results["deleted"].append({"type": "sos_bucket", "name": bucket})
+                except Exception as e:
+                    warn(f"SOS bucket {bucket}: {str(e)[:100]}")
+                    results["errors"].append({"type": "sos_bucket", "name": bucket, "error": str(e)[:100]})
+        except ImportError:
+            warn("boto3 not installed — SOS buckets must be deleted manually via Exoscale console")
+    else:
+        ok("No SOS buckets to delete")
 
     # ── Step 3: Delete SKS Clusters + Nodepools ───────────────────────────
     section("Step 3: SKS Cluster Teardown")

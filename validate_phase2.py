@@ -15,11 +15,16 @@ DELIVERABLES = [
 
 
 def grep_files(pattern: str) -> list[str]:
+    """Pure Python search — no grep binary needed (Windows-compatible)."""
     hits = []
     for f in DELIVERABLES:
-        r = subprocess.run(["grep", "-n", pattern, str(f)], capture_output=True, text=True)
-        if r.stdout.strip():
-            hits.append(f"{f.name}: {r.stdout.strip()}")
+        try:
+            lines = f.read_text(encoding="utf-8", errors="ignore").splitlines()
+            matched = [f"{i+1}: {line}" for i, line in enumerate(lines) if pattern in line]
+            if matched:
+                hits.append(f"{f.name}: " + " | ".join(matched))
+        except Exception:
+            pass
     return hits
 
 

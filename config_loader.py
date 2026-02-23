@@ -54,7 +54,7 @@ def load_config(config_path: str = "config.yaml") -> dict[str, Any]:
         )
 
     # Load YAML configuration
-    with open(cfg_file) as f:
+    with open(cfg_file, encoding="utf-8") as f:
         cfg: dict[str, Any] = yaml.safe_load(f) or {}
 
     # Validate required config keys
@@ -124,7 +124,7 @@ def load_config(config_path: str = "config.yaml") -> dict[str, Any]:
 
 def _load_dotenv(env_file: Path) -> None:
     """Parse and load a .env file into os.environ (simple implementation)."""
-    with open(env_file) as f:
+    with open(env_file, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
