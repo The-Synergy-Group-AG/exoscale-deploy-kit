@@ -67,9 +67,9 @@ def confirm(prompt: str, force: bool = False) -> bool:
 
 
 def run_kubectl(cmd: list[str], kubeconfig: str, capture: bool = True) -> "subprocess.CompletedProcess[str]":
-    """Run kubectl with explicit KUBECONFIG + PATH env (LESSON 9)."""
-    # LESSON 9: kubectl env needs KUBECONFIG + PATH set explicitly in subprocess calls
-    env = {"KUBECONFIG": kubeconfig, "PATH": "/usr/local/bin:/usr/bin:/bin"}
+    """Run kubectl with explicit KUBECONFIG + full inherited PATH env (LESSON 9)."""
+    import os
+    env = {**os.environ, "KUBECONFIG": kubeconfig}
     return subprocess.run(cmd, env=env, capture_output=capture, text=True)
 
 
@@ -268,20 +268,32 @@ def teardown(args: argparse.Namespace) -> None:
         nps          = cl.get("nodepools", [])
 
         # Delete nodepools first (required before cluster deletion)
+        # LESSON 17: 409 = nodepool still in transient state post-deploy — retry up to 3×30s
         for np in nps:
             pool_id   = np.get("id")
             pool_name = np.get("name")
             log(f"Deleting nodepool: {pool_name} ({pool_id})...")
-            try:
-                op    = c.delete_sks_nodepool(id=cluster_id, sks_nodepool_id=pool_id)
-                op_id = op.get("id")
-                log(f"  Waiting for nodepool deletion (op:{op_id})...")
-                c.wait(op_id, max_wait_time=300)
-                ok(f"Nodepool deleted: {pool_name}")
-                results["deleted"].append({"type": "nodepool", "id": pool_id, "name": pool_name})
-            except Exception as e:
-                warn(f"Nodepool {pool_name}: {str(e)[:100]}")
-                results["errors"].append({"type": "nodepool", "id": pool_id, "error": str(e)[:100]})
+            np_deleted = False
+            for attempt in range(1, 4):
+                try:
+                    op    = c.delete_sks_nodepool(id=cluster_id, sks_nodepool_id=pool_id)
+                    op_id = op.get("id")
+                    log(f"  Waiting for nodepool deletion (op:{op_id})...")
+                    c.wait(op_id, max_wait_time=300)
+                    ok(f"Nodepool deleted: {pool_name}")
+                    results["deleted"].append({"type": "nodepool", "id": pool_id, "name": pool_name})
+                    np_deleted = True
+                    break
+                except Exception as e:
+                    err_str = str(e)
+                    if "409" in err_str and attempt < 3:
+                        wait_s = attempt * 30
+                        warn(f"Nodepool {pool_name}: 409 conflict (attempt {attempt}/3) — retrying in {wait_s}s...")
+                        time.sleep(wait_s)
+                    else:
+                        warn(f"Nodepool {pool_name}: {err_str[:100]}")
+                        results["errors"].append({"type": "nodepool", "id": pool_id, "error": err_str[:100]})
+                        break
 
         # Delete cluster
         log(f"Deleting SKS cluster: {cluster_name} ({cluster_id})...")

@@ -1,0 +1,94 @@
+# =============================================================
+# T2 RUN CONFIG — Orchestrator / Workflow Coordination
+# Generated: 2026-02-23
+# Based on: templates/T2-orchestrator.yaml
+# =============================================================
+
+# --- Project Identity ---
+project_name: stargate-t2-20260223
+service_name: stargate-orch
+service_version: '1'
+docker_hub_user: iandrewitz
+environment: staging
+
+# --- Exoscale Zone ---
+exoscale_zone: ch-dk-2
+
+# --- SKS Kubernetes Cluster ---
+sks_level: starter
+sks_cni: calico
+sks_addons:
+  - exoscale-cloud-controller
+  - metrics-server
+
+# --- Worker Nodes: 2× small (2vCPU/2GB) ---
+node_type_family: standard
+node_type_size: small
+node_count: 2
+node_disk_gb: 30
+
+# --- Node Labels ---
+node_labels:
+  enabled: true
+  labels:
+    stargate.io/project: stargate-t2-20260223
+    stargate.io/role: orchestrator
+    stargate.io/zone: ch-dk-2
+    stargate.io/template: T2-orchestrator
+    stargate.io/agent: orchestrator
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+
+# --- Kubernetes Namespace & Service ---
+# NOTE: port overridden to 5000 — sample Flask service listens on 5000
+k8s_namespace: exo-stargate-orch
+k8s_replicas: 2
+k8s_port: 5000
+k8s_service_port: 5000
+k8s_nodeport: 30671
+
+# --- Load Balancer ---
+load_balancer:
+  enabled: true
+  type: nlb
+
+# --- Object Storage — DISABLED ---
+object_storage:
+  enabled: false
+
+# --- Block Storage — DISABLED ---
+block_storage:
+  enabled: false
+
+# --- Database — Redis (DBaaS) ---
+database:
+  enabled: true
+  type: redis
+  version: '7'
+  plan: startup-4
+  termination_protection: false
+
+# --- Autoscaling ---
+autoscaling:
+  enabled: true
+  min_replicas: 2
+  max_replicas: 8
+  cpu_target_percent: 65
+  memory_target_percent: 75
+
+# --- Resource Quotas ---
+resources:
+  requests:
+    cpu: '150'
+    memory: '256'
+  limits:
+    cpu: '800'
+    memory: 768Mi
+
+# --- Monitoring ---
+monitoring:
+  metrics_server: true
+
+# --- Availability ---
+pod_disruption_budget:
+  enabled: true
+  min_available: 1
