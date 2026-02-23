@@ -1,0 +1,110 @@
+# =============================================================
+# TEMPLATE T1 — Minimal Test Environment
+# =============================================================
+# Purpose:  Fastest possible spin-up for stateless agent tests,
+#           CI preflight checks, and quick validation runs.
+#           No DB, no SOS, no load balancer — pure compute only.
+#
+# Used by:  QA Agent (preflight), any agent doing dry-run validation
+# Est. cost: ~$0.02/hr  |  Deploy time: ~4 min  |  Teardown: ~2 min
+#
+# Deploy:   python3 deploy_pipeline.py --config templates/T1-minimal-test.yaml --auto
+# Teardown: python3 teardown.py --force
+# =============================================================
+
+# --- Project Identity ---
+project_name: stargate-t1-YYYYMMDD   # Replace YYYYMMDD with today's date
+service_name: stargate
+service_version: '1'
+docker_hub_user: iandrewitz
+environment: test
+
+# --- Exoscale Zone ---
+exoscale_zone: ch-dk-2
+
+# --- SKS Kubernetes Cluster ---
+sks_level: starter
+sks_cni: calico
+sks_addons:
+  - metrics-server
+
+# --- Worker Nodes — single tiny node, lowest cost ---
+node_type_family: standard
+node_type_size: tiny                  # 1vCPU / 512MB — stateless test only
+node_count: 1
+node_disk_gb: 20
+
+# --- Node Labels ---
+node_labels:
+  enabled: true
+  labels:
+    stargate.io/project: stargate-t1
+    stargate.io/role: test-worker
+    stargate.io/zone: ch-dk-2
+    stargate.io/template: T1-minimal-test
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+
+# --- Kubernetes Namespace & Service ---
+k8s_namespace: exo-stargate-test
+k8s_replicas: 1
+k8s_port: 5000
+k8s_service_port: 5000
+k8s_nodeport: 30001
+
+# --- Load Balancer & Ingress — DISABLED for cost/speed ---
+load_balancer:
+  enabled: false
+ingress:
+  enabled: false
+  provider: nginx
+  tls: false
+  domain: synergy-group.ch
+  cert_email: andrewitz@gmail.com
+
+# --- Object Storage — DISABLED ---
+object_storage:
+  enabled: false
+  bucket_name: test
+  acl: private
+
+# --- Block Storage — DISABLED ---
+block_storage:
+  enabled: false
+  storage_class: exoscale-ssd
+  size_gb: 5
+  access_mode: ReadWriteOnce
+  mount_path: /data
+
+# --- Database — DISABLED ---
+database:
+  enabled: false
+  type: pg
+  version: '16'
+  plan: startup-4
+  termination_protection: false
+
+# --- Autoscaling — DISABLED (single node) ---
+autoscaling:
+  enabled: false
+  min_replicas: 1
+  max_replicas: 1
+  cpu_target_percent: 80
+  memory_target_percent: 85
+
+# --- Resource Quotas — minimal ---
+resources:
+  requests:
+    cpu: '50'
+    memory: '64'
+  limits:
+    cpu: '200'
+    memory: 256Mi
+
+# --- Monitoring ---
+monitoring:
+  metrics_server: true
+
+# --- Availability — no PDB on single node ---
+pod_disruption_budget:
+  enabled: false
+  min_available: 1

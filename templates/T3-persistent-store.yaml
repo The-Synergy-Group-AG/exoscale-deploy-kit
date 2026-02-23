@@ -1,0 +1,115 @@
+# =============================================================
+# TEMPLATE T3 — Persistent State Store
+# =============================================================
+# Purpose:  For agents that require durable state: PostgreSQL DB,
+#           block storage volume, and private SOS bucket.
+#           Covers the Librarian's document index and the
+#           Performance Manager's scoring history + reports.
+#
+# Used by:  Librarian Agent, Performance Manager Agent,
+#           any agent writing to persistent knowledge store
+# Est. cost: ~$0.18/hr  |  Deploy time: ~10 min  |  Teardown: ~5 min
+#
+# Deploy:   python3 deploy_pipeline.py --config templates/T3-persistent-store.yaml --auto
+# Teardown: python3 teardown.py --force
+# =============================================================
+
+# --- Project Identity ---
+project_name: stargate-t3-YYYYMMDD
+service_name: stargate-store
+service_version: '1'
+docker_hub_user: iandrewitz
+environment: production
+
+# --- Exoscale Zone ---
+exoscale_zone: ch-dk-2
+
+# --- SKS Kubernetes Cluster ---
+sks_level: starter
+sks_cni: calico
+sks_addons:
+  - exoscale-cloud-controller
+  - metrics-server
+
+# --- Worker Nodes — 2× small: sufficient for DB-backed workloads ---
+node_type_family: standard
+node_type_size: small                 # 2vCPU / 2GB
+node_count: 2
+node_disk_gb: 50
+
+# --- Node Labels ---
+node_labels:
+  enabled: true
+  labels:
+    stargate.io/project: stargate-t3
+    stargate.io/role: persistent-worker
+    stargate.io/zone: ch-dk-2
+    stargate.io/template: T3-persistent-store
+    stargate.io/agents: librarian,performance-manager
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+
+# --- Kubernetes Namespace & Service ---
+k8s_namespace: exo-stargate-store
+k8s_replicas: 2
+k8s_port: 5000
+k8s_service_port: 5000
+k8s_nodeport: 30003
+
+# --- Load Balancer & Ingress ---
+load_balancer:
+  enabled: true
+  type: nlb
+ingress:
+  enabled: true
+  provider: nginx
+  tls: true
+  domain: synergy-group.ch
+  cert_email: andrewitz@gmail.com
+
+# --- Object Storage — private SOS for agent artefacts + documents ---
+object_storage:
+  enabled: true
+  bucket_name: state                  # full name: {project_slug}-state
+  acl: private
+
+# --- Block Storage — 10GB SSD PVC for agent state files ---
+block_storage:
+  enabled: true
+  storage_class: exoscale-ssd
+  size_gb: 10
+  access_mode: ReadWriteOnce
+  mount_path: /data
+
+# --- Database — PostgreSQL 16 for structured agent state ---
+database:
+  enabled: true
+  type: pg
+  version: '16'
+  plan: startup-4
+  termination_protection: false
+
+# --- Autoscaling — moderate burst capacity ---
+autoscaling:
+  enabled: true
+  min_replicas: 2
+  max_replicas: 6
+  cpu_target_percent: 70
+  memory_target_percent: 80
+
+# --- Resource Quotas ---
+resources:
+  requests:
+    cpu: '200'
+    memory: '256'
+  limits:
+    cpu: '1000'
+    memory: 1Gi
+
+# --- Monitoring ---
+monitoring:
+  metrics_server: true
+
+# --- Availability ---
+pod_disruption_budget:
+  enabled: true
+  min_available: 1

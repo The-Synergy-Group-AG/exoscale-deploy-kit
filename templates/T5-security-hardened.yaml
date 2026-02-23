@@ -1,0 +1,117 @@
+# =============================================================
+# TEMPLATE T5 — Security Hardened / RBAC Testing
+# =============================================================
+# Purpose:  Isolated, restricted environment for the Security Agent.
+#           Enforces minimal permissions, no public storage, tight
+#           CPU/memory quotas, and a dedicated security namespace.
+#           Ideal for code audits, RBAC registry tests, policy
+#           enforcement validation, and security scanner runs.
+#
+# Used by:  Security Agent (CodeAuditor, RBACRegistry,
+#           PolicyEnforcer, SecurityScanner)
+# Est. cost: ~$0.10/hr  |  Deploy time: ~7 min  |  Teardown: ~4 min
+#
+# Deploy:   python3 deploy_pipeline.py --config templates/T5-security-hardened.yaml --auto
+# Teardown: python3 teardown.py --force
+# =============================================================
+
+# --- Project Identity ---
+project_name: stargate-t5-YYYYMMDD
+service_name: stargate-sec
+service_version: '1'
+docker_hub_user: iandrewitz
+environment: production
+
+# --- Exoscale Zone ---
+exoscale_zone: ch-dk-2
+
+# --- SKS Kubernetes Cluster ---
+sks_level: starter
+sks_cni: calico
+sks_addons:
+  - exoscale-cloud-controller
+  - metrics-server
+
+# --- Worker Nodes — 2× small: stateless security checks ---
+node_type_family: standard
+node_type_size: small                 # 2vCPU / 2GB
+node_count: 2
+node_disk_gb: 30
+
+# --- Node Labels — security-specific labelling ---
+node_labels:
+  enabled: true
+  labels:
+    stargate.io/project: stargate-t5
+    stargate.io/role: security-worker
+    stargate.io/zone: ch-dk-2
+    stargate.io/template: T5-security-hardened
+    stargate.io/agent: security
+    stargate.io/clearance: restricted
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+
+# --- Kubernetes Namespace — isolated security namespace ---
+k8s_namespace: exo-stargate-security
+k8s_replicas: 2
+k8s_port: 5000
+k8s_service_port: 5000
+k8s_nodeport: 30005
+
+# --- Load Balancer — enabled, TLS enforced, no HTTP ---
+load_balancer:
+  enabled: true
+  type: nlb
+ingress:
+  enabled: true
+  provider: nginx
+  tls: true                           # TLS required — no plaintext traffic
+  domain: synergy-group.ch
+  cert_email: andrewitz@gmail.com
+
+# --- Object Storage — DISABLED (no data exfil surface) ---
+object_storage:
+  enabled: false
+  bucket_name: sec
+  acl: private                        # private-only if ever enabled
+
+# --- Block Storage — DISABLED (stateless security checks) ---
+block_storage:
+  enabled: false
+  storage_class: exoscale-ssd
+  size_gb: 10
+  access_mode: ReadWriteOnce
+  mount_path: /data
+
+# --- Database — DISABLED (RBAC state held in-memory or Redis) ---
+database:
+  enabled: false
+  type: pg
+  version: '16'
+  plan: startup-4
+  termination_protection: false
+
+# --- Autoscaling — controlled, no runaway scaling ---
+autoscaling:
+  enabled: true
+  min_replicas: 2
+  max_replicas: 4                     # Hard ceiling for security workloads
+  cpu_target_percent: 75
+  memory_target_percent: 80
+
+# --- Resource Quotas — restrictive: prevents resource abuse ---
+resources:
+  requests:
+    cpu: '100'                        # Conservative — security checks are light
+    memory: '128'
+  limits:
+    cpu: '500'                        # Hard CPU cap
+    memory: 512Mi                     # Hard memory cap
+
+# --- Monitoring ---
+monitoring:
+  metrics_server: true
+
+# --- Availability ---
+pod_disruption_budget:
+  enabled: true
+  min_available: 1

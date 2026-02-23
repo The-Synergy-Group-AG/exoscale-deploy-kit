@@ -1,0 +1,118 @@
+# =============================================================
+# TEMPLATE T7 — Full Stack Integration Testing
+# =============================================================
+# Purpose:  Production-equivalent environment with ALL features
+#           enabled. Used to validate that the complete StarGate
+#           agent suite can be deployed, interact, and perform
+#           end-to-end integration tests against real cloud resources.
+#           Tests autoscaling ceiling, PDB behaviour, DB failover
+#           recovery, SOS lifecycle, and NLB routing simultaneously.
+#
+# Used by:  All agents in combination — full StarGate suite E2E test.
+#           Orchestrator + Performance Manager + Librarian + Security
+#           + QA + Data Analyst + System Monitor working in concert.
+# Est. cost: ~$0.55/hr  |  Deploy time: ~15 min  |  Teardown: ~8 min
+#
+# Deploy:   python3 deploy_pipeline.py --config templates/T7-full-stack-integration.yaml --auto
+# Teardown: python3 teardown.py --force
+# =============================================================
+
+# --- Project Identity ---
+project_name: stargate-t7-YYYYMMDD
+service_name: stargate-full
+service_version: '1'
+docker_hub_user: iandrewitz
+environment: production
+
+# --- Exoscale Zone ---
+exoscale_zone: ch-dk-2
+
+# --- SKS Kubernetes Cluster ---
+sks_level: starter
+sks_cni: calico
+sks_addons:
+  - exoscale-cloud-controller
+  - metrics-server
+
+# --- Worker Nodes — 3× medium: balanced power across all agents ---
+node_type_family: standard
+node_type_size: medium                # 2vCPU / 4GB — full agent suite coexistence
+node_count: 3
+node_disk_gb: 50
+
+# --- Node Labels ---
+node_labels:
+  enabled: true
+  labels:
+    stargate.io/project: stargate-t7
+    stargate.io/role: integration-worker
+    stargate.io/zone: ch-dk-2
+    stargate.io/template: T7-full-stack-integration
+    stargate.io/agents: all
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+
+# --- Kubernetes Namespace & Service ---
+k8s_namespace: exo-stargate-integration
+k8s_replicas: 3
+k8s_port: 5000
+k8s_service_port: 5000
+k8s_nodeport: 30007
+
+# --- Load Balancer & Ingress — full production config ---
+load_balancer:
+  enabled: true
+  type: nlb
+ingress:
+  enabled: true
+  provider: nginx
+  tls: true
+  domain: synergy-group.ch
+  cert_email: andrewitz@gmail.com
+
+# --- Object Storage — full private bucket for integration artefacts ---
+object_storage:
+  enabled: true
+  bucket_name: integration            # full name: {project_slug}-integration
+  acl: private
+
+# --- Block Storage — 50GB shared persistent volume ---
+block_storage:
+  enabled: true
+  storage_class: exoscale-ssd
+  size_gb: 50
+  access_mode: ReadWriteOnce
+  mount_path: /data
+
+# --- Database — PostgreSQL 16 (primary integration datastore) ---
+database:
+  enabled: true
+  type: pg
+  version: '16'
+  plan: startup-4
+  termination_protection: false       # false: allows clean teardown post-test
+
+# --- Autoscaling — wide range to exercise autoscaling paths ---
+autoscaling:
+  enabled: true
+  min_replicas: 3
+  max_replicas: 20                    # High ceiling: tests scale-out under full load
+  cpu_target_percent: 65
+  memory_target_percent: 75
+
+# --- Resource Quotas — production-representative limits ---
+resources:
+  requests:
+    cpu: '300'
+    memory: '512'
+  limits:
+    cpu: '1500'
+    memory: 2Gi
+
+# --- Monitoring ---
+monitoring:
+  metrics_server: true
+
+# --- Availability — full PDB: ensures rolling updates work ---
+pod_disruption_budget:
+  enabled: true
+  min_available: 2                    # 2 of 3 replicas always available

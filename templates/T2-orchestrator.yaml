@@ -1,0 +1,114 @@
+# =============================================================
+# TEMPLATE T2 — Orchestrator / Workflow Coordination
+# =============================================================
+# Purpose:  Optimised for the Orchestrator agent — low-latency
+#           message routing, Redis pub/sub, circuit breaker testing,
+#           rate-limiter validation, and NATS-compatible workloads.
+#
+# Used by:  Orchestrator Agent, Feature Coordinator, Circuit Breaker,
+#           Rate Limiter — anything involving agent-to-agent messaging
+# Est. cost: ~$0.12/hr  |  Deploy time: ~8 min  |  Teardown: ~5 min
+#
+# Deploy:   python3 deploy_pipeline.py --config templates/T2-orchestrator.yaml --auto
+# Teardown: python3 teardown.py --force
+# =============================================================
+
+# --- Project Identity ---
+project_name: stargate-t2-YYYYMMDD
+service_name: stargate-orch
+service_version: '1'
+docker_hub_user: iandrewitz
+environment: staging
+
+# --- Exoscale Zone ---
+exoscale_zone: ch-dk-2
+
+# --- SKS Kubernetes Cluster ---
+sks_level: starter
+sks_cni: calico
+sks_addons:
+  - exoscale-cloud-controller
+  - metrics-server
+
+# --- Worker Nodes — 2× small: balanced for concurrent agent tasks ---
+node_type_family: standard
+node_type_size: small                 # 2vCPU / 2GB — good for message routing
+node_count: 2
+node_disk_gb: 30
+
+# --- Node Labels ---
+node_labels:
+  enabled: true
+  labels:
+    stargate.io/project: stargate-t2
+    stargate.io/role: orchestrator
+    stargate.io/zone: ch-dk-2
+    stargate.io/template: T2-orchestrator
+    stargate.io/agent: orchestrator
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+
+# --- Kubernetes Namespace & Service ---
+k8s_namespace: exo-stargate-orch
+k8s_replicas: 2
+k8s_port: 8080
+k8s_service_port: 8080
+k8s_nodeport: 30002
+
+# --- Load Balancer — enabled for agent-to-agent HTTP routing ---
+load_balancer:
+  enabled: true
+  type: nlb
+ingress:
+  enabled: true
+  provider: nginx
+  tls: true
+  domain: synergy-group.ch
+  cert_email: andrewitz@gmail.com
+
+# --- Object Storage — DISABLED (Orchestrator is stateless) ---
+object_storage:
+  enabled: false
+  bucket_name: orch
+  acl: private
+
+# --- Block Storage — DISABLED ---
+block_storage:
+  enabled: false
+  storage_class: exoscale-ssd
+  size_gb: 10
+  access_mode: ReadWriteOnce
+  mount_path: /data
+
+# --- Database — Redis for fast message queuing / state caching ---
+database:
+  enabled: true
+  type: redis                         # Redis: ultra-low latency pub/sub + caching
+  version: '7'
+  plan: startup-4
+  termination_protection: false
+
+# --- Autoscaling — scale 2→8 for burst orchestration load ---
+autoscaling:
+  enabled: true
+  min_replicas: 2
+  max_replicas: 8
+  cpu_target_percent: 65
+  memory_target_percent: 75
+
+# --- Resource Quotas — tuned for many short-lived tasks ---
+resources:
+  requests:
+    cpu: '150'
+    memory: '256'
+  limits:
+    cpu: '800'
+    memory: 768Mi
+
+# --- Monitoring ---
+monitoring:
+  metrics_server: true
+
+# --- Availability ---
+pod_disruption_budget:
+  enabled: true
+  min_available: 1

@@ -1,0 +1,116 @@
+# =============================================================
+# TEMPLATE T4 — Compute Heavy / Data Analytics
+# =============================================================
+# Purpose:  High-performance environment for data-intensive agents.
+#           Large node instances (4vCPU/8GB), high autoscaling ceiling,
+#           100GB block storage, full DB + SOS.
+#           Designed for profiling runs, optimisation analysis,
+#           workflow simulation, and model inference workloads.
+#
+# Used by:  Data Analyst Agent (PerformanceProfiler, OptimizationAnalyzer,
+#           WorkflowOptimizer, PerformanceDashboard)
+# Est. cost: ~$0.60/hr  |  Deploy time: ~12 min  |  Teardown: ~6 min
+#
+# Deploy:   python3 deploy_pipeline.py --config templates/T4-compute-heavy.yaml --auto
+# Teardown: python3 teardown.py --force
+# =============================================================
+
+# --- Project Identity ---
+project_name: stargate-t4-YYYYMMDD
+service_name: stargate-compute
+service_version: '1'
+docker_hub_user: iandrewitz
+environment: production
+
+# --- Exoscale Zone ---
+exoscale_zone: ch-dk-2
+
+# --- SKS Kubernetes Cluster ---
+sks_level: starter
+sks_cni: calico
+sks_addons:
+  - exoscale-cloud-controller
+  - metrics-server
+
+# --- Worker Nodes — 3× large: 4vCPU/8GB per node ---
+node_type_family: standard
+node_type_size: large                 # 4vCPU / 8GB — maximum standard tier
+node_count: 3
+node_disk_gb: 100
+
+# --- Node Labels ---
+node_labels:
+  enabled: true
+  labels:
+    stargate.io/project: stargate-t4
+    stargate.io/role: compute-worker
+    stargate.io/zone: ch-dk-2
+    stargate.io/template: T4-compute-heavy
+    stargate.io/agent: data-analyst
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+
+# --- Kubernetes Namespace & Service ---
+k8s_namespace: exo-stargate-compute
+k8s_replicas: 3
+k8s_port: 5000
+k8s_service_port: 5000
+k8s_nodeport: 30004
+
+# --- Load Balancer & Ingress ---
+load_balancer:
+  enabled: true
+  type: nlb
+ingress:
+  enabled: true
+  provider: nginx
+  tls: true
+  domain: synergy-group.ch
+  cert_email: andrewitz@gmail.com
+
+# --- Object Storage — results + profiling artefacts ---
+object_storage:
+  enabled: true
+  bucket_name: analytics              # full name: {project_slug}-analytics
+  acl: private
+
+# --- Block Storage — 100GB for large datasets + model weights ---
+block_storage:
+  enabled: true
+  storage_class: exoscale-ssd
+  size_gb: 100
+  access_mode: ReadWriteOnce
+  mount_path: /data
+
+# --- Database — PostgreSQL 16 for analytics results + metrics history ---
+database:
+  enabled: true
+  type: pg
+  version: '16'
+  plan: startup-4                     # Upgrade to business-4 for production analytics
+  termination_protection: false
+
+# --- Autoscaling — aggressive scale-out for burst analytics ---
+autoscaling:
+  enabled: true
+  min_replicas: 2
+  max_replicas: 15
+  cpu_target_percent: 60              # Scale early to avoid compute starvation
+  memory_target_percent: 70
+
+# --- Resource Quotas — high limits for intensive computation ---
+resources:
+  requests:
+    cpu: '500'
+    memory: '1024'
+  limits:
+    cpu: '2000'                       # 2 full vCPUs per pod
+    memory: 4Gi
+
+# --- Monitoring ---
+monitoring:
+  metrics_server: true
+
+# --- Availability ---
+pod_disruption_budget:
+  enabled: true
+  min_available: 2
