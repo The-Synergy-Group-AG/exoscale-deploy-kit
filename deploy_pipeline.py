@@ -691,9 +691,13 @@ def stage_verify(kubeconfig: str):
     env = {**os.environ, "KUBECONFIG": kubeconfig}
     ns = cfg["k8s_namespace"]
 
-    log("Waiting for pods to start (up to 5 minutes)...")
+    # Plan 122-DEH ISSUE-004: Wait for ALL configured replicas, not just 1.
+    # Also stream pod events if pods are stuck in Pending / CrashLoopBackOff.
+    target_replicas = cfg.get("k8s_replicas", 1)
+    log(f"Waiting for {target_replicas} pod replica(s) to reach Running state (up to 5 min)...")
     deadline = time.time() + 300
     pods_ok = False
+    last_lines: list[str] = []
 
     while time.time() < deadline:
         r = subprocess.run(
@@ -701,19 +705,46 @@ def stage_verify(kubeconfig: str):
             env=env, capture_output=True, text=True,
         )
         lines = [line for line in r.stdout.strip().split("\n") if line]
-        running = [line for line in lines if "Running" in line]
-        log(f"  Pods: {len(lines)} total, {len(running)} Running")
+        running  = [line for line in lines if "Running"   in line and "0/"  not in line]
+        crashing = [line for line in lines if "CrashLoop" in line or "Error" in line]
+        pending  = [line for line in lines if "Pending"   in line]
+        log(f"  Pods: {len(lines)} total | {len(running)} Running | "
+            f"{len(pending)} Pending | {len(crashing)} CrashLoop/Error "
+            f"| target={target_replicas}")
         for line in lines:
             log(f"    {line}")
-        if len(running) >= 1:
+        last_lines = lines
+
+        if crashing:
+            warn(f"  {len(crashing)} pod(s) in CrashLoop/Error — streaming events:")
+            r_ev = subprocess.run(
+                ["kubectl", "get", "events", "-n", ns,
+                 "--field-selector=type=Warning", "--sort-by=.lastTimestamp"],
+                env=env, capture_output=True, text=True,
+            )
+            for ev_line in r_ev.stdout.strip().split("\n")[-10:]:
+                warn(f"    {ev_line}")
+
+        if len(running) >= target_replicas:
             pods_ok = True
             break
         time.sleep(15)
 
     if pods_ok:
-        ok(f"Pods Running! ({elapsed(t0)})")
+        ok(f"All {target_replicas} replica(s) Running! ({elapsed(t0)})")
     else:
-        warn("Pods still Pending — may need more node startup time")
+        warn(
+            f"Only {len([l for l in last_lines if 'Running' in l])}/"
+            f"{target_replicas} replicas Running after {elapsed(t0)} — "
+            "may need more startup time"
+        )
+        log("  Streaming pod details for debugging:")
+        r_desc = subprocess.run(
+            ["kubectl", "describe", "pods", "-n", ns],
+            env=env, capture_output=True, text=True,
+        )
+        for desc_line in r_desc.stdout.strip().split("\n")[-30:]:
+            log(f"    {desc_line}")
 
     for cmd_args, label in [
         (["kubectl", "get", "all", "-n", ns], "All Resources"),
@@ -724,6 +755,71 @@ def stage_verify(kubeconfig: str):
         print(r.stdout)
 
     RESULTS["stages"]["verify"] = {"status": "success" if pods_ok else "partial"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  STAGE 6b: CONNECTIVITY TEST  (Plan 122-DEH ISSUE-005)
+#  Probes gateway /health via NodePort after pods are Running.
+#  Non-fatal — records result but never sys.exit(1).
+# ═══════════════════════════════════════════════════════════════════════════════
+def stage_connectivity_test(kubeconfig: str, gateway_url: str = "") -> bool:
+    import urllib.request, urllib.error
+    section("STAGE 6b: Connectivity Test (Plan 122-DEH ISSUE-005)")
+    t0 = time.time()
+    env = {**os.environ, "KUBECONFIG": kubeconfig}
+    if not gateway_url:
+        r = subprocess.run(
+            ["kubectl", "get", "nodes", "-o",
+             "jsonpath={.items[0].status.addresses[?(@.type=='ExternalIP')].address}"],
+            env=env, capture_output=True, text=True,
+        )
+        node_ip = r.stdout.strip()
+        if not node_ip:
+            r = subprocess.run(
+                ["kubectl", "get", "nodes", "-o",
+                 "jsonpath={.items[0].status.addresses[0].address}"],
+                env=env, capture_output=True, text=True,
+            )
+            node_ip = r.stdout.strip()
+        if node_ip:
+            gateway_url = f"http://{node_ip}:{cfg['k8s_nodeport']}"
+            log(f"  Discovered gateway URL: {gateway_url}")
+        else:
+            warn("Cannot determine node IP — skipping connectivity test")
+            RESULTS["stages"]["connectivity_test"] = {"status": "skipped", "reason": "no_node_ip"}
+            return False
+    log(f"Probing {gateway_url}/health (3 attempts, 15s apart)...")
+    for attempt in range(1, 4):
+        try:
+            req = urllib.request.urlopen(f"{gateway_url}/health", timeout=10)
+            body = req.read().decode("utf-8", errors="replace")[:100]
+            ok(f"  Attempt {attempt}: HTTP {req.status} — gateway UP ({elapsed(t0)})")
+            log(f"  Response: {body}")
+            RESULTS["stages"]["connectivity_test"] = {
+                "status": "success", "gateway_url": gateway_url,
+                "http_status": req.status, "attempts": attempt, "duration": elapsed(t0),
+            }
+            RESULTS["resources"]["gateway_url"] = gateway_url
+            ok(f"Connectivity test PASSED — {gateway_url}")
+            return True
+        except urllib.error.HTTPError as e:
+            ok(f"  Attempt {attempt}: HTTP {e.code} — gateway responding ({elapsed(t0)})")
+            RESULTS["stages"]["connectivity_test"] = {
+                "status": "success", "gateway_url": gateway_url,
+                "http_status": e.code, "attempts": attempt, "duration": elapsed(t0),
+            }
+            RESULTS["resources"]["gateway_url"] = gateway_url
+            return True
+        except Exception as e:
+            warn(f"  Attempt {attempt}/3: {str(e)[:80]}")
+            if attempt < 3:
+                time.sleep(15)
+    warn(f"Connectivity test FAILED — {gateway_url} unreachable after 3 attempts")
+    warn(f"  Manual check: curl {gateway_url}/health")
+    RESULTS["stages"]["connectivity_test"] = {
+        "status": "failed", "gateway_url": gateway_url, "reason": "connection_refused",
+    }
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1259,6 +1355,10 @@ if __name__ == "__main__":
         stage_inject_secrets(kubeconfig, db_info, sos_info)
 
         stage_verify(kubeconfig)
+
+        # Stage 6b: Connectivity test (Plan 122-DEH ISSUE-005) — non-fatal
+        stage_connectivity_test(kubeconfig)
+
         stage_report()
     except SystemExit:
         raise
