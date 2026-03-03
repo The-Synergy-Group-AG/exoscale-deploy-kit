@@ -325,6 +325,86 @@ def stage_docker_push():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  HELPER: _populate_sg_rules — LESSON 25/26
+#  LESSON 25: An empty SG on Exoscale has NO EFFECT (console: "will have no effect").
+#             Rules MUST be added before the SG is attached to worker nodes.
+#  LESSON 26: create_security_group returns an OPERATION, not the resource.
+#             sg.get("id") = OPERATION ID. Real SG ID = c.list_security_groups() by name.
+#             Both lessons were confirmed 2026-03-03 on the live cluster. Without
+#             these fixes: SG was empty, instances only had "default" SG, kubectl logs
+#             returned 504 (port 10250 blocked), NodePort traffic worked only because
+#             the default SG pre-approves 30671.
+# ═══════════════════════════════════════════════════════════════════════════════
+def _populate_sg_rules(c, sg_id: str) -> None:
+    """
+    Add the required rules to the run's Security Group immediately after creation.
+    Rules cover: kubelet API, NodePorts, HTTP/HTTPS, intra-cluster CNI, and egress.
+    Must be called before stage_sg_post_attach() attaches the SG to instances.
+    Non-fatal: warns on individual rule failures, never sys.exit().
+    """
+    # LESSON 26 NOTE: sg_id here is the REAL SG ID (resolved from list_security_groups),
+    # NOT the operation ID from create_security_group. See stage_exoscale() for resolution.
+    _SGS_RULES = [
+        # Kubelet API — CRITICAL for kubectl logs/exec/port-forward
+        {"flow_direction": "ingress", "protocol": "tcp", "network": "0.0.0.0/0",
+         "start_port": 10250, "end_port": 10250,
+         "description": "Kubelet API — kubectl logs/exec/port-forward"},
+        # Read-only kubelet metrics
+        {"flow_direction": "ingress", "protocol": "tcp", "network": "0.0.0.0/0",
+         "start_port": 10255, "end_port": 10255,
+         "description": "Kubelet read-only metrics"},
+        # NodePort range — covers ALL K8s NodePort services (30671, 30888, 30999 + more)
+        {"flow_direction": "ingress", "protocol": "tcp", "network": "0.0.0.0/0",
+         "start_port": 30000, "end_port": 32767,
+         "description": "NodePort services 30000-32767 (incl. 30671 gateway)"},
+        # HTTP/HTTPS for NLB health checks and direct access
+        {"flow_direction": "ingress", "protocol": "tcp", "network": "0.0.0.0/0",
+         "start_port": 80, "end_port": 80, "description": "HTTP"},
+        {"flow_direction": "ingress", "protocol": "tcp", "network": "0.0.0.0/0",
+         "start_port": 443, "end_port": 443, "description": "HTTPS"},
+        # Intra-cluster: pod-to-pod, Calico CNI, konnectivity proxy
+        # NOTE: Exoscale SDK does NOT accept icmp_type/icmp_code — omit for ICMP rules
+        {"flow_direction": "ingress", "protocol": "tcp",
+         "security_group": {"id": sg_id}, "start_port": 1, "end_port": 65535,
+         "description": "Intra-cluster TCP (Calico CNI, konnectivity, pod-to-pod)"},
+        {"flow_direction": "ingress", "protocol": "udp",
+         "security_group": {"id": sg_id}, "start_port": 1, "end_port": 65535,
+         "description": "Intra-cluster UDP (Calico VXLAN, WireGuard)"},
+        # ICMP: ping + NLB health probes
+        {"flow_direction": "ingress", "protocol": "icmp", "network": "0.0.0.0/0",
+         "description": "ICMP ingress (ping, NLB health probes)"},
+        # Egress: unrestricted (Docker Hub pulls, DNS, Exoscale API, NTP)
+        {"flow_direction": "egress", "protocol": "tcp", "network": "0.0.0.0/0",
+         "start_port": 1, "end_port": 65535, "description": "Egress all TCP"},
+        {"flow_direction": "egress", "protocol": "udp", "network": "0.0.0.0/0",
+         "start_port": 1, "end_port": 65535, "description": "Egress all UDP"},
+        {"flow_direction": "egress", "protocol": "icmp", "network": "0.0.0.0/0",
+         "description": "Egress ICMP"},
+    ]
+    log(f"Populating SG {sg_id[:8]}... with {len(_SGS_RULES)} rules (LESSON 25)...")
+    _ok, _fail, _skip = 0, 0, 0
+    for _rule in _SGS_RULES:
+        _desc = _rule.get("description", "")
+        try:
+            c.add_rule_to_security_group(id=sg_id, **_rule)
+            ok(f"  SG rule: {_rule['flow_direction']} {_rule['protocol']} — {_desc}")
+            _ok += 1
+        except Exception as _e:
+            _err = str(_e)
+            if "already" in _err.lower() or "duplicate" in _err.lower():
+                _skip += 1
+            else:
+                warn(f"  SG rule WARN ({_desc}): {_err[:80]}")
+                _fail += 1
+    if _ok > 0 or _skip > 0:
+        ok(f"SG populated: {_ok} rules added, {_skip} existed, {_fail} failed")
+        RESULTS["resources"]["security_group"]["rules_added"] = _ok
+    else:
+        warn(f"All SG rules failed — SG is empty, will have no effect on traffic!")
+        RESULTS["resources"]["security_group"]["rules_failed"] = _fail
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  STAGE 3: EXOSCALE INFRASTRUCTURE
 #  LESSON 1: Use zone-specific endpoint: api-{zone}.exoscale.com (NOT api.exoscale.com)
 #  LESSON 2: Use official Python SDK (v0.16.1+) — manual HMAC signing fails
@@ -344,17 +424,31 @@ def stage_exoscale():
     log(f"Connected to Exoscale zone: {cfg['exoscale_zone']}")
 
     # Security Group
+    # LESSON 26: create_security_group returns an ASYNC OPERATION object, not the
+    # resource. sg.get("id") returns the OPERATION ID (not the SG ID!). To get the
+    # real SG ID, wait briefly then look up by name. Storing the operation ID caused
+    # ALL downstream SG operations (add rules, attach) to 404. (Plan 122-DEH 2026-03-03)
     log(f"Creating security group: {SG_NAME}")
-    sg = c.create_security_group(
+    _sg_op = c.create_security_group(
         name=SG_NAME,
         description=f"{cfg['project_name']} — {cfg['service_name']} ({TS})",
     )
-    sg_id = sg.get("id")
-    ok(f"Security group: {sg_id}")
+    _sg_op_id = _sg_op.get("id")
+    log(f"SG create operation: {_sg_op_id} — resolving real SG ID...")
+    time.sleep(3)  # allow async operation to complete before lookup
+    _all_sgs = c.list_security_groups().get("security-groups", [])
+    _sg_real  = next((s for s in _all_sgs if s.get("name") == SG_NAME), {})
+    sg_id     = _sg_real.get("id") or _sg_op_id   # fallback to op_id if lookup fails
+    ok(f"Security group resolved: {sg_id} (op was {_sg_op_id[:8]}...)")
     RESULTS["resources"]["security_group"] = {"id": sg_id, "name": SG_NAME}
 
-    # LESSON 7: NodePort pre-approved in Exoscale default SG
-    ok(f"Security group ready: {sg_id} (web access via pre-approved NodePort {cfg['k8s_nodeport']})")
+    # LESSON 25: Populate SG rules IMMEDIATELY after creation.
+    # An empty SG has NO EFFECT on Exoscale (console warns: "will have no effect").
+    # Must add rules before attaching to instances, or the SG is a no-op.
+    _populate_sg_rules(c, sg_id)
+
+    # LESSON 7: NodePort pre-approved in Exoscale default SG (also covered by our rules)
+    ok(f"Security group ready: {sg_id} (web access via NodePort {cfg['k8s_nodeport']})")
 
     # LESSON 3: Query instance types at runtime — never hardcode IDs
     log("Querying instance types...")
