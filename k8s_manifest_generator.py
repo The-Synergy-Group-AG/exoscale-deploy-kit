@@ -224,6 +224,8 @@ spec:
       protocol: TCP
     - port: 53
       protocol: UDP
+    - port: 8000
+      protocol: TCP
 """)
 
     # ── 05: Resource Quota ─────────────────────────────────────────────────
