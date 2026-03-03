@@ -1,0 +1,10 @@
+{
+  "service_name": "network_security_gateway",
+  "service_type": "unknown",
+  "environment": "production",
+  "log_level": "INFO",
+  "port": 8000,
+  "host": "0.0.0.0",
+  "generated_from_template": "unknown",
+  "generation_timestamp": 1772003816.3645945
+}

@@ -1,7 +1,7 @@
 # Exoscale Deploy Kit — Python Dependencies
 # Install: pip install -r requirements.txt
 #
-# Version floors set to latest known-safe releases (2025-02).
+# Version floors set to latest known-safe releases (2026-03).
 # Dependabot / pip-audit: no known vulnerabilities as of this commit.
 
 # ── Core: Exoscale Python SDK (v2 API — SKS, DBaaS, Security Groups, Compute) ──
@@ -17,8 +17,8 @@ python-dotenv>=1.2.1
 
 # ── Security: explicit safe floors for high-risk transitive deps ──
 # urllib3  CVE-2024-37891 (HIGH)    fixed >=2.2.2  — pulled in by botocore/requests
-# requests CVE-2024-35195 (MOD)     fixed >=2.32.2 — pulled in by exoscale SDK
+# requests CVE-2024-47081 (HIGH)    fixed >=2.32.4 — fully fixed in 2.32.4
 # certifi  GHSA-xqr8-7jhe-pchp (H) fixed >=2024.7.4 — pulled in by requests
 urllib3>=2.2.2
-requests>=2.32.2
+requests>=2.32.4
 certifi>=2024.7.4

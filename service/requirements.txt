@@ -1,3 +1,7 @@
-Flask==2.3.3
-Werkzeug==2.3.7
-gunicorn==21.2.0
+# JTP-Bio-V3 Gateway — consolidated requirements
+# Gateway framework
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+python-json-logger==2.0.7
+httpx==0.28.1

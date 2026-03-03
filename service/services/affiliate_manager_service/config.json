@@ -1,0 +1,10 @@
+{
+  "service_name": "affiliate_manager_service",
+  "service_type": "unknown",
+  "environment": "production",
+  "log_level": "INFO",
+  "port": 8000,
+  "host": "0.0.0.0",
+  "generated_from_template": "unknown",
+  "generation_timestamp": 1772003812.7193282
+}

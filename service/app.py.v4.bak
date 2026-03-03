@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""
+JTP-Bio-V3 Service Gateway — 219 Microservices
+================================================
+Lessons Learned v3 — FIX: services use open('config.json') relative path.
+                          os.chdir(svc_dir) before exec_module, then restore.
+
+Endpoints:
+  GET /                          — Gateway info + list of all 219 services
+  GET /health                    — Aggregate health (all services)
+  GET /api/{service_name}/       — Individual service root
+  GET /api/{service_name}/health — Individual service health
+  GET /api/services              — JSON list of all loaded services
+"""
+import importlib.util
+import json
+import logging
+import os
+import socket
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+SERVICE_VERSION = os.getenv("SERVICE_VERSION", "3.0.0")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
+BUILD_TIME = os.getenv("BUILD_TIME", datetime.now().isoformat())
+_start_time = time.time()
+
+# ── Gateway app ──────────────────────────────────────────────────────────────
+gateway = FastAPI(
+    title="JTP-Bio-V3 Gateway",
+    description="Single-image gateway for all 219 JTP microservices",
+    version=SERVICE_VERSION,
+)
+
+# Track loaded / failed services
+_loaded: dict[str, dict] = {}
+_failed: list[str] = []
+
+SERVICES_DIR = Path(__file__).parent / "services"
+_ORIGINAL_CWD = os.getcwd()
+
+
+def _load_service(name: str) -> bool:
+    """Attempt to load and mount a service sub-app."""
+    svc_dir = SERVICES_DIR / name
+    main_py = svc_dir / "main.py"
+    config_json = svc_dir / "config.json"
+
+    if not main_py.exists():
+        logger.warning(f"[{name}] main.py not found — skipping")
+        return False
+
+    try:
+        # Add service dir to path so relative imports work
+        if str(svc_dir) not in sys.path:
+            sys.path.insert(0, str(svc_dir))
+
+        # FIX: services call open('config.json') — must resolve relative to service dir
+        os.chdir(str(svc_dir))
+        try:
+            spec = importlib.util.spec_from_file_location(f"svc_{name}", str(main_py))
+            module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+            spec.loader.exec_module(module)  # type: ignore[union-attr]
+        finally:
+            os.chdir(_ORIGINAL_CWD)
+
+        # Find the FastAPI app object in the module
+        sub_app = None
+        for attr_name in ["app", "application", "api"]:
+            candidate = getattr(module, attr_name, None)
+            if isinstance(candidate, FastAPI):
+                sub_app = candidate
+                break
+
+        if sub_app is None:
+            sub_app = FastAPI(title=name)
+
+        # Read config
+        meta: dict = {}
+        if config_json.exists():
+            try:
+                meta = json.loads(config_json.read_text())
+            except Exception:
+                pass
+
+        # Add /health to sub_app if missing
+        existing_routes = [getattr(r, "path", None) for r in sub_app.routes]
+        if "/health" not in existing_routes:
+            svc_name_capture = name
+
+            @sub_app.get("/health")
+            async def _health():  # type: ignore[misc]
+                return {"service": svc_name_capture, "status": "healthy", "version": SERVICE_VERSION}
+
+        gateway.mount(f"/api/{name}", app=sub_app)
+        _loaded[name] = {
+            "name": name,
+            "status": "loaded",
+            "port": meta.get("port", 8000),
+            "service_type": meta.get("service_type", "unknown"),
+            "mount": f"/api/{name}",
+        }
+        logger.info(f"[{name}] mounted at /api/{name}")
+        return True
+
+    except Exception as exc:
+        os.chdir(_ORIGINAL_CWD)  # ensure restore on unexpected failure
+        logger.error(f"[{name}] load failed: {exc}")
+        _failed.append(name)
+        return False
+
+
+# ── Load all 219 services at startup ─────────────────────────────────────────
+def _bootstrap():
+    if not SERVICES_DIR.exists():
+        logger.warning(f"services/ directory not found at {SERVICES_DIR} — no services loaded")
+        return
+    names = sorted(p.name for p in SERVICES_DIR.iterdir() if p.is_dir())
+    logger.info(f"Bootstrapping {len(names)} services...")
+    ok_count = 0
+    for name in names:
+        if _load_service(name):
+            ok_count += 1
+    logger.info(f"Gateway ready: {ok_count}/{len(names)} services loaded, {len(_failed)} failed")
+
+
+_bootstrap()
+
+
+# ── Gateway-level endpoints ───────────────────────────────────────────────────
+@gateway.get("/")
+async def root():
+    return {
+        "gateway": "JTP-Bio-V3",
+        "version": SERVICE_VERSION,
+        "environment": ENVIRONMENT,
+        "hostname": socket.gethostname(),
+        "build_time": BUILD_TIME,
+        "uptime_seconds": round(time.time() - _start_time, 1),
+        "services_loaded": len(_loaded),
+        "services_failed": len(_failed),
+        "total_expected": 219,
+    }
+
+
+@gateway.get("/health")
+async def health():
+    status = "healthy" if len(_loaded) >= 200 else "degraded"
+    return JSONResponse(
+        status_code=200 if status == "healthy" else 207,
+        content={
+            "status": status,
+            "services_loaded": len(_loaded),
+            "services_failed": len(_failed),
+            "total_expected": 219,
+            "hostname": socket.gethostname(),
+            "uptime_seconds": round(time.time() - _start_time, 1),
+        },
+    )
+
+
+@gateway.get("/api/services")
+async def list_services():
+    return {
+        "total": len(_loaded),
+        "failed": _failed,
+        "services": list(_loaded.values()),
+    }
+
+
+# ── Entrypoint ────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "app:gateway",
+        host="0.0.0.0",
+        port=5000,
+        workers=4,
+        log_level="info",
+    )

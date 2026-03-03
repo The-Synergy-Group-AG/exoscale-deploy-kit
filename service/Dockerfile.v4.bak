@@ -1,0 +1,57 @@
+# JTP-Bio-V3 Gateway — 219 Microservices (Lessons Learned v2)
+# Multi-stage build: venv built once, only runtime libs in final image
+
+# ── Stage 1: Build ───────────────────────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install consolidated requirements (all 219 services use the same deps)
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# ── Stage 2: Production ───────────────────────────────────────────────────────
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    ENVIRONMENT="production" \
+    BUILD_TIME=""
+
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r appuser && useradd -r -g appuser appuser
+
+COPY --from=builder /opt/venv /opt/venv
+
+WORKDIR /app
+
+# Copy gateway entrypoint
+COPY app.py .
+
+# Copy all 219 service src directories into services/
+# Each service lands at: /app/services/{service_name}/main.py
+COPY services/ ./services/
+
+ARG BUILD_TIME_ARG
+ENV BUILD_TIME=$BUILD_TIME_ARG
+
+RUN chown -R appuser:appuser /app
+USER appuser
+
+# Health check hits the aggregate /health endpoint
+HEALTHCHECK --interval=30s --timeout=15s --start-period=60s --retries=5 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+EXPOSE 5000
+
+# 4 workers × 2 threads — handles concurrent requests across all services
+CMD ["uvicorn", "app:gateway", "--host", "0.0.0.0", "--port", "5000", "--workers", "4", "--log-level", "info"]
