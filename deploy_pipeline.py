@@ -1315,6 +1315,84 @@ stringData:
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ==============================================================================
+#  ABORT CLEANUP — Plan 122-DEH ISSUE-008
+#  Deletes any Exoscale resources created in THIS run if the pipeline crashes.
+#  Prevents orphaned SGs / clusters from aborted deployments.
+#  Non-fatal: warns on error but never raises.
+# ==============================================================================
+def pipeline_abort_cleanup() -> None:
+    """
+    Best-effort cleanup of partially-created Exoscale resources on pipeline failure.
+    Reads IDs from RESULTS (populated incrementally during the run).
+    Order: nodepool -> cluster -> SG (SG last so cluster releases lock first).
+    If SDK is unavailable, prints manual recovery command.
+    """
+    created = RESULTS.get("resources", {})
+    if not any(k in created for k in ("security_group", "sks_cluster", "node_pool")):
+        return  # Nothing cloud-created yet
+
+    warn("AUTO-CLEANUP: Deleting partially-created Exoscale resources to prevent orphans...")
+    try:
+        from exoscale.api.v2 import Client as _EXOClient
+        _c = _EXOClient(cfg["exo_key"], cfg["exo_secret"], zone=cfg["exoscale_zone"])
+    except Exception as _e:
+        warn(f"AUTO-CLEANUP: Cannot connect to Exoscale SDK: {_e}")
+        warn(f"  Manual recovery: python3 teardown.py --from-report {OUT / 'deployment_report_partial.json'}")
+        return
+
+    _cluster = created.get("sks_cluster", {})
+    _np      = created.get("node_pool", {})
+    _sg      = created.get("security_group", {})
+
+    # 1. Delete nodepool first (must precede cluster deletion)
+    if _np.get("id") and _cluster.get("id"):
+        try:
+            warn(f"AUTO-CLEANUP: Deleting nodepool {_np['id'][:8]}...")
+            _op = _c.delete_sks_nodepool(id=_cluster["id"], sks_nodepool_id=_np["id"])
+            _op_id = _op.get("id")
+            if _op_id:
+                _c.wait(_op_id, max_wait_time=180)
+            ok("AUTO-CLEANUP: Nodepool deleted")
+        except Exception as _e:
+            warn(f"AUTO-CLEANUP: Nodepool deletion warning (cluster deletion covers it): {_e}")
+
+    # 2. Delete SKS cluster
+    if _cluster.get("id"):
+        try:
+            warn(f"AUTO-CLEANUP: Deleting cluster {_cluster.get('name', _cluster['id'][:8])}...")
+            _op = _c.delete_sks_cluster(id=_cluster["id"])
+            _op_id = _op.get("id")
+            if _op_id:
+                _c.wait(_op_id, max_wait_time=300)
+            ok("AUTO-CLEANUP: Cluster deleted")
+        except Exception as _e:
+            if "404" in str(_e):
+                ok("AUTO-CLEANUP: Cluster already gone")
+            else:
+                warn(f"AUTO-CLEANUP: Cluster deletion failed: {_e}")
+
+    # 3. Delete security group (after cluster so SG lock is released)
+    if _sg.get("id"):
+        time.sleep(5)  # brief pause for cluster to release SG lock
+        for _attempt in range(1, 4):
+            try:
+                warn(f"AUTO-CLEANUP: Deleting SG {_sg.get('name', _sg['id'][:8])} (attempt {_attempt}/3)...")
+                _c.delete_security_group(id=_sg["id"])
+                ok("AUTO-CLEANUP: Security group deleted — no orphan left behind")
+                break
+            except Exception as _e:
+                if "404" in str(_e):
+                    ok("AUTO-CLEANUP: Security group already gone")
+                    break
+                if _attempt < 3:
+                    warn(f"AUTO-CLEANUP: SG still locked — retrying in 15s: {_e}")
+                    time.sleep(15)
+                else:
+                    warn(f"AUTO-CLEANUP: SG deletion failed after 3 attempts: {_e}")
+                    warn(f"  Manual recovery: python3 teardown.py --from-report {OUT / 'deployment_report_partial.json'}")
+
 if __name__ == "__main__":
     print("\n" + "="*60)
     print(f"  EXOSCALE DEPLOY KIT — {cfg['project_name'].upper()}")
@@ -1368,4 +1446,6 @@ if __name__ == "__main__":
         traceback.print_exc()
         # Save partial results on failure
         (OUT / "deployment_report_partial.json").write_text(json.dumps(RESULTS, indent=2))
+        # AUTO-CLEANUP: delete any Exoscale resources created in this run (ISSUE-008)
+        pipeline_abort_cleanup()
         sys.exit(1)

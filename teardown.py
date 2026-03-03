@@ -73,6 +73,152 @@ def run_kubectl(cmd: list[str], kubeconfig: str, capture: bool = True) -> "subpr
     return subprocess.run(cmd, env=env, capture_output=capture, text=True)
 
 
+
+
+def scan_orphaned_partial_reports(outputs_dir: "Path") -> list[dict]:
+    """
+    Scan outputs/ for deployment_report_partial.json files whose resource IDs
+    do not appear in any teardown report's 'deleted' list.
+    Returns list of {report, resources} dicts for orphaned partial deployments.
+    """
+    if not outputs_dir.exists():
+        return []
+
+    # Collect all IDs that have been successfully deleted
+    deleted_ids: set = set()
+    for td_report in outputs_dir.glob("teardown_report_*.json"):
+        try:
+            td_data = json.loads(td_report.read_text())
+            for item in td_data.get("deleted", []):
+                if item.get("id"):
+                    deleted_ids.add(item["id"])
+        except Exception:
+            pass
+
+    # Find partial reports with resources not in deleted_ids
+    orphans = []
+    for partial in outputs_dir.glob("*/deployment_report_partial.json"):
+        try:
+            data = json.loads(partial.read_text())
+            resources = data.get("resources", {})
+            sg      = resources.get("security_group", {})
+            cluster = resources.get("sks_cluster", {})
+            undeleted = []
+            if sg.get("id") and sg["id"] not in deleted_ids:
+                undeleted.append(("security_group", sg["id"], sg.get("name", "?")))
+            if cluster.get("id") and cluster["id"] not in deleted_ids:
+                undeleted.append(("sks_cluster", cluster["id"], cluster.get("name", "?")))
+            if undeleted:
+                orphans.append({"report": str(partial), "resources": undeleted})
+        except Exception:
+            pass
+
+    return orphans
+
+
+def teardown_from_report(report_path: str, force: bool = False) -> None:
+    """
+    Delete Exoscale resources by ID directly from a deployment_report*.json.
+    Bypasses name-based discovery entirely — works even if project_name in
+    config.yaml has changed since the deployment was created.
+
+    Usage:
+      python3 teardown.py --from-report outputs/20260303_154858/deployment_report_partial.json
+    """
+    from exoscale.api.v2 import Client
+
+    cfg = load_config("config.yaml")
+    c = Client(cfg["exo_key"], cfg["exo_secret"], zone=cfg["exoscale_zone"])
+
+    rpath = Path(report_path)
+    if not rpath.exists():
+        print(f"[ERROR] Report not found: {report_path}")
+        sys.exit(1)
+
+    data      = json.loads(rpath.read_text())
+    resources = data.get("resources", {})
+
+    sep = "=" * 60
+    print(f"\n{sep}")
+    print(f"  TEARDOWN FROM REPORT: {rpath.name}")
+    print(f"  Zone: {cfg['exoscale_zone']}")
+    print(f"{sep}\n")
+
+    cluster = resources.get("sks_cluster", {})
+    sg      = resources.get("security_group", {})
+
+    if not cluster.get("id") and not sg.get("id"):
+        print("[OK] No cloud resources (cluster / SG) found in report — nothing to delete")
+        return
+
+    print("Resources to delete:")
+    if cluster.get("id"):
+        print(f"  sks_cluster:    {cluster.get('name', '?')} ({cluster['id']})")
+    if sg.get("id"):
+        print(f"  security_group: {sg.get('name', '?')} ({sg['id']})")
+
+    if not force:
+        resp = input("\nProceed with deletion? [y/N]: ").strip().lower()
+        if resp not in ("y", "yes"):
+            print("Cancelled.")
+            return
+
+    # Delete cluster + nodepools first (so SG lock is released)
+    if cluster.get("id"):
+        try:
+            cluster_data = c.get_sks_cluster(id=cluster["id"])
+            for np in cluster_data.get("nodepools", []):
+                try:
+                    log(f"Deleting nodepool: {np.get('name', np['id'])}...")
+                    op = c.delete_sks_nodepool(id=cluster["id"], sks_nodepool_id=np["id"])
+                    op_id = op.get("id")
+                    if op_id:
+                        c.wait(op_id, max_wait_time=180)
+                    ok(f"Nodepool deleted: {np.get('name', np['id'])}")
+                except Exception as e:
+                    warn(f"Nodepool {np.get('id', '?')}: {str(e)[:80]}")
+            log(f"Deleting cluster: {cluster.get('name', cluster['id'])}...")
+            op = c.delete_sks_cluster(id=cluster["id"])
+            op_id = op.get("id")
+            if op_id:
+                c.wait(op_id, max_wait_time=300)
+            ok(f"Cluster deleted: {cluster.get('name', cluster['id'])}")
+        except Exception as e:
+            if "404" in str(e) or "not found" in str(e).lower():
+                ok(f"Cluster already gone: {cluster.get('name', cluster['id'])}")
+            else:
+                warn(f"Cluster deletion error: {str(e)[:100]}")
+
+    # Brief pause for cluster to release SG lock
+    if cluster.get("id") and sg.get("id"):
+        log("Waiting 10s for cluster to release SG lock...")
+        time.sleep(10)
+
+    # Delete security group
+    if sg.get("id"):
+        for attempt in range(1, 4):
+            try:
+                log(f"Deleting SG: {sg.get('name', sg['id'])} (attempt {attempt}/3)...")
+                c.delete_security_group(id=sg["id"])
+                ok(f"Security group deleted: {sg.get('name', sg['id'])}")
+                break
+            except Exception as e:
+                if "404" in str(e) or "not found" in str(e).lower():
+                    ok(f"Security group already gone: {sg.get('name', sg['id'])}")
+                    break
+                if attempt < 3:
+                    warn(f"SG still locked (attempt {attempt}/3) — retrying in 15s: {str(e)[:60]}")
+                    time.sleep(15)
+                else:
+                    warn(f"SG deletion failed after 3 attempts: {str(e)[:100]}")
+
+    sep = "=" * 60
+    print(f"\n{sep}")
+    print("  TEARDOWN FROM REPORT COMPLETE")
+    print(f"{sep}\n")
+
+
+
 def teardown(args: argparse.Namespace) -> None:
     dry_run = args.dry_run
     force   = args.force
@@ -164,6 +310,18 @@ def teardown(args: argparse.Namespace) -> None:
         log(f"SOS bucket discovery skipped (boto3 not installed or no access): {str(e)[:60]}")
 
     total = len(proj_clusters) + len(proj_nlbs) + len(proj_sgs) + len(proj_dbaas) + len(proj_sos_buckets)
+
+    # Orphan scan: warn about uncleaned partial deployments (ISSUE-008)
+    _orphans = scan_orphaned_partial_reports(DEPLOY_OUTPUTS)
+    if _orphans:
+        warn(f"ORPHAN SCAN: {len(_orphans)} partial deployment(s) with uncleaned resources:")
+        for _o in _orphans:
+            _rpt = _o["report"]
+            warn(f"  Partial report: {_rpt}")
+            for _rtype, _rid, _rname in _o["resources"]:
+                warn(f"    {_rtype}: {_rname} ({_rid})")
+        warn("  Run: python3 teardown.py --from-report <report_path> to clean")
+
     if total == 0:
         ok(f"No {project} resources found — environment is clean!")
         return
@@ -452,5 +610,10 @@ if __name__ == "__main__":
     parser.add_argument("--cluster-id", help="Target specific cluster ID only")
     parser.add_argument("--config",     default="config.yaml",
                         help="Path to config YAML (relative to kit dir or absolute)")
+    parser.add_argument("--from-report", dest="from_report", default=None,
+                        help="Delete resources by ID from a deployment_report*.json (bypasses name discovery)")
     args = parser.parse_args()
-    teardown(args)
+    if args.from_report:
+        teardown_from_report(args.from_report, force=args.force)
+    else:
+        teardown(args)
