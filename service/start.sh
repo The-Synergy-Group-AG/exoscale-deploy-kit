@@ -1,4 +1,4 @@
- !/bin/bash
+#!/bin/bash
 # start.sh — SERVICE_NAME-aware entrypoint for docker-jtp:9
 # Plan: 121-FACTORY-E2E-RESTART
 #

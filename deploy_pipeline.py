@@ -448,93 +448,14 @@ def stage_exoscale():
         "id": pool_id, "name": POOL_NAME, "size": cfg["node_count"]
     }
 
-    # Step B: LESSON 17 + Plan 122-DEH ISSUE-001 — Per-instance SG attachment WITH RETRY
-    # update_sks_nodepool(security_groups=...) always returns HTTP 500 (Exoscale API bug).
-    # FIX: Discover nodepool instances via instance-pool ID, attach SG to each one.
-    # RETRY: Instances may not be discoverable immediately after nodepool creation.
-    #        Retry up to 5 times with 30s wait between attempts.
-    #   API: attach_instance_to_security_group(id=sg_id, instance={"id": instance_id})
-    #   CRITICAL: id=SG_id (first), instance={"id": inst_id} (second) — NOT instance-first!
-    _SG_MAX_ATTEMPTS = 5
-    _SG_RETRY_DELAY  = 30  # seconds between retry attempts
-    log(
-        f"(Step B LESSON17+ISSUE-001) Attaching SG {sg_id[:8]}... to instances "
-        f"— max {_SG_MAX_ATTEMPTS} attempts, {_SG_RETRY_DELAY}s between"
-    )
-    _sg_success = False
-    _attached = 0
-    _last_sg_error = ""
-
-    for _attempt in range(1, _SG_MAX_ATTEMPTS + 1):
-        try:
-            _cluster_detail = c.get_sks_cluster(id=cluster_id)
-            _pool_detail = next(
-                (p for p in _cluster_detail.get("nodepools", []) if p.get("id") == pool_id),
-                {}
-            )
-            _inst_pool_id = _pool_detail.get("instance-pool", {}).get("id")
-
-            if not _inst_pool_id:
-                _last_sg_error = "instance-pool ref missing from nodepool detail"
-                log(f"  SG attempt {_attempt}/{_SG_MAX_ATTEMPTS}: {_last_sg_error}")
-                if _attempt < _SG_MAX_ATTEMPTS:
-                    time.sleep(_SG_RETRY_DELAY)
-                continue
-
-            _inst_pool = c.get_instance_pool(id=_inst_pool_id)
-            _instances = _inst_pool.get("instances", [])
-
-            if not _instances:
-                _last_sg_error = (
-                    f"instance-pool {_inst_pool_id[:8]}... has 0 instances "
-                    "(pool initialising)"
-                )
-                log(f"  SG attempt {_attempt}/{_SG_MAX_ATTEMPTS}: {_last_sg_error}")
-                if _attempt < _SG_MAX_ATTEMPTS:
-                    time.sleep(_SG_RETRY_DELAY)
-                continue
-
-            log(
-                f"  SG attempt {_attempt}/{_SG_MAX_ATTEMPTS}: "
-                f"found {len(_instances)} instance(s) — attaching SG..."
-            )
-            _attached = 0
-            for _inst in _instances:
-                _inst_id   = _inst.get("id")
-                _inst_name = _inst.get("name", _inst_id)
-                c.attach_instance_to_security_group(
-                    id=sg_id,
-                    instance={"id": _inst_id},
-                )
-                ok(f"  SG attached to {_inst_name}")
-                _attached += 1
-
-            if _attached >= len(_instances) and _instances:
-                ok(f"  All {_attached} instance(s) have SG attached")
-                _sg_success = True
-                break
-            elif _attached > 0:
-                ok(f"  Partial: SG attached to {_attached}/{len(_instances)} instances")
-                _sg_success = True
-                break
-
-        except Exception as _e:
-            _last_sg_error = str(_e)[:80]
-            warn(f"  SG attempt {_attempt}/{_SG_MAX_ATTEMPTS} failed: {_last_sg_error}")
-            if _attempt < _SG_MAX_ATTEMPTS:
-                time.sleep(_SG_RETRY_DELAY)
-
-    if not _sg_success:
-        warn(
-            f"SG attachment failed after {_SG_MAX_ATTEMPTS} attempts. "
-            f"Last error: {_last_sg_error}"
-        )
-        warn("Manual SG assignment needed in Exoscale Console")
-        RESULTS["resources"]["node_pool"]["sg_update_failed"] = True
-        RESULTS["resources"]["node_pool"]["sg_attach_attempts"] = _SG_MAX_ATTEMPTS
-    else:
-        RESULTS["resources"]["node_pool"]["sg_attached"] = True
-        RESULTS["resources"]["node_pool"]["sg_attached_count"] = _attached
+    # Step B: DEFERRED — SG attachment moved to stage_sg_post_attach() called AFTER
+    # stage_wait_for_nodes().  Root cause: attach_instance_to_security_group returns
+    # 404 while instances are still provisioning even though instance-pool API lists them.
+    # By the time stage_wait_for_nodes() succeeds, instances are fully registered in
+    # the compute API and SG attachment succeeds reliably.
+    # (LESSON 20 — Plan 122-DEH ISSUE-001 sequencing fix 2026-03-03)
+    log("SG instance attachment deferred to Stage 3b (after nodes Ready) — see stage_sg_post_attach()")
+    RESULTS["resources"]["node_pool"]["sg_deferred"] = True
 
     # LESSON 6: NO manual NLB creation.
     # Exoscale cloud controller auto-creates NLB when K8s type:LoadBalancer service is applied.
@@ -594,6 +515,106 @@ def stage_wait_for_nodes(kubeconfig: str):
         RESULTS["stages"]["wait_nodes"] = {"status": "partial", "duration": elapsed(t0)}
 
     return nodes_ready
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  STAGE 3b: SG POST-ATTACH — after worker nodes are Ready
+#  LESSON 23: attach_instance_to_security_group returns 404 if called while
+#  instances are still provisioning (even if instance-pool API lists them).
+#  FIX: defer SG attachment to AFTER stage_wait_for_nodes().  By that point the
+#  compute API has fully registered each instance and attachment succeeds.
+#  (Plan 122-DEH ISSUE-001 sequencing fix — 2026-03-03)
+# ═══════════════════════════════════════════════════════════════════════════════
+def stage_sg_post_attach() -> None:
+    """
+    Attach the run's Security Group to every node-pool instance.
+    Called AFTER stage_wait_for_nodes() so instances are fully registered
+    in the Exoscale compute API (no more 404 on attach_instance_to_security_group).
+    Reads IDs from the RESULTS dict populated by stage_exoscale().
+    Non-fatal: warns on partial failure, never sys.exit().
+    """
+    section("STAGE 3b: SG Post-Attach (after nodes Ready)")
+    t0 = time.time()
+
+    sg_id      = RESULTS["resources"].get("security_group", {}).get("id")
+    cluster_id = RESULTS["resources"].get("sks_cluster", {}).get("id")
+    pool_id    = RESULTS["resources"].get("node_pool", {}).get("id")
+
+    if not all([sg_id, cluster_id, pool_id]):
+        warn("SG post-attach: missing resource IDs — skipping")
+        return
+
+    from exoscale.api.v2 import Client
+    c = Client(cfg["exo_key"], cfg["exo_secret"], zone=cfg["exoscale_zone"])
+
+    _SG_MAX_ATTEMPTS = 10   # more attempts now that nodes ARE ready
+    _SG_RETRY_DELAY  = 15   # shorter delay (15s) — instances should respond fast
+    log(
+        f"Attaching SG {sg_id[:8]}... to node-pool instances "
+        f"— up to {_SG_MAX_ATTEMPTS} attempts x {_SG_RETRY_DELAY}s"
+    )
+    _sg_success  = False
+    _attached    = 0
+    _last_error  = ""
+
+    for _attempt in range(1, _SG_MAX_ATTEMPTS + 1):
+        try:
+            _cluster_detail = c.get_sks_cluster(id=cluster_id)
+            _pool_detail = next(
+                (p for p in _cluster_detail.get("nodepools", []) if p.get("id") == pool_id),
+                {}
+            )
+            _inst_pool_id = _pool_detail.get("instance-pool", {}).get("id")
+            if not _inst_pool_id:
+                _last_error = "instance-pool ref missing from nodepool detail"
+                log(f"  Attempt {_attempt}/{_SG_MAX_ATTEMPTS}: {_last_error}")
+                if _attempt < _SG_MAX_ATTEMPTS:
+                    time.sleep(_SG_RETRY_DELAY)
+                continue
+
+            _inst_pool = c.get_instance_pool(id=_inst_pool_id)
+            _instances = _inst_pool.get("instances", [])
+            if not _instances:
+                _last_error = f"instance-pool {_inst_pool_id[:8]}... has 0 instances"
+                log(f"  Attempt {_attempt}/{_SG_MAX_ATTEMPTS}: {_last_error}")
+                if _attempt < _SG_MAX_ATTEMPTS:
+                    time.sleep(_SG_RETRY_DELAY)
+                continue
+
+            log(f"  Attempt {_attempt}/{_SG_MAX_ATTEMPTS}: found {len(_instances)} instance(s) — attaching SG...")
+            _attached = 0
+            for _inst in _instances:
+                _inst_id   = _inst.get("id")
+                _inst_name = _inst.get("name", _inst_id)
+                c.attach_instance_to_security_group(id=sg_id, instance={"id": _inst_id})
+                ok(f"  SG attached to {_inst_name}")
+                _attached += 1
+
+            if _attached >= len(_instances) and _instances:
+                ok(f"  All {_attached} instance(s) have SG attached ({elapsed(t0)})")
+                _sg_success = True
+                break
+            elif _attached > 0:
+                ok(f"  Partial: SG attached to {_attached}/{len(_instances)} instances")
+                _sg_success = True
+                break
+
+        except Exception as _e:
+            _last_error = str(_e)[:100]
+            warn(f"  Attempt {_attempt}/{_SG_MAX_ATTEMPTS} failed: {_last_error}")
+            if _attempt < _SG_MAX_ATTEMPTS:
+                time.sleep(_SG_RETRY_DELAY)
+
+    if _sg_success:
+        RESULTS["resources"]["node_pool"]["sg_attached"]       = True
+        RESULTS["resources"]["node_pool"]["sg_attached_count"] = _attached
+        RESULTS["resources"]["node_pool"].pop("sg_deferred", None)
+        ok(f"SG post-attach complete — NodePort traffic now routed to worker nodes")
+    else:
+        warn(f"SG post-attach failed after {_SG_MAX_ATTEMPTS} attempts: {_last_error}")
+        warn("NodePort traffic will be blocked — manual SG attach needed in Exoscale Console")
+        RESULTS["resources"]["node_pool"]["sg_update_failed"]   = True
+        RESULTS["resources"]["node_pool"]["sg_attach_attempts"] = _SG_MAX_ATTEMPTS
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1420,6 +1441,10 @@ if __name__ == "__main__":
 
         kubeconfig = stage_exoscale()
         stage_wait_for_nodes(kubeconfig)
+
+        # Stage 3b: Attach SG to node instances AFTER nodes are Ready
+        # (LESSON 23 / ISSUE-001 fix: instances registered in compute API by now)
+        stage_sg_post_attach()
 
         # Stage 4b: Label nodes with StarGate identity after they are Ready
         stage_label_nodes(kubeconfig)

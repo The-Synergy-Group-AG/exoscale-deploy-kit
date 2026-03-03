@@ -108,8 +108,10 @@ spec:
         env:
         - name: ENVIRONMENT
           value: "production"
-        - name: SERVICE_NAME
-          value: "{svc}"
+        # NOTE: SERVICE_NAME intentionally NOT set here — setting it triggers
+        # start.sh SERVICE mode which looks for /app/services/{{SERVICE_NAME}}/.
+        # GATEWAY mode (no SERVICE_NAME) is correct for this deployment.
+        # (LESSON 24 — Plan 122-DEH 2026-03-03)
         resources:
           requests:
             cpu: "100m"
