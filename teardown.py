@@ -52,9 +52,9 @@ def get_latest_kubeconfig() -> str | None:
 
 
 def log(msg):   print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-def ok(msg):    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {msg}")
-def warn(msg):  print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️  {msg}")
-def section(s): print(f"\n{'═'*60}\n  {s}\n{'═'*60}")
+def ok(msg):    print(f"[{datetime.now().strftime('%H:%M:%S')}] OK  {msg}")
+def warn(msg):  print(f"[{datetime.now().strftime('%H:%M:%S')}] WARN {msg}")
+def section(s): print(f"\n{'='*60}\n  {s}\n{'='*60}")
 
 
 def confirm(prompt: str, force: bool = False) -> bool:
