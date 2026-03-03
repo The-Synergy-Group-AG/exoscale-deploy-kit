@@ -164,6 +164,86 @@ def section(s): print(f"\n{'='*60}\n  {s}\n{'='*60}")
 def elapsed(t): return f"{time.time()-t:.0f}s"
 
 
+# =============================================================================
+#  STAGE 0: PREFLIGHT CHECKS
+#  Plan 122-DEH ISSUE-003: Fail fast BEFORE any Exoscale API call or cloud spend.
+#  All prerequisites validated upfront so the operator knows immediately if the
+#  environment is not ready for deployment.
+#  Use --skip-preflight flag to bypass (not recommended for production).
+# =============================================================================
+def stage_preflight() -> None:
+    """
+    Stage 0: Preflight checks.
+    Validates Docker, kubectl, credentials, and DNS before cloud resource creation.
+    Exits sys.exit(1) if any check fails.
+    """
+    import socket
+    section("STAGE 0: Preflight Checks (Plan 122-DEH ISSUE-003)")
+    t0 = time.time()
+    failures: list[str] = []
+
+    # Check 1: Docker daemon running
+    r = subprocess.run(
+        ["docker", "info"], capture_output=True, text=True, timeout=15
+    )
+    if r.returncode == 0:
+        ok("Docker daemon: running")
+    else:
+        failures.append("Docker daemon not running — start Docker Desktop or Docker service")
+
+    # Check 2: kubectl binary available
+    r = subprocess.run(
+        ["kubectl", "version", "--client", "--output=json"],
+        capture_output=True, text=True, timeout=10
+    )
+    if r.returncode == 0:
+        ok("kubectl: available")
+    else:
+        failures.append(
+            "kubectl not found or not working — "
+            "install kubectl: https://kubernetes.io/docs/tasks/tools/"
+        )
+
+    # Check 3: Exoscale API credentials
+    if cfg.get("exo_key") and cfg.get("exo_secret"):
+        ok(f"Exoscale credentials: set (key={cfg['exo_key'][:8]}...)")
+    else:
+        failures.append(
+            "Exoscale credentials missing — set EXO_API_KEY and EXO_API_SECRET in .env"
+        )
+
+    # Check 4: Docker Hub token
+    if cfg.get("docker_hub_token"):
+        ok("Docker Hub token: set")
+    else:
+        failures.append(
+            "Docker Hub token missing — set DOCKER_HUB_TOKEN in .env"
+        )
+
+    # Check 5: DNS resolution for Exoscale zone endpoint
+    api_host = f"api-{cfg['exoscale_zone']}.exoscale.com"
+    try:
+        socket.getaddrinfo(api_host, 443, proto=socket.IPPROTO_TCP)
+        ok(f"DNS: {api_host} resolves OK")
+    except socket.gaierror:
+        failures.append(
+            f"DNS resolution failed for {api_host} — "
+            "check network connection, VPN status, or corporate DNS settings"
+        )
+
+    if failures:
+        fail(f"PREFLIGHT FAILED — {len(failures)} check(s) not satisfied:")
+        for i, msg in enumerate(failures, 1):
+            fail(f"  {i}. {msg}")
+        fail("")
+        fail("Fix the above issues and retry deployment.")
+        fail("To bypass (advanced debugging only): python3 deploy_pipeline.py --skip-preflight")
+        sys.exit(1)
+
+    ok(f"All preflight checks passed ({elapsed(t0)})")
+    RESULTS["stages"]["preflight"] = {"status": "success", "duration": elapsed(t0)}
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  STAGE 1: DOCKER BUILD
 #  LESSON 8: Always pass build args as list items, never string interpolations
@@ -368,51 +448,93 @@ def stage_exoscale():
         "id": pool_id, "name": POOL_NAME, "size": cfg["node_count"]
     }
 
-    # Step B: LESSON 17 — Per-instance SG attachment
+    # Step B: LESSON 17 + Plan 122-DEH ISSUE-001 — Per-instance SG attachment WITH RETRY
     # update_sks_nodepool(security_groups=...) always returns HTTP 500 (Exoscale API bug).
-    # FIX: Discover nodepool instances via instance-pool ID, then attach SG to each one.
+    # FIX: Discover nodepool instances via instance-pool ID, attach SG to each one.
+    # RETRY: Instances may not be discoverable immediately after nodepool creation.
+    #        Retry up to 5 times with 30s wait between attempts.
     #   API: attach_instance_to_security_group(id=sg_id, instance={"id": instance_id})
     #   CRITICAL: id=SG_id (first), instance={"id": inst_id} (second) — NOT instance-first!
-    log(f"(Step B LESSON17) Attaching SG {sg_id} to nodepool instances individually...")
+    _SG_MAX_ATTEMPTS = 5
+    _SG_RETRY_DELAY  = 30  # seconds between retry attempts
+    log(
+        f"(Step B LESSON17+ISSUE-001) Attaching SG {sg_id[:8]}... to instances "
+        f"— max {_SG_MAX_ATTEMPTS} attempts, {_SG_RETRY_DELAY}s between"
+    )
     _sg_success = False
     _attached = 0
-    try:
-        # Get the underlying instance-pool ID from the nodepool details
-        _cluster_detail = c.get_sks_cluster(id=cluster_id)
-        _pool_detail = next(
-            (p for p in _cluster_detail.get("nodepools", []) if p.get("id") == pool_id),
-            {}
-        )
-        _inst_pool_id = _pool_detail.get("instance-pool", {}).get("id")
-        if _inst_pool_id:
+    _last_sg_error = ""
+
+    for _attempt in range(1, _SG_MAX_ATTEMPTS + 1):
+        try:
+            _cluster_detail = c.get_sks_cluster(id=cluster_id)
+            _pool_detail = next(
+                (p for p in _cluster_detail.get("nodepools", []) if p.get("id") == pool_id),
+                {}
+            )
+            _inst_pool_id = _pool_detail.get("instance-pool", {}).get("id")
+
+            if not _inst_pool_id:
+                _last_sg_error = "instance-pool ref missing from nodepool detail"
+                log(f"  SG attempt {_attempt}/{_SG_MAX_ATTEMPTS}: {_last_sg_error}")
+                if _attempt < _SG_MAX_ATTEMPTS:
+                    time.sleep(_SG_RETRY_DELAY)
+                continue
+
             _inst_pool = c.get_instance_pool(id=_inst_pool_id)
             _instances = _inst_pool.get("instances", [])
-            log(f"  Found {len(_instances)} instance(s) in nodepool (instance-pool: {_inst_pool_id[:8]}...)")
+
+            if not _instances:
+                _last_sg_error = (
+                    f"instance-pool {_inst_pool_id[:8]}... has 0 instances "
+                    "(pool initialising)"
+                )
+                log(f"  SG attempt {_attempt}/{_SG_MAX_ATTEMPTS}: {_last_sg_error}")
+                if _attempt < _SG_MAX_ATTEMPTS:
+                    time.sleep(_SG_RETRY_DELAY)
+                continue
+
+            log(
+                f"  SG attempt {_attempt}/{_SG_MAX_ATTEMPTS}: "
+                f"found {len(_instances)} instance(s) — attaching SG..."
+            )
+            _attached = 0
             for _inst in _instances:
-                _inst_id = _inst.get("id")
+                _inst_id   = _inst.get("id")
                 _inst_name = _inst.get("name", _inst_id)
                 c.attach_instance_to_security_group(
                     id=sg_id,
                     instance={"id": _inst_id},
                 )
-                ok(f"SG attached to {_inst_name}")
+                ok(f"  SG attached to {_inst_name}")
                 _attached += 1
-            if _attached == len(_instances) and _instances:
-                ok(f"SG attached to all {_attached} nodepool instance(s)")
+
+            if _attached >= len(_instances) and _instances:
+                ok(f"  All {_attached} instance(s) have SG attached")
                 _sg_success = True
+                break
             elif _attached > 0:
-                ok(f"SG attached to {_attached}/{len(_instances)} instances (partial)")
+                ok(f"  Partial: SG attached to {_attached}/{len(_instances)} instances")
                 _sg_success = True
-            else:
-                warn("No instances found in instance-pool (pool may still be initializing)")
-        else:
-            warn("instance-pool ref missing from nodepool detail — skipping SG attachment")
-    except Exception as _e:
-        warn(f"SG per-instance attachment failed: {str(_e)[:80]}")
+                break
+
+        except Exception as _e:
+            _last_sg_error = str(_e)[:80]
+            warn(f"  SG attempt {_attempt}/{_SG_MAX_ATTEMPTS} failed: {_last_sg_error}")
+            if _attempt < _SG_MAX_ATTEMPTS:
+                time.sleep(_SG_RETRY_DELAY)
 
     if not _sg_success:
-        warn("SG attachment failed — will need manual SG assignment in Exoscale console")
+        warn(
+            f"SG attachment failed after {_SG_MAX_ATTEMPTS} attempts. "
+            f"Last error: {_last_sg_error}"
+        )
+        warn("Manual SG assignment needed in Exoscale Console")
         RESULTS["resources"]["node_pool"]["sg_update_failed"] = True
+        RESULTS["resources"]["node_pool"]["sg_attach_attempts"] = _SG_MAX_ATTEMPTS
+    else:
+        RESULTS["resources"]["node_pool"]["sg_attached"] = True
+        RESULTS["resources"]["node_pool"]["sg_attached_count"] = _attached
 
     # LESSON 6: NO manual NLB creation.
     # Exoscale cloud controller auto-creates NLB when K8s type:LoadBalancer service is applied.
@@ -1105,6 +1227,13 @@ if __name__ == "__main__":
     print(f"  Zone:   {cfg['exoscale_zone']}")
     print(f"  Output: {OUT}")
     print("="*60 + "\n")
+
+    # Stage 0: Preflight checks (Plan 122-DEH ISSUE-003)
+    # Use --skip-preflight for advanced debugging only
+    if "--skip-preflight" in sys.argv:
+        warn("STAGE 0: Preflight skipped (--skip-preflight flag set — not recommended)")
+    else:
+        stage_preflight()
 
     try:
         stage_docker_build()
