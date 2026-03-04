@@ -236,11 +236,11 @@ metadata:
   namespace: {ns}
 spec:
   hard:
-    pods: "20"
-    requests.cpu: "4"
-    requests.memory: "4Gi"
-    limits.cpu: "8"
-    limits.memory: "8Gi"
+    pods: "250"
+    requests.cpu: "8"
+    requests.memory: "24Gi"
+    limits.cpu: "50"
+    limits.memory: "32Gi"
 """)
 
     manifests = sorted(out.glob("*.yaml"))
