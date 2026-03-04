@@ -1,0 +1,19 @@
+fix(nlb): correct K8s NLB target ports for nginx-ingress HTTP-01 challenge
+
+Root cause: K8s CCM created k8s-a14f546f NLB (159.100.248.98) with
+healthcheck/target port 30615 for BOTH port 80 and port 443 services.
+The correct nginx-ingress NodePorts are 30095 (HTTP) and 31473 (HTTPS).
+
+This mismatch caused all cert-manager HTTP-01 challenges to fail —
+Let's Encrypt hit the NLB on port 80, which forwarded to NodePort 30615
+(not nginx-ingress), resulting in connection failures.
+
+Fix applied via fix_k8s_nlb.py:
+  NLB port 80:  target 30615 -> 30095 (nginx-ingress HTTP)
+  NLB port 443: target 30615 -> 31473 (nginx-ingress HTTPS)
+
+After fix: challenges go pending -> valid, certificate READY=True.
+
+Files:
+  fix_k8s_nlb.py    NEW: one-shot repair script for K8s CCM NLB mismatch
+  fresh-cert.yaml   REF: force cert-manager reissuance after NLB fix
