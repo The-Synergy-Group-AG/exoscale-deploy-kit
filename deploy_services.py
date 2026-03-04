@@ -37,7 +37,7 @@ from pathlib import Path
 _p = argparse.ArgumentParser()
 _p.add_argument("--kubeconfig", default=None, help="Path to kubeconfig.yaml (default: KUBECONFIG env)")
 _p.add_argument("--namespace",  default="exo-jtp-prod")
-_p.add_argument("--image",      default="iandrewitz/docker-jtp:7")
+_p.add_argument("--image",      default="iandrewitz/docker-jtp:8")
 _p.add_argument("--dry-run",    action="store_true", help="Generate manifests but do not apply")
 _p.add_argument("--service",    default=None, help="Deploy only this one service (for testing)")
 _args = _p.parse_args()
@@ -138,7 +138,7 @@ metadata:
     service-name: "{service_name}"
     service-type: "{svc_label}"
     managed-by: deploy-services-py
-    version: "7"
+    version: "8"
 spec:
   replicas: 1
   selector:

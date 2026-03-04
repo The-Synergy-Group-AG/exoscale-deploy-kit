@@ -7,7 +7,7 @@ Generates parametrised Kubernetes YAML manifests for deployment to Exoscale SKS.
 Generated manifests (in --outputs-dir):
   00-namespace.yaml        — Kubernetes Namespace
   01-deployment.yaml       — Deployment (non-root, readiness/liveness probes, imagePullSecrets)
-  02-service.yaml          — LoadBalancer Service (NLB auto-provisioned by cloud controller)
+  02-service.yaml          — LoadBalancer or ClusterIP Service (ISSUE-019: use ClusterIP when ingress enabled)
   03-hpa.yaml              — HorizontalPodAutoscaler (CPU 70% / Memory 80%)
   04-network-policy.yaml   — NetworkPolicy (ingress/egress restrictions)
   05-resource-quota.yaml   — ResourceQuota (namespace-level limits)
@@ -50,6 +50,23 @@ def main() -> None:
         ),
     )
     parser.add_argument("--outputs-dir",   required=True,         help="Directory to write manifest files")
+    parser.add_argument(
+        "--service-type", default="LoadBalancer",
+        choices=["LoadBalancer", "ClusterIP"],
+        help=(
+            "K8s Service type (default: LoadBalancer). "
+            "ISSUE-019: Use ClusterIP when nginx-ingress is the entry point — "
+            "avoids creating a second Exoscale NLB for the gateway service."
+        ),
+    )
+    parser.add_argument(
+        "--gateway-hostname", default="",
+        help=(
+            "Pod hostname override (ISSUE-023). "
+            "Set to 'jtp-gateway' so the gateway reports its K8s identity "
+            "instead of the Docker Compose name 'docker-jtp-gateway'."
+        ),
+    )
     args = parser.parse_args()
 
     out          = Path(args.outputs_dir)
@@ -69,6 +86,8 @@ metadata:
 """)
 
     # ── 01: Deployment ─────────────────────────────────────────────────────
+    # ISSUE-023: hostname override so gateway reports K8s identity, not Docker Compose name
+    _hostname_line = f"      hostname: {args.gateway_hostname}\n" if args.gateway_hostname else ""
     (out / "01-deployment.yaml").write_text(f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -93,7 +112,7 @@ spec:
         app: {svc}
         version: "{args.version}"
     spec:
-      securityContext:
+{_hostname_line}      securityContext:
         runAsNonRoot: true
         runAsUser: 1000
       imagePullSecrets:
@@ -136,25 +155,33 @@ spec:
 """)
 
     # ── 02: Service ────────────────────────────────────────────────────────
+    # ISSUE-019: When nginx-ingress handles external traffic (ingress.enabled=true),
+    # use ClusterIP to avoid creating a second Exoscale NLB for the gateway service.
     # LESSON 6: type: LoadBalancer triggers Exoscale cloud controller to auto-create NLB
-    # LESSON 7: nodePort {args.nodeport} must be pre-approved in Exoscale default SG
-    (out / "02-service.yaml").write_text(f"""apiVersion: v1
-kind: Service
-metadata:
-  name: {svc}
-  namespace: {ns}
-  labels:
-    app: {svc}
-  annotations:
-    # Exoscale cloud controller uses this annotation to name the auto-created NLB
-    service.beta.kubernetes.io/exoscale-loadbalancer-name: "{svc}-nlb"
-spec:
-  # LESSON 6: type: LoadBalancer causes Exoscale cloud controller to auto-create NLB
-  # Do NOT create the NLB manually — this annotation handles it.
-  type: LoadBalancer
-  selector:
-    app: {svc}
-  ports:
+    # LESSON 7: nodePort must be pre-approved in Exoscale default SG
+    _svc_type    = args.service_type  # "LoadBalancer" or "ClusterIP"
+    _nlb_comment = (
+        "# ISSUE-019: ClusterIP — nginx-ingress is the single entry point (no second NLB)\n  "
+        if _svc_type == "ClusterIP"
+        else "# LESSON 6: LoadBalancer causes Exoscale cloud controller to auto-create NLB\n  "
+        "# Do NOT create the NLB manually — this annotation handles it.\n  "
+    )
+    if _svc_type == "ClusterIP":
+        _ports_yaml = f"""  ports:
+  - name: http
+    port: 80
+    targetPort: {args.port}
+    protocol: TCP
+  - name: api
+    port: {service_port}
+    targetPort: {args.port}
+    protocol: TCP
+  - name: https
+    port: 443
+    targetPort: {args.port}
+    protocol: TCP"""
+    else:
+        _ports_yaml = f"""  ports:
   - name: http
     port: 80
     targetPort: {args.port}
@@ -168,7 +195,21 @@ spec:
   - name: https
     port: 443
     targetPort: {args.port}
-    protocol: TCP
+    protocol: TCP"""
+    (out / "02-service.yaml").write_text(f"""apiVersion: v1
+kind: Service
+metadata:
+  name: {svc}
+  namespace: {ns}
+  labels:
+    app: {svc}
+  annotations:
+    service.beta.kubernetes.io/exoscale-loadbalancer-name: "{svc}-nlb"
+spec:
+  {_nlb_comment}type: {_svc_type}
+  selector:
+    app: {svc}
+{_ports_yaml}
 """)
 
     # ── 03: HPA ────────────────────────────────────────────────────────────

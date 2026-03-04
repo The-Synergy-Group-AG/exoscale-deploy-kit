@@ -651,6 +651,11 @@ def stage_kubernetes(kubeconfig: str):
     )
     ok("Docker Hub pull secret: dockerhub-creds applied")
 
+    # ISSUE-019: ClusterIP when nginx-ingress is entry point (avoids second NLB)
+    # ISSUE-023: hostname so gateway reports K8s identity not Docker Compose name
+    _svc_type    = "ClusterIP" if cfg.get("ingress", {}).get("enabled") else "LoadBalancer"
+    _gw_hostname = cfg.get("gateway_hostname", "jtp-gateway")
+
     generator = KIT_DIR / "k8s_manifest_generator.py"
     r = subprocess.run(
         [
@@ -664,6 +669,8 @@ def stage_kubernetes(kubeconfig: str):
             "--service-port", str(cfg.get("k8s_service_port", cfg["k8s_port"])),
             "--nodeport", str(cfg["k8s_nodeport"]),
             "--outputs-dir", str(manifests_dir),
+            "--service-type", _svc_type,        # ISSUE-019
+            "--gateway-hostname", _gw_hostname,  # ISSUE-023
         ],
         capture_output=True, text=True,
     )
@@ -764,6 +771,35 @@ def stage_verify(kubeconfig: str):
 
 
 # =============================================================================
+#  HELPER: refresh_kubeconfig  (ISSUE-017)
+#  Exoscale SKS clusters rotate TLS certs periodically. The saved kubeconfig CA
+#  bundle becomes stale ~2-3 hours after cluster creation. Re-generate before any
+#  long-running stage (particularly Stage 5c which runs after nodes are Ready).
+# =============================================================================
+def refresh_kubeconfig(kubeconfig: str) -> str:
+    """Re-generate kubeconfig from Exoscale API to avoid TLS cert rotation issues."""
+    cluster_id = RESULTS.get("resources", {}).get("sks_cluster", {}).get("id")
+    if not cluster_id:
+        warn("refresh_kubeconfig: cluster_id not in RESULTS -- skipping refresh")
+        return kubeconfig
+    try:
+        import base64
+        from exoscale.api.v2 import Client as _ExoClient
+        _c = _ExoClient(cfg["exo_key"], cfg["exo_secret"], zone=cfg["exoscale_zone"])
+        kc_resp = _c.generate_sks_cluster_kubeconfig(
+            id=cluster_id, groups=["system:masters"], ttl=86400, user="admin"
+        )
+        kc_bytes = base64.b64decode(kc_resp.get("kubeconfig", ""))
+        if kc_bytes:
+            Path(kubeconfig).write_bytes(kc_bytes)
+            ok(f"Kubeconfig refreshed (ISSUE-017): {kubeconfig}")
+        else:
+            warn("refresh_kubeconfig: empty response -- keeping existing kubeconfig")
+    except Exception as _e:
+        warn(f"refresh_kubeconfig: {_e} -- keeping existing kubeconfig + using --insecure-skip-tls-verify")
+    return kubeconfig
+
+
 #  HELPER: get_lb_external_ip  (Task 5.4 -- Plan 123-P5 ISSUE-016)
 #  Waits for and returns the external LoadBalancer IP of a K8s service.
 #  Used by stage_5c_ingress_tls() and stage_connectivity_test().
@@ -1714,8 +1750,14 @@ if __name__ == "__main__":
         # Stage 5b: CSI driver + PVC manifest
         stage_install_csi(kubeconfig)
 
+        # ISSUE-017: Refresh kubeconfig before Stage 5c -- TLS cert may have rotated
+        # during the 3-8 min node wait (Exoscale SKS rotates certs periodically).
+        # All kubectl calls already use --insecure-skip-tls-verify as fallback,
+        # but a fresh kubeconfig is cleaner and avoids x509 warnings.
+        kubeconfig = refresh_kubeconfig(kubeconfig)
+
         # Stage 5c: nginx-ingress + cert-manager + TLS  (Plan 123-P5 ISSUE-018)
-        # Ordering: nginx LB IP -> DNS update -> cert-manager -> Ingress (ISSUE-020)
+        # Ordering: nginx LB IP -> NLB port fix (ISSUE-021) -> DNS -> cert-manager -> Ingress
         stage_5c_ingress_tls(kubeconfig)
 
         stage_kubernetes(kubeconfig)

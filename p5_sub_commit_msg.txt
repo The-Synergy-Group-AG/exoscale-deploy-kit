@@ -1,0 +1,29 @@
+feat(pipeline): add Stage 5c nginx-ingress+cert-manager + LB IP test fix
+
+Stage 5c added to deploy_pipeline.py:
+- 5c-1: Deploy nginx-ingress via Helm, wait for LB IP
+- 5c-2: Update DNS via update_dns.py --ip <ingress-lb-ip>  (DNS before cert-manager)
+- 5c-3: Deploy cert-manager via Helm
+- 5c-4: Generate + apply ClusterIssuer + Ingress from config.yaml
+- 5c-5: Wait for TLS certificate Ready=True
+
+Helper functions added:
+- get_lb_external_ip(): waits for K8s LB external IP (used by 5c + 6b)
+- generate_ingress_yaml(): config-driven ClusterIssuer+Ingress YAML generation
+
+Stage 6b connectivity test updated:
+- Now prefers LB external IP over NodePort (production traffic path)
+- Falls back to NodePort if LB IP unavailable
+
+update_dns.py:
+- Added --ip CLI argument via argparse
+- Pipeline calls: python3 update_dns.py --ip <lb-ip>
+- Backward-compatible: no --ip falls back to hardcoded default
+
+config.yaml:
+- Added dns: section with zone_account, domain, ingress_a_records
+
+ISSUE-018: nginx-ingress + cert-manager now fully automated in pipeline
+ISSUE-016: Stage 6b verify now uses LB external IP, not node IP
+ISSUE-020: DNS update (5c-2) happens before cert-manager apply (5c-4)
+ISSUE-015: DNS automation works once zone is migrated to deploy account

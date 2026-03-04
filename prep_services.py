@@ -6,6 +6,8 @@ Run BEFORE docker build. Copies each service's src/ contents into
 exoscale-deploy-kit/service/services/{service_name}/ so the Dockerfile
 COPY instruction can include them all.
 
+Also copies tests/ alongside src/ (added in Phase 4 — Plan 123).
+
 Usage:
     python3 prep_services.py
 """
@@ -13,7 +15,7 @@ import shutil
 import json
 from pathlib import Path
 
-SERVICES_SRC = Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / "generated-v8.2.16" / "services"
+SERVICES_SRC = Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / "generated-v8.2.22" / "services"
 DEST = Path(__file__).parent / "service" / "services"
 
 def main():
@@ -45,6 +47,12 @@ def main():
         for f in src_dir.iterdir():
             if f.is_file():
                 shutil.copy2(f, dest_svc / f.name)
+
+        # Copy tests/ directory tree alongside src/ files
+        tests_dir = svc / "tests"
+        if tests_dir.exists():
+            shutil.copytree(tests_dir, dest_svc / "tests", dirs_exist_ok=True)
+
         ok += 1
         if ok % 50 == 0:
             print(f"  ... {ok}/{len(services)} done")

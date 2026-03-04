@@ -165,8 +165,10 @@ if [ "$DO_TEARDOWN" = "true" ]; then
     echo "  STEP 1: TEARDOWN — Decommissioning existing infrastructure"
     echo "============================================================"
     cd "$SCRIPT_DIR"
+    set +e
     python3 -X utf8 teardown.py --force 2>&1
     TEAR_EXIT=$?
+    set -e
     echo ""
     if [ $TEAR_EXIT -ne 0 ]; then
         echo "[WARN] Teardown exited with code $TEAR_EXIT — continuing to deploy"
