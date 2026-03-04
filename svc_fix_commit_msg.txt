@@ -1,0 +1,20 @@
+fix(svc): rename config dict to _cfg — avoid shadowing by route handler
+
+Template svc_configuration_015 generates a GET /config route handler
+named "async def config()" which shadows the module-level
+"config = json.load(_f)" dict at Python runtime.
+
+When root() calls config.get(...), Python resolves "config" to the
+function object (defined later in the module), not the dict — hence
+AttributeError: function object has no attribute get (HTTP 500).
+
+Fix: rename config -> _cfg (26 replacements per file)
+
+Affected services:
+  service/services/configuration_management/main.py
+  service/services/template_ecosystem_manager/main.py
+
+Test evidence: run_service_tests_v4.py 217/219 PASSED — these 2 were
+the only failures, both with HTTP 500 on GET / (GET /health was 200 OK).
+
+Note: requires Docker image rebuild (iandrewitz/docker-jtp:9) to fix in cluster.
