@@ -1,16 +1,18 @@
 # =============================================================
 # Exoscale Deploy Kit - Configuration
-# Lessons Learned v2 — 219-service deployment
+# Lessons Learned v2 -- 219-service deployment
 # =============================================================
-# LESSON 17 FIX: SG per-instance attachment via API returns 404 — removed.
+# LESSON 17 FIX: SG per-instance attachment via API returns 404 -- removed.
 # LESSON MEM: Single service hit 77% on small (2GB). Use medium (4GB) nodes.
 # LESSON SCALE: 219 services in one pod needs 2Gi+ memory limit.
-# Plan 121: node_type_size upgraded to large (8GB) — OOM fix
-# Plan 121: service_version 6 — docker-jtp:6 (Gateway v7, PROXY_TIMEOUT=2.5s)
+# Plan 121: node_type_size upgraded to large (8GB) -- OOM fix
+# Plan 121: service_version 6 -- docker-jtp:6 (Gateway v7, PROXY_TIMEOUT=2.5s)
+# Plan 123 Phase 4: service_version updated to 8 -- docker-jtp:8 (real implementations)
+# Plan 123 Phase 5: added dns: section for DNS automation (ISSUE-015)
 # =============================================================
 project_name: jtp-test1
 service_name: docker-jtp
-service_version: '7'
+service_version: '8'
 docker_hub_user: iandrewitz
 environment: production
 exoscale_zone: ch-dk-2
@@ -62,3 +64,21 @@ monitoring:
 pod_disruption_budget:
   enabled: true
   min_available: 1
+
+# ── DNS automation (Task 5.2 -- Plan 123-P5 ISSUE-015) ───────────────────────
+# zone_account: 'current' = use deploy API key to update DNS automatically
+#               'manual'  = skip DNS automation (operator must update manually)
+# When zone_account is 'current', Stage 5c calls update_dns.py --ip <lb-ip>
+# PREREQUISITE: DNS zone must be in the SAME Exoscale account as EXO_API_KEY.
+#   If zone still lives in the old account, set zone_account: manual and
+#   update the A record in the old account's console, then switch to 'current'
+#   once the zone is migrated (see Task 5.1 in PHASE_5_IMPLEMENTATION_PLAN.md).
+dns:
+  enabled: true
+  zone_account: current
+  domain: jobtrackerpro.ch
+  ingress_a_records:
+    - name: ""          # @ record (root domain)
+      ttl: 300
+    - name: www
+      ttl: 300

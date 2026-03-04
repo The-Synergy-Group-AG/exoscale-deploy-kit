@@ -1,10 +1,29 @@
 #!/usr/bin/env python3
 """
-Update Exoscale DNS A records for jobtrackerpro.ch → nginx-ingress LB IP.
+Update Exoscale DNS A records for jobtrackerpro.ch -> nginx-ingress LB IP.
 Uses exoscale.api.v2 Client (same pattern as deploy_pipeline.py).
+
+Usage:
+  python3 update_dns.py                      # uses hardcoded default IP
+  python3 update_dns.py --ip 159.100.248.98  # override target IP (pipeline use)
+
+Task 5.2 (Plan 123-P5 ISSUE-015): Added --ip argument so deploy_pipeline.py
+Stage 5c can call this script with the dynamically discovered ingress LB IP.
 """
+import argparse
 import os, sys, traceback
 from pathlib import Path
+
+# ── Argument parsing (Task 5.2 — ISSUE-015) ──────────────────────────────────
+_parser = argparse.ArgumentParser(
+    description="Update Exoscale DNS A records for the nginx-ingress LB IP"
+)
+_parser.add_argument(
+    "--ip",
+    default=None,
+    help="Target A record IP (e.g. 159.100.248.98). Overrides the hardcoded default."
+)
+_args = _parser.parse_args()
 
 # ── Load credentials from .env ───────────────────────────────────────────────
 env_path = Path(__file__).parent / ".env"
@@ -21,14 +40,16 @@ if not API_KEY or not API_SECRET:
 
 # ── Config ───────────────────────────────────────────────────────────────────
 DOMAIN       = "jobtrackerpro.ch"
-NGINX_LB_IP  = "159.100.248.98"
+# NGINX_LB_IP: use --ip arg if provided, else fall back to last known IP.
+# When called from deploy_pipeline.py Stage 5c, --ip is always passed.
+NGINX_LB_IP  = _args.ip if _args.ip else "159.100.248.98"
 ZONE         = "ch-dk-2"
 API_URL      = f"https://api-{ZONE}.exoscale.com/v2"
 
 from exoscale.api.v2 import Client
 client = Client(API_KEY, API_SECRET, url=API_URL)
 
-print(f"\nExoscale DNS Update — {DOMAIN}")
+print(f"\nExoscale DNS Update -- {DOMAIN}")
 print(f"  Target IP : {NGINX_LB_IP}")
 print(f"  API URL   : {API_URL}\n")
 

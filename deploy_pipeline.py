@@ -1,58 +1,66 @@
 #!/usr/bin/env python3
 """
-Exoscale Deploy Kit — Production Deployment Pipeline
+Exoscale Deploy Kit -- Production Deployment Pipeline
 =====================================================
 BATTLE-TESTED: Validated 2026-02-20 on live Exoscale + Docker Hub infrastructure.
 Extracted from a battle-tested deployment and de-hardcoded for reuse in any project.
 
 ARCHITECTURE:
-  Stage 1: Docker build (multi-stage, linux/amd64, non-root)
-  Stage 2: Docker Hub push (both versioned + latest tags)
-  Stage 3: Exoscale infrastructure (Security Group, SKS Cluster, Node Pool)
-  Stage 4: Wait for worker nodes to join cluster
-  Stage 5: Apply Kubernetes manifests
-  Stage 6: Verify pods Running
-  Stage 7: Final report
+  Stage 0:  Preflight checks
+  Stage 1:  Docker build (multi-stage, linux/amd64, non-root)
+  Stage 2:  Docker Hub push (both versioned + latest tags)
+  Stage 3:  Exoscale infrastructure (Security Group, SKS Cluster, Node Pool)
+  Stage 3b: Object Storage (SOS) + DBaaS (managed database)
+  Stage 4:  Wait for worker nodes to join cluster
+  Stage 3b: SG post-attach (after nodes Ready)
+  Stage 4b: Node labels
+  Stage 5:  Apply Kubernetes manifests
+  Stage 5b: Exoscale CSI driver (block storage)
+  Stage 5c: nginx-ingress + cert-manager + TLS  [Plan 123-P5 ISSUE-018]
+  Stage 5d: Inject service credentials as K8s secrets
+  Stage 6:  Verify pods Running
+  Stage 6b: Connectivity test (uses LB IP)        [Plan 123-P5 ISSUE-016]
+  Stage 7:  Final report
 
-CRITICAL LESSONS LEARNED (battle-tested 2026-02-20 — do not repeat these mistakes):
+CRITICAL LESSONS LEARNED (battle-tested 2026-02-20 -- do not repeat these mistakes):
   1. Exoscale API base URL is ZONE-SPECIFIC:
        https://api-{zone}.exoscale.com/v2  <- CORRECT
        https://api.exoscale.com/v2         <- WRONG (404 on all compute endpoints)
-  2. Use official Python SDK (exoscale v0.16.1+) — manual HMAC-SHA256 signing fails in practice
-  3. Instance type IDs must be queried at runtime — hardcoded IDs change and break silently
+  2. Use official Python SDK (exoscale v0.16.1+) -- manual HMAC-SHA256 signing fails in practice
+  3. Instance type IDs must be queried at runtime -- hardcoded IDs change and break silently
   4. Node pool MUST be created + nodes MUST be Ready BEFORE applying K8s manifests
-  5. Create nodepool WITHOUT security_groups first — adding SG on creation returns HTTP 500
+  5. Create nodepool WITHOUT security_groups first -- adding SG on creation returns HTTP 500
      on fresh clusters. Update SG after pool is running (Step B pattern).
   6. NLB is auto-created by Exoscale cloud controller when K8s type:LoadBalancer service
-     is applied — NEVER create NLB manually (creates duplicate, breaks routing)
-  7. NodePort 30671 is pre-approved in Exoscale default Security Group — use this or
+     is applied -- NEVER create NLB manually (creates duplicate, breaks routing)
+  7. NodePort 30671 is pre-approved in Exoscale default Security Group -- use this or
      30888/30999. Any other NodePort will be BLOCKED by the default SG.
-  8. Docker build: pass args as Python list items — never string interpolation in subprocess
+  8. Docker build: pass args as Python list items -- never string interpolation in subprocess
   9. kubectl env needs KUBECONFIG + PATH set explicitly in subprocess calls (no shell PATH)
  10. Worker nodes take 3-8 minutes to boot, register, and become Ready after pool creation
  11. Create Docker Hub pull secret BEFORE applying K8s manifests (ErrImagePull otherwise)
  12. Use --dry-run=client -o yaml | kubectl apply -f - pattern for secret creation
- 13. SKS node pools reject 'tiny' and 'micro' instance sizes (HTTP 409) — auto-upgrade to 'small'
- 14. Exoscale resource names must be lowercase DNS-label format — slugify project_name
+ 13. SKS node pools reject 'tiny' and 'micro' instance sizes (HTTP 409) -- auto-upgrade to 'small'
+ 14. Exoscale resource names must be lowercase DNS-label format -- slugify project_name
  15. Teardown: use slugified project_name for resource matching (e.g. 'jtp-test1', not 'JTP-test1')
  16. project_name in config.yaml is display name; derive slug via re.sub for all API resource names
- 17. update_sks_nodepool(security_groups=...) ALSO returns HTTP 500 — Exoscale API bug.
+ 17. update_sks_nodepool(security_groups=...) ALSO returns HTTP 500 -- Exoscale API bug.
      FIX: Attach SG to each nodepool instance individually via per-instance API:
-       nodepool["instance-pool"]["id"] → get_instance_pool(id=...).instances
-       → attach_instance_to_security_group(id=sg_id, instance={"id": inst_id})
-     CRITICAL: args are (id=SG_id, instance={"id": inst_id}) — SG id first, NOT instance-first.
+       nodepool["instance-pool"]["id"] -> get_instance_pool(id=...).instances
+       -> attach_instance_to_security_group(id=sg_id, instance={"id": inst_id})
+     CRITICAL: args are (id=SG_id, instance={"id": inst_id}) -- SG id first, NOT instance-first.
  18. Exoscale SOS endpoint (sos-{zone}.exoscale.com) may be unresolvable on some networks
      (corporate DNS, VPN, Windows DNS cache). The botocore EndpointConnectionError is NOT
      a ClientError so it bypasses the boto3 except block. FIX: wrap boto3 client + create_bucket
      in a broad except Exception that warns + returns None (non-fatal) so the pipeline continues.
- 19. Kubernetes label values must match [a-zA-Z0-9_.-] — commas and spaces are NOT allowed.
+ 19. Kubernetes label values must match [a-zA-Z0-9_.-] -- commas and spaces are NOT allowed.
      config.yaml label values like "agent1,agent2" fail with kubectl label error.
-     FIX: sanitize all label values via re.sub before applying — replace invalid chars with '-',
+     FIX: sanitize all label values via re.sub before applying -- replace invalid chars with '-',
      collapse '--', strip leading/trailing '-', truncate to 63 chars.
- 20. Exoscale CSI driver manifest URL changes between releases — do NOT hardcode a single path.
+ 20. Exoscale CSI driver manifest URL changes between releases -- do NOT hardcode a single path.
      FIX: try a list of candidate URLs in order; first one that kubectl apply succeeds is used.
      If all fail, fall back to manual StorageClass creation only (pipeline still succeeds).
- 21. Exoscale SDK Client has NO method 'terminate_dbaas_service_pg' — AttributeError on teardown.
+ 21. Exoscale SDK Client has NO method 'terminate_dbaas_service_pg' -- AttributeError on teardown.
      The actual delete method name is unknown at SDK install time (changes between versions).
      FIX: In teardown.py, iterate candidate method names ['terminate_dbaas_service_pg',
      'delete_dbaas_service_pg', 'terminate_dbaas_service'] via getattr() with None fallback.
@@ -64,11 +72,17 @@ CRITICAL LESSONS LEARNED (battle-tested 2026-02-20 — do not repeat these mista
        a) Replace any Unicode-only chars in print/warn/fail/log strings with ASCII equivalents
           (e.g. replace U+2192 -> with ASCII ->).
        b) Always run all kit scripts with: python -X utf8 <script.py>
-          This forces UTF-8 for ALL file I/O including SDK internals — NOT just stdout.
+          This forces UTF-8 for ALL file I/O including SDK internals -- NOT just stdout.
           (PYTHONIOENCODING=utf-8 only fixes stdout/stderr, not file open() calls)
           (PYTHONUTF8=1 via 'set' in cmd.exe does NOT propagate correctly)
           The -X utf8 flag is the ONLY reliable solution on Python 3.7+/Windows.
      LESSON: Any script that imports exoscale.api.v2 WILL crash on Windows without -X utf8.
+
+PLAN 123-P5 ADDITIONS (2026-03-04):
+  ISSUE-015: DNS zone migration + update_dns.py --ip argument (Task 5.2)
+  ISSUE-016: Stage 6b connectivity test now prefers LB external IP over NodePort (Task 5.4)
+  ISSUE-018: Stage 5c nginx-ingress + cert-manager fully automated in pipeline (Task 5.3)
+  ISSUE-020: DNS update runs before cert-manager apply -- guaranteed ordering (Task 5.5)
 
 CONFIGURATION:
   Edit config.yaml for all non-secret settings.
@@ -78,6 +92,7 @@ PREREQUISITES:
   pip install -r requirements.txt
   docker running
   kubectl installed
+  helm installed (for Stage 5c)
 """
 import json
 import re
@@ -90,18 +105,9 @@ from pathlib import Path
 
 from config_loader import load_config
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  CONFIGURATION — loaded from config.yaml + .env
-#  Edit config.yaml to change project settings.
-#  Copy .env.example to .env and fill in credentials.
-# ═══════════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════════
-#  WIZARD — runs unless --auto flag is passed
-#  python3 deploy_pipeline.py                                      → wizard
-#  python3 deploy_pipeline.py --auto                               → use config.yaml
-#  python3 deploy_pipeline.py --config templates/runs/T1-20260223.yaml --auto
-#                                                                  → use T1 config
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+#  CONFIGURATION -- loaded from config.yaml + .env
+# =============================================================================
 import argparse as _ap
 _parser = _ap.ArgumentParser(add_help=False)
 _parser.add_argument("--auto",   action="store_true", help="Skip wizard")
@@ -119,28 +125,22 @@ if not _args.auto:
     if not _wiz.prompt_bool("Proceed with deployment?", True):
         sys.exit(0)
     _wiz.write_config(_wizard_cfg)
-    # Reload config from the freshly written file
     cfg = load_config(_args.config)
 
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  RUNTIME SETUP — derived from config
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+#  RUNTIME SETUP -- derived from config
+# =============================================================================
 TS        = datetime.now().strftime("%Y%m%d_%H%M%S")
 IMAGE     = f"{cfg['docker_hub_user']}/{cfg['service_name']}:{cfg['service_version']}"
 IMAGE_LTS = f"{cfg['docker_hub_user']}/{cfg['service_name']}:latest"
 
-# Resource names — all prefixed with project_name (no hardcoded names)
-# LESSON 14: Exoscale resource names must be lowercase DNS-label format
-# Slugify project_name: lowercase, replace non-alphanumeric with '-', collapse '--'
 _slug = re.sub(r'-+', '-', re.sub(r'[^a-z0-9-]', '-', cfg['project_name'].lower())).strip('-')
 SG_NAME   = f"{_slug}-sg-{TS[-6:]}"
 CLUSTER_N = f"{_slug}-cluster-{TS[-6:]}"
 NLB_NAME  = f"{cfg['project_name']}-nlb-{TS[-6:]}"
 POOL_NAME = f"{_slug}-workers"
 
-# Paths — all relative to this file (no absolute paths)
 KIT_DIR     = Path(__file__).parent
 SERVICE_DIR = KIT_DIR / "service"
 OUT         = KIT_DIR / "outputs" / TS
@@ -167,31 +167,19 @@ def elapsed(t): return f"{time.time()-t:.0f}s"
 # =============================================================================
 #  STAGE 0: PREFLIGHT CHECKS
 #  Plan 122-DEH ISSUE-003: Fail fast BEFORE any Exoscale API call or cloud spend.
-#  All prerequisites validated upfront so the operator knows immediately if the
-#  environment is not ready for deployment.
-#  Use --skip-preflight flag to bypass (not recommended for production).
 # =============================================================================
 def stage_preflight() -> None:
-    """
-    Stage 0: Preflight checks.
-    Validates Docker, kubectl, credentials, and DNS before cloud resource creation.
-    Exits sys.exit(1) if any check fails.
-    """
     import socket
     section("STAGE 0: Preflight Checks (Plan 122-DEH ISSUE-003)")
     t0 = time.time()
     failures: list[str] = []
 
-    # Check 1: Docker daemon running
-    r = subprocess.run(
-        ["docker", "info"], capture_output=True, text=True, timeout=15
-    )
+    r = subprocess.run(["docker", "info"], capture_output=True, text=True, timeout=15)
     if r.returncode == 0:
         ok("Docker daemon: running")
     else:
-        failures.append("Docker daemon not running — start Docker Desktop or Docker service")
+        failures.append("Docker daemon not running -- start Docker Desktop or Docker service")
 
-    # Check 2: kubectl binary available
     r = subprocess.run(
         ["kubectl", "version", "--client", "--output=json"],
         capture_output=True, text=True, timeout=10
@@ -200,39 +188,36 @@ def stage_preflight() -> None:
         ok("kubectl: available")
     else:
         failures.append(
-            "kubectl not found or not working — "
+            "kubectl not found or not working -- "
             "install kubectl: https://kubernetes.io/docs/tasks/tools/"
         )
 
-    # Check 3: Exoscale API credentials
     if cfg.get("exo_key") and cfg.get("exo_secret"):
         ok(f"Exoscale credentials: set (key={cfg['exo_key'][:8]}...)")
     else:
         failures.append(
-            "Exoscale credentials missing — set EXO_API_KEY and EXO_API_SECRET in .env"
+            "Exoscale credentials missing -- set EXO_API_KEY and EXO_API_SECRET in .env"
         )
 
-    # Check 4: Docker Hub token
     if cfg.get("docker_hub_token"):
         ok("Docker Hub token: set")
     else:
         failures.append(
-            "Docker Hub token missing — set DOCKER_HUB_TOKEN in .env"
+            "Docker Hub token missing -- set DOCKER_HUB_TOKEN in .env"
         )
 
-    # Check 5: DNS resolution for Exoscale zone endpoint
     api_host = f"api-{cfg['exoscale_zone']}.exoscale.com"
     try:
         socket.getaddrinfo(api_host, 443, proto=socket.IPPROTO_TCP)
         ok(f"DNS: {api_host} resolves OK")
     except socket.gaierror:
         failures.append(
-            f"DNS resolution failed for {api_host} — "
+            f"DNS resolution failed for {api_host} -- "
             "check network connection, VPN status, or corporate DNS settings"
         )
 
     if failures:
-        fail(f"PREFLIGHT FAILED — {len(failures)} check(s) not satisfied:")
+        fail(f"PREFLIGHT FAILED -- {len(failures)} check(s) not satisfied:")
         for i, msg in enumerate(failures, 1):
             fail(f"  {i}. {msg}")
         fail("")
@@ -244,16 +229,14 @@ def stage_preflight() -> None:
     RESULTS["stages"]["preflight"] = {"status": "success", "duration": elapsed(t0)}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  STAGE 1: DOCKER BUILD
-#  LESSON 8: Always pass build args as list items, never string interpolations
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 def stage_docker_build():
     section("STAGE 1: Docker Build")
     t0 = time.time()
     build_time = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # LESSON 8: Always pass build args as Python list (never string in subprocess)
     cmd = [
         "docker", "build",
         "--platform", "linux/amd64",
@@ -268,7 +251,6 @@ def stage_docker_build():
         str(SERVICE_DIR),
     ]
     log(f"Building: {IMAGE}")
-    log(f"  Service dir: {SERVICE_DIR}")
     r = subprocess.run(cmd, check=False)
     if r.returncode != 0:
         fail("Docker build FAILED")
@@ -289,14 +271,13 @@ def stage_docker_build():
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  STAGE 2: DOCKER HUB PUSH
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 def stage_docker_push():
     section("STAGE 2: Docker Hub Push")
     t0 = time.time()
 
-    # Login using token from environment (never hardcoded)
     r = subprocess.run(
         ["docker", "login", "--username", cfg["docker_hub_user"], "--password-stdin", "docker.io"],
         input=cfg["docker_hub_token"], text=True, capture_output=True,
@@ -306,7 +287,6 @@ def stage_docker_push():
         sys.exit(1)
     ok("Authenticated with Docker Hub")
 
-    # Push versioned + latest
     for tag in [IMAGE, IMAGE_LTS]:
         log(f"Pushing: {tag}")
         r = subprocess.run(["docker", "push", tag], check=False)
@@ -324,56 +304,32 @@ def stage_docker_push():
     RESULTS["resources"]["docker_image"] = IMAGE
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  HELPER: _populate_sg_rules — LESSON 25/26
-#  LESSON 25: An empty SG on Exoscale has NO EFFECT (console: "will have no effect").
-#             Rules MUST be added before the SG is attached to worker nodes.
-#  LESSON 26: create_security_group returns an OPERATION, not the resource.
-#             sg.get("id") = OPERATION ID. Real SG ID = c.list_security_groups() by name.
-#             Both lessons were confirmed 2026-03-03 on the live cluster. Without
-#             these fixes: SG was empty, instances only had "default" SG, kubectl logs
-#             returned 504 (port 10250 blocked), NodePort traffic worked only because
-#             the default SG pre-approves 30671.
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+#  HELPER: _populate_sg_rules -- LESSON 25/26
+# =============================================================================
 def _populate_sg_rules(c, sg_id: str) -> None:
-    """
-    Add the required rules to the run's Security Group immediately after creation.
-    Rules cover: kubelet API, NodePorts, HTTP/HTTPS, intra-cluster CNI, and egress.
-    Must be called before stage_sg_post_attach() attaches the SG to instances.
-    Non-fatal: warns on individual rule failures, never sys.exit().
-    """
-    # LESSON 26 NOTE: sg_id here is the REAL SG ID (resolved from list_security_groups),
-    # NOT the operation ID from create_security_group. See stage_exoscale() for resolution.
     _SGS_RULES = [
-        # Kubelet API — CRITICAL for kubectl logs/exec/port-forward
         {"flow_direction": "ingress", "protocol": "tcp", "network": "0.0.0.0/0",
          "start_port": 10250, "end_port": 10250,
-         "description": "Kubelet API — kubectl logs/exec/port-forward"},
-        # Read-only kubelet metrics
+         "description": "Kubelet API -- kubectl logs/exec/port-forward"},
         {"flow_direction": "ingress", "protocol": "tcp", "network": "0.0.0.0/0",
          "start_port": 10255, "end_port": 10255,
          "description": "Kubelet read-only metrics"},
-        # NodePort range — covers ALL K8s NodePort services (30671, 30888, 30999 + more)
         {"flow_direction": "ingress", "protocol": "tcp", "network": "0.0.0.0/0",
          "start_port": 30000, "end_port": 32767,
          "description": "NodePort services 30000-32767 (incl. 30671 gateway)"},
-        # HTTP/HTTPS for NLB health checks and direct access
         {"flow_direction": "ingress", "protocol": "tcp", "network": "0.0.0.0/0",
          "start_port": 80, "end_port": 80, "description": "HTTP"},
         {"flow_direction": "ingress", "protocol": "tcp", "network": "0.0.0.0/0",
          "start_port": 443, "end_port": 443, "description": "HTTPS"},
-        # Intra-cluster: pod-to-pod, Calico CNI, konnectivity proxy
-        # NOTE: Exoscale SDK does NOT accept icmp_type/icmp_code — omit for ICMP rules
         {"flow_direction": "ingress", "protocol": "tcp",
          "security_group": {"id": sg_id}, "start_port": 1, "end_port": 65535,
          "description": "Intra-cluster TCP (Calico CNI, konnectivity, pod-to-pod)"},
         {"flow_direction": "ingress", "protocol": "udp",
          "security_group": {"id": sg_id}, "start_port": 1, "end_port": 65535,
          "description": "Intra-cluster UDP (Calico VXLAN, WireGuard)"},
-        # ICMP: ping + NLB health probes
         {"flow_direction": "ingress", "protocol": "icmp", "network": "0.0.0.0/0",
          "description": "ICMP ingress (ping, NLB health probes)"},
-        # Egress: unrestricted (Docker Hub pulls, DNS, Exoscale API, NTP)
         {"flow_direction": "egress", "protocol": "tcp", "network": "0.0.0.0/0",
          "start_port": 1, "end_port": 65535, "description": "Egress all TCP"},
         {"flow_direction": "egress", "protocol": "udp", "network": "0.0.0.0/0",
@@ -387,7 +343,7 @@ def _populate_sg_rules(c, sg_id: str) -> None:
         _desc = _rule.get("description", "")
         try:
             c.add_rule_to_security_group(id=sg_id, **_rule)
-            ok(f"  SG rule: {_rule['flow_direction']} {_rule['protocol']} — {_desc}")
+            ok(f"  SG rule: {_rule['flow_direction']} {_rule['protocol']} -- {_desc}")
             _ok += 1
         except Exception as _e:
             _err = str(_e)
@@ -400,57 +356,38 @@ def _populate_sg_rules(c, sg_id: str) -> None:
         ok(f"SG populated: {_ok} rules added, {_skip} existed, {_fail} failed")
         RESULTS["resources"]["security_group"]["rules_added"] = _ok
     else:
-        warn(f"All SG rules failed — SG is empty, will have no effect on traffic!")
+        warn(f"All SG rules failed -- SG is empty, will have no effect on traffic!")
         RESULTS["resources"]["security_group"]["rules_failed"] = _fail
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  STAGE 3: EXOSCALE INFRASTRUCTURE
-#  LESSON 1: Use zone-specific endpoint: api-{zone}.exoscale.com (NOT api.exoscale.com)
-#  LESSON 2: Use official Python SDK (v0.16.1+) — manual HMAC signing fails
-#  LESSON 3: Query instance type IDs at runtime — never hardcode them
-#  LESSON 5: Create nodepool WITHOUT SG first, then update SG after pool is running
-#  LESSON 6: NLB is auto-created by K8s cloud controller — NEVER create manually
-#  LESSON 17: update_sks_nodepool(security_groups=...) HTTP 500 — use per-instance API instead
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 def stage_exoscale():
     section("STAGE 3: Exoscale Infrastructure")
     t0 = time.time()
 
-    # LESSON 2: SDK handles HMAC-SHA256 auth correctly
-    # LESSON 1: zone= parameter sets the zone-specific endpoint automatically
     from exoscale.api.v2 import Client
     c = Client(cfg["exo_key"], cfg["exo_secret"], zone=cfg["exoscale_zone"])
     log(f"Connected to Exoscale zone: {cfg['exoscale_zone']}")
 
-    # Security Group
-    # LESSON 26: create_security_group returns an ASYNC OPERATION object, not the
-    # resource. sg.get("id") returns the OPERATION ID (not the SG ID!). To get the
-    # real SG ID, wait briefly then look up by name. Storing the operation ID caused
-    # ALL downstream SG operations (add rules, attach) to 404. (Plan 122-DEH 2026-03-03)
     log(f"Creating security group: {SG_NAME}")
     _sg_op = c.create_security_group(
         name=SG_NAME,
-        description=f"{cfg['project_name']} — {cfg['service_name']} ({TS})",
+        description=f"{cfg['project_name']} -- {cfg['service_name']} ({TS})",
     )
     _sg_op_id = _sg_op.get("id")
-    log(f"SG create operation: {_sg_op_id} — resolving real SG ID...")
-    time.sleep(3)  # allow async operation to complete before lookup
+    log(f"SG create operation: {_sg_op_id} -- resolving real SG ID...")
+    time.sleep(3)
     _all_sgs = c.list_security_groups().get("security-groups", [])
     _sg_real  = next((s for s in _all_sgs if s.get("name") == SG_NAME), {})
-    sg_id     = _sg_real.get("id") or _sg_op_id   # fallback to op_id if lookup fails
+    sg_id     = _sg_real.get("id") or _sg_op_id
     ok(f"Security group resolved: {sg_id} (op was {_sg_op_id[:8]}...)")
     RESULTS["resources"]["security_group"] = {"id": sg_id, "name": SG_NAME}
 
-    # LESSON 25: Populate SG rules IMMEDIATELY after creation.
-    # An empty SG has NO EFFECT on Exoscale (console warns: "will have no effect").
-    # Must add rules before attaching to instances, or the SG is a no-op.
     _populate_sg_rules(c, sg_id)
-
-    # LESSON 7: NodePort pre-approved in Exoscale default SG (also covered by our rules)
     ok(f"Security group ready: {sg_id} (web access via NodePort {cfg['k8s_nodeport']})")
 
-    # LESSON 3: Query instance types at runtime — never hardcode IDs
     log("Querying instance types...")
     types = c.list_instance_types().get("instance-types", [])
     ok(f"Found {len(types)} instance types")
@@ -463,66 +400,54 @@ def stage_exoscale():
             selected_id = t.get("id")
             ok(
                 f"Instance type: {t.get('size')} "
-                f"({t.get('cpus')}cpu/{t.get('memory', 0)//1024}GB) — {selected_id}"
+                f"({t.get('cpus')}cpu/{t.get('memory', 0)//1024}GB) -- {selected_id}"
             )
             break
     if not selected_id and types:
         selected_id = types[0].get("id")
-        warn(f"Exact match not found, using: {types[0].get('size')} — {selected_id}")
+        warn(f"Exact match not found, using: {types[0].get('size')} -- {selected_id}")
 
-    # SKS Kubernetes Version
     log("Querying SKS cluster versions...")
     versions = c.list_sks_cluster_versions().get("sks-cluster-versions", [])
     k8s_ver = versions[0] if versions else None
     ok(f"Kubernetes version: {k8s_ver}")
 
-    # SKS Cluster
     log(f"Creating SKS cluster: {CLUSTER_N}...")
     op = c.create_sks_cluster(
         name=CLUSTER_N,
         cni=cfg["sks_cni"],
         level=cfg["sks_level"],
         version=k8s_ver,
-        description=f"{cfg['project_name']} — {TS}",
+        description=f"{cfg['project_name']} -- {TS}",
         addons=cfg["sks_addons"],
     )
     op_id = op.get("id")
-    log(f"Cluster creation initiated — operation: {op_id}")
+    log(f"Cluster creation initiated -- operation: {op_id}")
     log("Waiting for SKS cluster (3-8 minutes)...")
     result = c.wait(op_id, max_wait_time=600)
     cluster_id = result.get("reference", {}).get("id")
     ok(f"SKS cluster: {cluster_id}")
     RESULTS["resources"]["sks_cluster"] = {"id": cluster_id, "name": CLUSTER_N}
 
-    # LESSON 5 (DEFINITIVE STRATEGY):
-    # Exoscale returns HTTP 500 when security_groups is specified in create_sks_nodepool
-    # on a fresh cluster. Always create WITHOUT SG first (Step A), then attach SG to each
-    # instance individually after pool is running (Step B — see LESSON 17).
-    #
-
-    # LESSON 13: SKS node pools reject tiny and micro instance sizes (HTTP 409)
-    # Auto-upgrade to 'small' which is the minimum supported size.
     _SKS_FORBIDDEN_SIZES = {"tiny", "micro"}
     if cfg.get("node_type_size", "").lower() in _SKS_FORBIDDEN_SIZES:
         _upgraded = "small"
         warn(f"Instance size '{cfg['node_type_size']}' is NOT supported for SKS node pools.")
         warn(f"Auto-upgrading to '{_upgraded}' (minimum supported size).")
         cfg["node_type_size"] = _upgraded
-        # Re-select instance type with upgraded size
         selected_id = None
         for t in types:
             fam  = (t.get("family") or "").lower()
             size = (t.get("size") or "").lower()
             if cfg["node_type_family"] in fam and cfg["node_type_size"] in size:
                 selected_id = t.get("id")
-                ok(f"Upgraded instance type: {t.get('size')} ({t.get('cpus')}cpu) — {selected_id}")
+                ok(f"Upgraded instance type: {t.get('size')} ({t.get('cpus')}cpu) -- {selected_id}")
                 break
         if not selected_id and types:
             selected_id = types[0].get("id")
 
-    # Step A: Create nodepool WITHOUT security_groups
     log(f"Creating node pool: {POOL_NAME} ({cfg['node_count']} x {cfg['node_type_size']})...")
-    log("  (Step A: creating without SG — will attach SG per-instance after pool is running)")
+    log("  (Step A: creating without SG -- will attach SG per-instance after pool is running)")
     op = c.create_sks_nodepool(
         id=cluster_id,
         name=POOL_NAME,
@@ -530,10 +455,9 @@ def stage_exoscale():
         description=f"{cfg['project_name']} worker nodes",
         disk_size=cfg["node_disk_gb"],
         instance_type={"id": selected_id},
-        # NOTE: security_groups intentionally omitted — see LESSON 5
     )
     op_id = op.get("id")
-    log(f"Node pool initiated — operation: {op_id}")
+    log(f"Node pool initiated -- operation: {op_id}")
     log("Waiting for node pool (2-5 minutes)...")
     result = c.wait(op_id, max_wait_time=600)
     pool_id = result.get("reference", {}).get("id")
@@ -542,21 +466,12 @@ def stage_exoscale():
         "id": pool_id, "name": POOL_NAME, "size": cfg["node_count"]
     }
 
-    # Step B: DEFERRED — SG attachment moved to stage_sg_post_attach() called AFTER
-    # stage_wait_for_nodes().  Root cause: attach_instance_to_security_group returns
-    # 404 while instances are still provisioning even though instance-pool API lists them.
-    # By the time stage_wait_for_nodes() succeeds, instances are fully registered in
-    # the compute API and SG attachment succeeds reliably.
-    # (LESSON 20 — Plan 122-DEH ISSUE-001 sequencing fix 2026-03-03)
-    log("SG instance attachment deferred to Stage 3b (after nodes Ready) — see stage_sg_post_attach()")
+    log("SG instance attachment deferred to Stage 3b (after nodes Ready) -- see stage_sg_post_attach()")
     RESULTS["resources"]["node_pool"]["sg_deferred"] = True
 
-    # LESSON 6: NO manual NLB creation.
-    # Exoscale cloud controller auto-creates NLB when K8s type:LoadBalancer service is applied.
     log("NLB: delegated to Exoscale cloud controller (K8s type:LoadBalancer service)")
     ok("NLB will appear as EXTERNAL-IP once K8s cloud controller provisions it")
 
-    # Kubeconfig
     log("Retrieving kubeconfig...")
     import base64
     kc_resp = c.generate_sks_cluster_kubeconfig(
@@ -571,15 +486,13 @@ def stage_exoscale():
     return str(kc_path)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  STAGE 4: WAIT FOR WORKER NODES
-#  LESSON 10: Nodes take 3-8 minutes to boot, register, and become Ready
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 def stage_wait_for_nodes(kubeconfig: str):
     section("STAGE 4: Wait for Worker Nodes")
     t0 = time.time()
 
-    # LESSON 9: Set KUBECONFIG in subprocess env; inherit OS PATH (Windows + Linux compatible)
     env = {**os.environ, "KUBECONFIG": kubeconfig}
 
     log(f"Waiting for {cfg['node_count']} worker nodes (up to 12 minutes)...")
@@ -605,28 +518,16 @@ def stage_wait_for_nodes(kubeconfig: str):
         ok(f"All {cfg['node_count']} worker nodes Ready! ({elapsed(t0)})")
         RESULTS["stages"]["wait_nodes"] = {"status": "success", "duration": elapsed(t0)}
     else:
-        warn(f"Nodes not all Ready after {elapsed(t0)} — proceeding anyway")
+        warn(f"Nodes not all Ready after {elapsed(t0)} -- proceeding anyway")
         RESULTS["stages"]["wait_nodes"] = {"status": "partial", "duration": elapsed(t0)}
 
     return nodes_ready
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  STAGE 3b: SG POST-ATTACH — after worker nodes are Ready
-#  LESSON 23: attach_instance_to_security_group returns 404 if called while
-#  instances are still provisioning (even if instance-pool API lists them).
-#  FIX: defer SG attachment to AFTER stage_wait_for_nodes().  By that point the
-#  compute API has fully registered each instance and attachment succeeds.
-#  (Plan 122-DEH ISSUE-001 sequencing fix — 2026-03-03)
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+#  STAGE 3b: SG POST-ATTACH -- after worker nodes are Ready
+# =============================================================================
 def stage_sg_post_attach() -> None:
-    """
-    Attach the run's Security Group to every node-pool instance.
-    Called AFTER stage_wait_for_nodes() so instances are fully registered
-    in the Exoscale compute API (no more 404 on attach_instance_to_security_group).
-    Reads IDs from the RESULTS dict populated by stage_exoscale().
-    Non-fatal: warns on partial failure, never sys.exit().
-    """
     section("STAGE 3b: SG Post-Attach (after nodes Ready)")
     t0 = time.time()
 
@@ -635,17 +536,17 @@ def stage_sg_post_attach() -> None:
     pool_id    = RESULTS["resources"].get("node_pool", {}).get("id")
 
     if not all([sg_id, cluster_id, pool_id]):
-        warn("SG post-attach: missing resource IDs — skipping")
+        warn("SG post-attach: missing resource IDs -- skipping")
         return
 
     from exoscale.api.v2 import Client
     c = Client(cfg["exo_key"], cfg["exo_secret"], zone=cfg["exoscale_zone"])
 
-    _SG_MAX_ATTEMPTS = 10   # more attempts now that nodes ARE ready
-    _SG_RETRY_DELAY  = 15   # shorter delay (15s) — instances should respond fast
+    _SG_MAX_ATTEMPTS = 10
+    _SG_RETRY_DELAY  = 15
     log(
         f"Attaching SG {sg_id[:8]}... to node-pool instances "
-        f"— up to {_SG_MAX_ATTEMPTS} attempts x {_SG_RETRY_DELAY}s"
+        f"-- up to {_SG_MAX_ATTEMPTS} attempts x {_SG_RETRY_DELAY}s"
     )
     _sg_success  = False
     _attached    = 0
@@ -675,7 +576,7 @@ def stage_sg_post_attach() -> None:
                     time.sleep(_SG_RETRY_DELAY)
                 continue
 
-            log(f"  Attempt {_attempt}/{_SG_MAX_ATTEMPTS}: found {len(_instances)} instance(s) — attaching SG...")
+            log(f"  Attempt {_attempt}/{_SG_MAX_ATTEMPTS}: found {len(_instances)} instance(s) -- attaching SG...")
             _attached = 0
             for _inst in _instances:
                 _inst_id   = _inst.get("id")
@@ -703,28 +604,24 @@ def stage_sg_post_attach() -> None:
         RESULTS["resources"]["node_pool"]["sg_attached"]       = True
         RESULTS["resources"]["node_pool"]["sg_attached_count"] = _attached
         RESULTS["resources"]["node_pool"].pop("sg_deferred", None)
-        ok(f"SG post-attach complete — NodePort traffic now routed to worker nodes")
+        ok(f"SG post-attach complete -- NodePort traffic now routed to worker nodes")
     else:
         warn(f"SG post-attach failed after {_SG_MAX_ATTEMPTS} attempts: {_last_error}")
-        warn("NodePort traffic will be blocked — manual SG attach needed in Exoscale Console")
+        warn("NodePort traffic will be blocked -- manual SG attach needed in Exoscale Console")
         RESULTS["resources"]["node_pool"]["sg_update_failed"]   = True
         RESULTS["resources"]["node_pool"]["sg_attach_attempts"] = _SG_MAX_ATTEMPTS
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  STAGE 5: KUBERNETES MANIFESTS
-#  LESSON 11: Create Docker Hub pull secret BEFORE applying manifests
-#  LESSON 12: Use --dry-run=client -o yaml | kubectl apply -f - for secret creation
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 def stage_kubernetes(kubeconfig: str):
     section("STAGE 5: Kubernetes Deployment")
     t0 = time.time()
     manifests_dir = OUT / "k8s-manifests"
 
-    # LESSON 9: Set KUBECONFIG in subprocess env; inherit OS PATH (Windows + Linux compatible)
     env = {**os.environ, "KUBECONFIG": kubeconfig}
 
-    # Create namespace
     log(f"Creating namespace: {cfg['k8s_namespace']}")
     r_ns = subprocess.run(
         ["kubectl", "create", "namespace", cfg["k8s_namespace"]],
@@ -735,8 +632,6 @@ def stage_kubernetes(kubeconfig: str):
     else:
         log(f"  Namespace: {r_ns.stderr.strip()[:80]} (may already exist)")
 
-    # LESSON 11: Create Docker Hub pull secret BEFORE applying manifests
-    # LESSON 12: Use --dry-run=client -o yaml | kubectl apply -f - pattern
     log("Creating Docker Hub pull secret (dockerhub-creds)...")
     r_sec = subprocess.run(
         [
@@ -756,7 +651,6 @@ def stage_kubernetes(kubeconfig: str):
     )
     ok("Docker Hub pull secret: dockerhub-creds applied")
 
-    # Generate manifests using bundled k8s_manifest_generator.py (relative path)
     generator = KIT_DIR / "k8s_manifest_generator.py"
     r = subprocess.run(
         [
@@ -778,7 +672,6 @@ def stage_kubernetes(kubeconfig: str):
     if r.returncode != 0:
         warn(f"Manifest generator warning: {r.stderr[:200]}")
 
-    # Apply manifests
     log("Applying manifests...")
     r = subprocess.run(
         ["kubectl", "apply", "-f", str(manifests_dir) + "/", "--validate=false"],
@@ -797,17 +690,15 @@ def stage_kubernetes(kubeconfig: str):
     RESULTS["resources"]["k8s_manifests"] = str(manifests_dir)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  STAGE 6: VERIFY PODS RUNNING
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 def stage_verify(kubeconfig: str):
     section("STAGE 6: Verification")
     t0 = time.time()
     env = {**os.environ, "KUBECONFIG": kubeconfig}
     ns = cfg["k8s_namespace"]
 
-    # Plan 122-DEH ISSUE-004: Wait for ALL configured replicas, not just 1.
-    # Also stream pod events if pods are stuck in Pending / CrashLoopBackOff.
     target_replicas = cfg.get("k8s_replicas", 1)
     log(f"Waiting for {target_replicas} pod replica(s) to reach Running state (up to 5 min)...")
     deadline = time.time() + 300
@@ -831,7 +722,7 @@ def stage_verify(kubeconfig: str):
         last_lines = lines
 
         if crashing:
-            warn(f"  {len(crashing)} pod(s) in CrashLoop/Error — streaming events:")
+            warn(f"  {len(crashing)} pod(s) in CrashLoop/Error -- streaming events:")
             r_ev = subprocess.run(
                 ["kubectl", "get", "events", "-n", ns,
                  "--field-selector=type=Warning", "--sort-by=.lastTimestamp"],
@@ -850,7 +741,7 @@ def stage_verify(kubeconfig: str):
     else:
         warn(
             f"Only {len([l for l in last_lines if 'Running' in l])}/"
-            f"{target_replicas} replicas Running after {elapsed(t0)} — "
+            f"{target_replicas} replicas Running after {elapsed(t0)} -- "
             "may need more startup time"
         )
         log("  Streaming pod details for debugging:")
@@ -872,53 +763,308 @@ def stage_verify(kubeconfig: str):
     RESULTS["stages"]["verify"] = {"status": "success" if pods_ok else "partial"}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  STAGE 6b: CONNECTIVITY TEST  (Plan 122-DEH ISSUE-005)
-#  Probes gateway /health via NodePort after pods are Running.
-#  Non-fatal — records result but never sys.exit(1).
-# ═══════════════════════════════════════════════════════════════════════════════
-def stage_connectivity_test(kubeconfig: str, gateway_url: str = "") -> bool:
-    import urllib.request, urllib.error
-    section("STAGE 6b: Connectivity Test (Plan 122-DEH ISSUE-005)")
-    t0 = time.time()
+# =============================================================================
+#  HELPER: get_lb_external_ip  (Task 5.4 -- Plan 123-P5 ISSUE-016)
+#  Waits for and returns the external LoadBalancer IP of a K8s service.
+#  Used by stage_5c_ingress_tls() and stage_connectivity_test().
+# =============================================================================
+def get_lb_external_ip(svc_name: str, namespace: str, kubeconfig: str,
+                       timeout: int = 120) -> str | None:
+    """Wait for and return the external LoadBalancer IP of a K8s service."""
     env = {**os.environ, "KUBECONFIG": kubeconfig}
-    if not gateway_url:
+    for _ in range(timeout // 5):
         r = subprocess.run(
-            ["kubectl", "get", "nodes", "-o",
-             "jsonpath={.items[0].status.addresses[?(@.type=='ExternalIP')].address}"],
+            ["kubectl", "--insecure-skip-tls-verify",
+             "-n", namespace, "get", "svc", svc_name,
+             "-o", "jsonpath={.status.loadBalancer.ingress[0].ip}"],
             env=env, capture_output=True, text=True,
         )
-        node_ip = r.stdout.strip()
-        if not node_ip:
+        ip = r.stdout.strip()
+        if ip and ip != "<pending>":
+            return ip
+        time.sleep(5)
+    return None
+
+
+# =============================================================================
+#  HELPER: generate_ingress_yaml  (Task 5.3b -- Plan 123-P5 ISSUE-018)
+#  Generates ClusterIssuer + Ingress YAML from config values at deploy time.
+#  Replaces the static ingress-tls.yaml file used in Phase 4.
+# =============================================================================
+def generate_ingress_yaml(domain: str, cert_email: str, namespace: str,
+                          svc_name: str, svc_port: int) -> str:
+    """Generate ClusterIssuer + Ingress YAML string from runtime config values."""
+    tls_secret = domain.replace(".", "-") + "-tls"
+    return f"""---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: {cert_email}
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {svc_name}-ingress
+  namespace: {namespace}
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - {domain}
+    - www.{domain}
+    secretName: {tls_secret}
+  rules:
+  - host: {domain}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {svc_name}
+            port:
+              number: {svc_port}
+  - host: www.{domain}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {svc_name}
+            port:
+              number: {svc_port}
+"""
+
+
+# =============================================================================
+#  STAGE 5c: INGRESS + TLS  (Task 5.3 -- Plan 123-P5 ISSUE-018, ISSUE-020)
+#  Deploys nginx-ingress-controller + cert-manager + ClusterIssuer + Ingress.
+#  Follows FUTURE_DEPLOYMENT_GUIDE.md stages 6-8.
+#  Ordering (ISSUE-020): nginx LB IP -> DNS update -> cert-manager -> Ingress.
+#  Only runs when cfg['ingress']['enabled'] == True.
+# =============================================================================
+def stage_5c_ingress_tls(kubeconfig: str) -> None:
+    """
+    Stage 5c: Deploy nginx-ingress + cert-manager + TLS.
+    Steps:
+      5c-1: Deploy nginx-ingress via Helm, wait for LB IP
+      5c-2: Update DNS via update_dns.py --ip <ingress-lb-ip>   (ISSUE-020 ordering)
+      5c-3: Deploy cert-manager via Helm
+      5c-4: Generate + apply ClusterIssuer + Ingress from config
+      5c-5: Wait for TLS certificate Ready=True
+    """
+    if not cfg.get("ingress", {}).get("enabled"):
+        log("ingress.enabled: false -- skipping Stage 5c")
+        return
+
+    section("STAGE 5c: Ingress + TLS (nginx-ingress + cert-manager)")
+    t0 = time.time()
+
+    domain     = cfg["ingress"].get("domain", "")
+    cert_email = cfg["ingress"].get("cert_email", "")
+    namespace  = cfg["k8s_namespace"]
+    svc_name   = cfg["service_name"]
+    svc_port   = cfg.get("k8s_service_port", cfg["k8s_port"])
+
+    env = {**os.environ, "KUBECONFIG": kubeconfig}
+
+    def _run(cmd, check=True):
+        r = subprocess.run(cmd, env=env, check=False, capture_output=False)
+        if check and r.returncode != 0:
+            raise RuntimeError(f"Command failed ({r.returncode}): {' '.join(str(c) for c in cmd)}")
+        return r
+
+    def _cap(cmd):
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        return r.stdout.strip()
+
+    # ── 5c-1: nginx-ingress via Helm ─────────────────────────────────────────
+    log("5c-1: Deploying nginx-ingress-controller (Helm)...")
+    _run([
+        "helm", "upgrade", "--install", "ingress-nginx", "ingress-nginx",
+        "--repo", "https://kubernetes.github.io/ingress-nginx",
+        "--namespace", "ingress-nginx", "--create-namespace",
+        "--set", "controller.service.type=LoadBalancer",
+        "--version", "4.11.3", "--wait", "--timeout", "5m"
+    ])
+    ok("nginx-ingress-controller deployed")
+
+    # Wait for LB IP on ingress-nginx-controller service
+    log("  Waiting for nginx-ingress LB IP (up to 2 min)...")
+    ingress_lb_ip = None
+    for _ in range(24):  # 24 x 5s = 2 min
+        ip = _cap([
+            "kubectl", "--insecure-skip-tls-verify",
+            "-n", "ingress-nginx", "get", "svc", "ingress-nginx-controller",
+            "-o", "jsonpath={.status.loadBalancer.ingress[0].ip}"
+        ])
+        if ip and ip != "<pending>":
+            ingress_lb_ip = ip
+            break
+        time.sleep(5)
+
+    if not ingress_lb_ip:
+        raise RuntimeError(
+            "nginx-ingress LB IP not assigned after 2 minutes -- "
+            "check cloud controller logs"
+        )
+    ok(f"nginx-ingress LB IP: {ingress_lb_ip}")
+    RESULTS["resources"]["ingress"] = {"lb_ip": ingress_lb_ip, "domain": domain}
+
+    # ── 5c-2: Update DNS (ISSUE-020: DNS BEFORE cert-manager) ────────────────
+    dns_cfg = cfg.get("dns", {})
+    if dns_cfg.get("enabled") and dns_cfg.get("zone_account") == "current":
+        log(f"5c-2: Updating DNS {domain} -> {ingress_lb_ip} (automated)...")
+        dns_script = KIT_DIR / "update_dns.py"
+        r = subprocess.run(
+            [sys.executable, str(dns_script), "--ip", ingress_lb_ip],
+            check=False
+        )
+        if r.returncode == 0:
+            ok(f"DNS updated: {domain} A {ingress_lb_ip}")
+        else:
+            warn(f"DNS update script returned non-zero -- verify manually: {domain} -> {ingress_lb_ip}")
+    else:
+        warn("5c-2: DNS automation disabled (dns.zone_account != current)")
+        warn(f"  ACTION REQUIRED: Update A record {domain} -> {ingress_lb_ip}")
+        warn(f"  cert-manager WILL FAIL until DNS resolves to {ingress_lb_ip}")
+        warn(f"  Re-run after DNS update: kubectl --insecure-skip-tls-verify apply -f ingress-tls.yaml")
+
+    # ── 5c-3: cert-manager via Helm ──────────────────────────────────────────
+    log("5c-3: Deploying cert-manager (Helm)...")
+    _run([
+        "helm", "upgrade", "--install", "cert-manager", "cert-manager",
+        "--repo", "https://charts.jetstack.io",
+        "--namespace", "cert-manager", "--create-namespace",
+        "--set", "crds.enabled=true",
+        "--version", "v1.16.3", "--wait", "--timeout", "5m"
+    ])
+    ok("cert-manager deployed")
+
+    # ── 5c-4: Generate + apply ClusterIssuer + Ingress ───────────────────────
+    log("5c-4: Applying ClusterIssuer + Ingress resources...")
+    ingress_yaml = generate_ingress_yaml(domain, cert_email, namespace, svc_name, svc_port)
+    ingress_file = f"/tmp/ingress-tls-{TS}.yaml"
+    Path(ingress_file).write_text(ingress_yaml)
+    _run(["kubectl", "--insecure-skip-tls-verify", "apply", "-f", ingress_file])
+    ok(f"ClusterIssuer + Ingress applied (manifest: {ingress_file})")
+
+    # ── 5c-5: Wait for TLS certificate ───────────────────────────────────────
+    log("5c-5: Waiting for TLS certificate (Let's Encrypt HTTP-01)...")
+    cert_name  = domain.replace(".", "-") + "-tls"
+    cert_ready = False
+    for i in range(36):  # 36 x 5s = 3 min
+        status = _cap([
+            "kubectl", "--insecure-skip-tls-verify",
+            "-n", namespace, "get", "certificate", cert_name,
+            "-o", 'jsonpath={.status.conditions[?(@.type=="Ready")].status}'
+        ])
+        if status == "True":
+            cert_ready = True
+            break
+        if i % 6 == 0:
+            log(f"  Certificate status: {status or 'pending'} ({i * 5}s elapsed)")
+        time.sleep(5)
+
+    RESULTS["resources"]["ingress"]["cert_status"] = "issued" if cert_ready else "pending"
+    if cert_ready:
+        ok(f"TLS certificate ISSUED -- https://{domain} is live! ({elapsed(t0)})")
+    else:
+        warn(f"TLS certificate still pending after {elapsed(t0)}")
+        warn(f"  DNS may not have propagated yet (TTL=300 -- up to 5 min)")
+        warn(f"  Monitor: kubectl --insecure-skip-tls-verify -n {namespace} get certificate {cert_name}")
+
+    RESULTS["stages"]["ingress_tls"] = {
+        "status": "success" if cert_ready else "pending",
+        "ingress_lb_ip": ingress_lb_ip,
+        "domain": domain,
+        "cert_status": "issued" if cert_ready else "pending",
+        "duration": elapsed(t0),
+    }
+    ok(f"Stage 5c complete ({elapsed(t0)})")
+
+
+# =============================================================================
+#  STAGE 6b: CONNECTIVITY TEST  (Plan 122-DEH ISSUE-005)
+#  Probes gateway /health.
+#  Task 5.4 (ISSUE-016): Now preferentially uses LoadBalancer external IP
+#  rather than NodePort, matching the production traffic path.
+# =============================================================================
+def stage_connectivity_test(kubeconfig: str, gateway_url: str = "") -> bool:
+    import urllib.request, urllib.error
+    section("STAGE 6b: Connectivity Test (Plan 122-DEH ISSUE-005 + Plan 123-P5 ISSUE-016)")
+    t0 = time.time()
+    env = {**os.environ, "KUBECONFIG": kubeconfig}
+
+    if not gateway_url:
+        ns       = cfg["k8s_namespace"]
+        svc_name = cfg["service_name"]
+
+        # Task 5.4 (ISSUE-016): Try LoadBalancer external IP first (production path).
+        # Only fall back to NodePort if LB IP is unavailable.
+        log("  Discovering gateway URL (prefer LB external IP -- ISSUE-016)...")
+        lb_ip = get_lb_external_ip(svc_name, ns, kubeconfig, timeout=60)
+        if lb_ip:
+            gateway_url = f"http://{lb_ip}"
+            log(f"  Using LB external IP: {gateway_url}")
+            RESULTS["resources"]["gateway_lb_ip"] = lb_ip
+        else:
+            # Fallback: NodePort on worker node IP
+            log("  LB IP not available -- falling back to NodePort")
             r = subprocess.run(
                 ["kubectl", "get", "nodes", "-o",
-                 "jsonpath={.items[0].status.addresses[0].address}"],
+                 "jsonpath={.items[0].status.addresses[?(@.type=='ExternalIP')].address}"],
                 env=env, capture_output=True, text=True,
             )
             node_ip = r.stdout.strip()
-        if node_ip:
-            gateway_url = f"http://{node_ip}:{cfg['k8s_nodeport']}"
-            log(f"  Discovered gateway URL: {gateway_url}")
-        else:
-            warn("Cannot determine node IP — skipping connectivity test")
-            RESULTS["stages"]["connectivity_test"] = {"status": "skipped", "reason": "no_node_ip"}
-            return False
+            if not node_ip:
+                r = subprocess.run(
+                    ["kubectl", "get", "nodes", "-o",
+                     "jsonpath={.items[0].status.addresses[0].address}"],
+                    env=env, capture_output=True, text=True,
+                )
+                node_ip = r.stdout.strip()
+            if node_ip:
+                gateway_url = f"http://{node_ip}:{cfg['k8s_nodeport']}"
+                log(f"  Fallback NodePort URL: {gateway_url}")
+                RESULTS["resources"]["gateway_node_ip"] = node_ip
+            else:
+                warn("Cannot determine LB IP or node IP -- skipping connectivity test")
+                RESULTS["stages"]["connectivity_test"] = {
+                    "status": "skipped", "reason": "no_gateway_ip"
+                }
+                return False
+
     log(f"Probing {gateway_url}/health (3 attempts, 15s apart)...")
     for attempt in range(1, 4):
         try:
             req = urllib.request.urlopen(f"{gateway_url}/health", timeout=10)
             body = req.read().decode("utf-8", errors="replace")[:100]
-            ok(f"  Attempt {attempt}: HTTP {req.status} — gateway UP ({elapsed(t0)})")
+            ok(f"  Attempt {attempt}: HTTP {req.status} -- gateway UP ({elapsed(t0)})")
             log(f"  Response: {body}")
             RESULTS["stages"]["connectivity_test"] = {
                 "status": "success", "gateway_url": gateway_url,
                 "http_status": req.status, "attempts": attempt, "duration": elapsed(t0),
             }
             RESULTS["resources"]["gateway_url"] = gateway_url
-            ok(f"Connectivity test PASSED — {gateway_url}")
+            ok(f"Connectivity test PASSED -- {gateway_url}")
             return True
         except urllib.error.HTTPError as e:
-            ok(f"  Attempt {attempt}: HTTP {e.code} — gateway responding ({elapsed(t0)})")
+            ok(f"  Attempt {attempt}: HTTP {e.code} -- gateway responding ({elapsed(t0)})")
             RESULTS["stages"]["connectivity_test"] = {
                 "status": "success", "gateway_url": gateway_url,
                 "http_status": e.code, "attempts": attempt, "duration": elapsed(t0),
@@ -929,7 +1075,8 @@ def stage_connectivity_test(kubeconfig: str, gateway_url: str = "") -> bool:
             warn(f"  Attempt {attempt}/3: {str(e)[:80]}")
             if attempt < 3:
                 time.sleep(15)
-    warn(f"Connectivity test FAILED — {gateway_url} unreachable after 3 attempts")
+
+    warn(f"Connectivity test FAILED -- {gateway_url} unreachable after 3 attempts")
     warn(f"  Manual check: curl {gateway_url}/health")
     RESULTS["stages"]["connectivity_test"] = {
         "status": "failed", "gateway_url": gateway_url, "reason": "connection_refused",
@@ -937,9 +1084,9 @@ def stage_connectivity_test(kubeconfig: str, gateway_url: str = "") -> bool:
     return False
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  STAGE 7: REPORT
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 def stage_report():
     section("STAGE 7: Final Report")
     RESULTS["completed_at"] = datetime.now().isoformat()
@@ -950,11 +1097,16 @@ def stage_report():
     ok(f"Report: {report_json}")
 
     print(f"\n{'='*60}")
-    print(f"  DEPLOYMENT COMPLETE — {cfg['project_name']}")
+    print(f"  DEPLOYMENT COMPLETE -- {cfg['project_name']}")
     print(f"{'='*60}")
     print(f"  Image:      {IMAGE}")
     print(f"  Cluster:    {RESULTS['resources'].get('sks_cluster', {}).get('id', '?')}")
     print(f"  Kubeconfig: {RESULTS['resources'].get('kubeconfig', '?')}")
+    ingress = RESULTS["resources"].get("ingress", {})
+    if ingress.get("lb_ip"):
+        print(f"  Ingress LB: {ingress['lb_ip']}")
+        print(f"  HTTPS:      https://{ingress.get('domain', '?')} "
+              f"(cert: {ingress.get('cert_status', 'unknown')})")
     print(f"  Outputs:    {OUT}")
     print(f"{'='*60}")
     print("\nTeardown commands:")
@@ -964,17 +1116,13 @@ def stage_report():
     print()
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  STAGE 3b: OBJECT STORAGE (SOS)
-#  Creates an Exoscale SOS bucket (S3-compatible).
-#  Uses existing EXO_API_KEY/EXO_API_SECRET — same key works for SOS if it has
-#  the required permissions (default for admin/owner keys).
-#  Credentials saved to RESULTS for K8s secret injection in Stage 5c.
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 def stage_object_storage() -> dict | None:
     sos_cfg = cfg.get("object_storage", {})
     if not sos_cfg.get("enabled"):
-        log("Object Storage (SOS): disabled — skipping")
+        log("Object Storage (SOS): disabled -- skipping")
         return None
 
     section("STAGE 3b: Object Storage (SOS)")
@@ -984,7 +1132,7 @@ def stage_object_storage() -> dict | None:
         import boto3
         from botocore.exceptions import ClientError
     except ImportError:
-        warn("boto3 not installed — run: pip install boto3")
+        warn("boto3 not installed -- run: pip install boto3")
         warn("Object Storage skipped")
         return None
 
@@ -996,8 +1144,6 @@ def stage_object_storage() -> dict | None:
     log(f"SOS endpoint: {sos_endpoint}")
     log(f"Creating bucket: {bucket_name}")
 
-    # LESSON 18: Wrap entire boto3 block in broad except so EndpointConnectionError
-    # (DNS failure, VPN, firewall) does NOT crash the pipeline — warn + continue.
     try:
         s3 = boto3.client(
             "s3",
@@ -1014,15 +1160,13 @@ def stage_object_storage() -> dict | None:
             ok(f"SOS bucket already exists: {bucket_name}")
         else:
             warn(f"SOS bucket creation failed: {e}")
-            warn("Object Storage skipped — continuing pipeline")
+            warn("Object Storage skipped -- continuing pipeline")
             return None
     except Exception as e:
-        # LESSON 18: botocore.EndpointConnectionError is NOT a ClientError.
-        # DNS resolution failures + network errors land here — non-fatal.
         warn(f"SOS endpoint unreachable: {str(e)[:120]}")
         warn(f"  Endpoint: {sos_endpoint}")
         warn("  Create bucket manually: Exoscale Console -> Object Storage -> New Bucket")
-        warn("  Object Storage skipped — continuing pipeline")
+        warn("  Object Storage skipped -- continuing pipeline")
         RESULTS["resources"]["object_storage"] = {
             "bucket": bucket_name,
             "endpoint": sos_endpoint,
@@ -1030,7 +1174,6 @@ def stage_object_storage() -> dict | None:
         }
         return None
 
-    # Set ACL if public-read requested
     if sos_cfg.get("acl") == "public-read":
         try:
             s3.put_bucket_acl(Bucket=bucket_name, ACL="public-read")
@@ -1054,16 +1197,13 @@ def stage_object_storage() -> dict | None:
     return sos_result
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  STAGE 3c: DBAAS (MANAGED DATABASE)
-#  Creates an Exoscale managed PostgreSQL service.
-#  Polls until state == "running" (~3-10 min depending on plan).
-#  Connection URI saved to RESULTS for K8s secret injection in Stage 5c.
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 def stage_dbaas() -> dict | None:
     db_cfg = cfg.get("database", {})
     if not db_cfg.get("enabled"):
-        log("DBaaS: disabled — skipping")
+        log("DBaaS: disabled -- skipping")
         return None
 
     section("STAGE 3c: DBaaS (Managed Database)")
@@ -1103,16 +1243,15 @@ def stage_dbaas() -> dict | None:
                 termination_protection=term_protect,
             )
         else:
-            warn(f"DBaaS type '{db_type}' not yet supported in pipeline — skipping")
+            warn(f"DBaaS type '{db_type}' not yet supported in pipeline -- skipping")
             return None
     except Exception as e:
         warn(f"DBaaS creation failed: {str(e)[:150]}")
-        warn("DBaaS skipped — continuing pipeline")
+        warn("DBaaS skipped -- continuing pipeline")
         return None
 
     ok(f"DBaaS {db_type} service '{db_name}' creation initiated")
 
-    # Poll until state == running (up to 15 minutes for startup plans)
     log("Waiting for DBaaS service to be ready (3-15 minutes)...")
     deadline = time.time() + 900
     db_info = {}
@@ -1136,17 +1275,15 @@ def stage_dbaas() -> dict | None:
         time.sleep(30)
 
     if not db_info:
-        warn(f"DBaaS not ready after {elapsed(t0)} — recording as pending")
+        warn(f"DBaaS not ready after {elapsed(t0)} -- recording as pending")
         RESULTS["resources"]["dbaas"] = {
             "name": db_name, "type": db_type, "plan": db_plan, "state": "pending"
         }
         return {"name": db_name, "type": db_type, "state": "pending"}
 
-    # Extract connection URI
     conn_info = db_info.get("connection-info", {})
     pg_uri = None
     if db_type == "pg" and conn_info:
-        # Exoscale returns connection-info.pg as list of URIs
         uris = conn_info.get("pg", [])
         pg_uri = uris[0] if uris else None
 
@@ -1162,26 +1299,23 @@ def stage_dbaas() -> dict | None:
     return db_result
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  STAGE 4b: NODE LABELS (StarGate branding)
-#  Applies kubectl labels to all worker nodes.
-#  Labels visible via: kubectl get nodes --show-labels
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
+#  STAGE 4b: NODE LABELS
+# =============================================================================
 def stage_label_nodes(kubeconfig: str) -> None:
     nl_cfg = cfg.get("node_labels", {})
     if not nl_cfg.get("enabled"):
-        log("Node Labels: disabled — skipping")
+        log("Node Labels: disabled -- skipping")
         return
 
     labels_map = nl_cfg.get("labels", {})
     if not labels_map:
-        log("Node Labels: no labels configured — skipping")
+        log("Node Labels: no labels configured -- skipping")
         return
 
     section("STAGE 4b: Node Labels (StarGate branding)")
     env = {**os.environ, "KUBECONFIG": kubeconfig}
 
-    # Get list of all nodes
     r = subprocess.run(
         ["kubectl", "get", "nodes", "--no-headers", "-o", "custom-columns=NAME:.metadata.name"],
         env=env, capture_output=True, text=True,
@@ -1189,8 +1323,6 @@ def stage_label_nodes(kubeconfig: str) -> None:
     nodes = [n.strip() for n in r.stdout.strip().split("\n") if n.strip()]
     log(f"Applying StarGate labels to {len(nodes)} node(s)...")
 
-    # LESSON 19: Sanitize label values — commas, spaces, slashes are NOT valid.
-    # K8s label values must match [a-zA-Z0-9_.-] max 63 chars.
     def _sanitize_label_value(v: str) -> str:
         s = re.sub(r'[^a-zA-Z0-9_.\-]', '-', str(v))
         s = re.sub(r'-+', '-', s).strip('-')
@@ -1204,11 +1336,10 @@ def stage_label_nodes(kubeconfig: str) -> None:
             env=env, capture_output=True, text=True,
         )
         if r.returncode == 0:
-            ok(f"  {node} → labels applied")
+            ok(f"  {node} -> labels applied")
         else:
             warn(f"  {node} label failed: {r.stderr[:80]}")
 
-    # Verify
     r = subprocess.run(
         ["kubectl", "get", "nodes", "--show-labels"],
         env=env, capture_output=True, text=True,
@@ -1220,38 +1351,30 @@ def stage_label_nodes(kubeconfig: str) -> None:
     RESULTS["stages"]["node_labels"] = {"status": "success", "nodes": nodes, "labels": labels_map}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 #  STAGE 5b: EXOSCALE CSI DRIVER (Block Storage)
-#  Installs the Exoscale CSI driver into the cluster, creates StorageClass,
-#  and generates a PVC manifest for the app.
-#  CSI driver: github.com/exoscale/exoscale-csi-driver
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 def stage_install_csi(kubeconfig: str) -> bool:
     bs_cfg = cfg.get("block_storage", {})
     if not bs_cfg.get("enabled"):
-        log("Block Storage (CSI): disabled — skipping")
+        log("Block Storage (CSI): disabled -- skipping")
         return False
 
-    section("STAGE 5b: Block Storage — CSI Driver")
+    section("STAGE 5b: Block Storage -- CSI Driver")
     t0 = time.time()
     env = {**os.environ, "KUBECONFIG": kubeconfig}
 
-    # CSI driver manifest URL (official Exoscale CSI driver)
     CSI_NAMESPACE = "exoscale-csi"
     csi_manifests_dir = OUT / "csi-manifests"
     csi_manifests_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate the CSI driver namespace + secret + driver manifests
-    # The CSI driver needs Exoscale API credentials to provision BSS volumes
     log("Installing Exoscale CSI driver...")
 
-    # Step 1: Create CSI namespace
     subprocess.run(
         ["kubectl", "create", "namespace", CSI_NAMESPACE],
         env=env, capture_output=True, text=True,
     )
 
-    # Step 2: Create Exoscale API credentials secret for CSI driver
     csi_secret_yaml = f"""apiVersion: v1
 kind: Secret
 metadata:
@@ -1272,8 +1395,6 @@ stringData:
     else:
         warn(f"CSI secret: {r.stderr[:100]}")
 
-    # Step 3: Apply official Exoscale CSI driver via kubectl
-    # LESSON 20: Try multiple candidate URLs — path changes between releases.
     _CSI_CANDIDATE_URLS = [
         "https://raw.githubusercontent.com/exoscale/exoscale-csi-driver/main/deploy/k8s/csi-driver.yaml",
         "https://raw.githubusercontent.com/exoscale/exoscale-csi-driver/main/deploy/manifests/csi-driver.yaml",
@@ -1295,9 +1416,8 @@ stringData:
         else:
             warn(f"  URL failed: {r.stderr[:80]}")
     if not _csi_applied:
-        warn("All CSI manifest URLs failed — falling back to manual StorageClass creation")
+        warn("All CSI manifest URLs failed -- falling back to manual StorageClass creation")
 
-    # Step 4: Create StorageClass (works independently of driver install)
     storage_class_yaml = f"""apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -1321,7 +1441,6 @@ parameters:
     else:
         warn(f"StorageClass: {r.stderr[:100]}")
 
-    # Step 5: Generate PVC manifest (to be applied with app manifests)
     pvc_yaml = f"""apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -1338,7 +1457,6 @@ spec:
     requests:
       storage: {bs_cfg.get('size_gb', 10)}Gi
 """
-    # Write PVC to k8s-manifests dir so it's applied with app manifests
     manifests_dir = OUT / "k8s-manifests"
     manifests_dir.mkdir(parents=True, exist_ok=True)
     pvc_path = manifests_dir / "06-pvc.yaml"
@@ -1356,21 +1474,21 @@ spec:
     return True
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  STAGE 5c: INJECT SERVICE CREDENTIALS AS K8S SECRETS
+# =============================================================================
+#  STAGE 5d: INJECT SERVICE CREDENTIALS AS K8S SECRETS
+#  (was Stage 5c prior to Plan 123-P5; renamed to 5d to make room for ingress/TLS)
 #  Injects DB connection URI and SOS bucket credentials as K8s secrets.
 #  Apps consume: secret/db-credentials and secret/sos-credentials
-# ═══════════════════════════════════════════════════════════════════════════════
+# =============================================================================
 def stage_inject_secrets(kubeconfig: str, db_info: dict | None, sos_info: dict | None) -> None:
     if not db_info and not sos_info:
-        log("No service credentials to inject — skipping")
+        log("No service credentials to inject -- skipping")
         return
 
-    section("STAGE 5c: Inject Service Credentials (K8s Secrets)")
+    section("STAGE 5d: Inject Service Credentials (K8s Secrets)")
     env = {**os.environ, "KUBECONFIG": kubeconfig}
     ns  = cfg["k8s_namespace"]
 
-    # --- DB Credentials ---
     if db_info and db_info.get("state") == "running" and db_info.get("connection_uri"):
         conn_uri = db_info["connection_uri"]
         db_secret_yaml = f"""apiVersion: v1
@@ -1395,9 +1513,8 @@ stringData:
         else:
             warn(f"DB secret: {r.stderr[:100]}")
     elif db_info:
-        log(f"DBaaS state={db_info.get('state')} — DB secret will need manual injection after service is running")
+        log(f"DBaaS state={db_info.get('state')} -- DB secret will need manual injection after service is running")
 
-    # --- SOS Credentials ---
     if sos_info:
         sos_secret_yaml = f"""apiVersion: v1
 kind: Secret
@@ -1427,26 +1544,13 @@ stringData:
     RESULTS["stages"]["inject_secrets"] = {"status": "success"}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# ==============================================================================
-#  ABORT CLEANUP — Plan 122-DEH ISSUE-008
-#  Deletes any Exoscale resources created in THIS run if the pipeline crashes.
-#  Prevents orphaned SGs / clusters from aborted deployments.
-#  Non-fatal: warns on error but never raises.
-# ==============================================================================
+# =============================================================================
+#  ABORT CLEANUP -- Plan 122-DEH ISSUE-008
+# =============================================================================
 def pipeline_abort_cleanup() -> None:
-    """
-    Best-effort cleanup of partially-created Exoscale resources on pipeline failure.
-    Reads IDs from RESULTS (populated incrementally during the run).
-    Order: nodepool -> cluster -> SG (SG last so cluster releases lock first).
-    If SDK is unavailable, prints manual recovery command.
-    """
     created = RESULTS.get("resources", {})
     if not any(k in created for k in ("security_group", "sks_cluster", "node_pool")):
-        return  # Nothing cloud-created yet
+        return
 
     warn("AUTO-CLEANUP: Deleting partially-created Exoscale resources to prevent orphans...")
     try:
@@ -1461,7 +1565,6 @@ def pipeline_abort_cleanup() -> None:
     _np      = created.get("node_pool", {})
     _sg      = created.get("security_group", {})
 
-    # 1. Delete nodepool first (must precede cluster deletion)
     if _np.get("id") and _cluster.get("id"):
         try:
             warn(f"AUTO-CLEANUP: Deleting nodepool {_np['id'][:8]}...")
@@ -1473,7 +1576,6 @@ def pipeline_abort_cleanup() -> None:
         except Exception as _e:
             warn(f"AUTO-CLEANUP: Nodepool deletion warning (cluster deletion covers it): {_e}")
 
-    # 2. Delete SKS cluster
     if _cluster.get("id"):
         try:
             warn(f"AUTO-CLEANUP: Deleting cluster {_cluster.get('name', _cluster['id'][:8])}...")
@@ -1488,39 +1590,40 @@ def pipeline_abort_cleanup() -> None:
             else:
                 warn(f"AUTO-CLEANUP: Cluster deletion failed: {_e}")
 
-    # 3. Delete security group (after cluster so SG lock is released)
     if _sg.get("id"):
-        time.sleep(5)  # brief pause for cluster to release SG lock
+        time.sleep(5)
         for _attempt in range(1, 4):
             try:
                 warn(f"AUTO-CLEANUP: Deleting SG {_sg.get('name', _sg['id'][:8])} (attempt {_attempt}/3)...")
                 _c.delete_security_group(id=_sg["id"])
-                ok("AUTO-CLEANUP: Security group deleted — no orphan left behind")
+                ok("AUTO-CLEANUP: Security group deleted -- no orphan left behind")
                 break
             except Exception as _e:
                 if "404" in str(_e):
                     ok("AUTO-CLEANUP: Security group already gone")
                     break
                 if _attempt < 3:
-                    warn(f"AUTO-CLEANUP: SG still locked — retrying in 15s: {_e}")
+                    warn(f"AUTO-CLEANUP: SG still locked -- retrying in 15s: {_e}")
                     time.sleep(15)
                 else:
                     warn(f"AUTO-CLEANUP: SG deletion failed after 3 attempts: {_e}")
                     warn(f"  Manual recovery: python3 teardown.py --from-report {OUT / 'deployment_report_partial.json'}")
 
+
+# =============================================================================
+#  MAIN
+# =============================================================================
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print(f"  EXOSCALE DEPLOY KIT — {cfg['project_name'].upper()}")
+    print(f"  EXOSCALE DEPLOY KIT -- {cfg['project_name'].upper()}")
     print(f"  Deployment ID: {TS}")
     print(f"  Image:  {IMAGE}")
     print(f"  Zone:   {cfg['exoscale_zone']}")
     print(f"  Output: {OUT}")
     print("="*60 + "\n")
 
-    # Stage 0: Preflight checks (Plan 122-DEH ISSUE-003)
-    # Use --skip-preflight for advanced debugging only
     if "--skip-preflight" in sys.argv:
-        warn("STAGE 0: Preflight skipped (--skip-preflight flag set — not recommended)")
+        warn("STAGE 0: Preflight skipped (--skip-preflight flag set -- not recommended)")
     else:
         stage_preflight()
 
@@ -1528,32 +1631,30 @@ if __name__ == "__main__":
         stage_docker_build()
         stage_docker_push()
 
-        # Stage 3b/3c run in parallel with cluster creation — kick off managed
-        # services early so they can reach 'running' while K8s nodes are booting.
         sos_info = stage_object_storage()
         db_info  = stage_dbaas()
 
         kubeconfig = stage_exoscale()
         stage_wait_for_nodes(kubeconfig)
 
-        # Stage 3b: Attach SG to node instances AFTER nodes are Ready
-        # (LESSON 23 / ISSUE-001 fix: instances registered in compute API by now)
         stage_sg_post_attach()
-
-        # Stage 4b: Label nodes with StarGate identity after they are Ready
         stage_label_nodes(kubeconfig)
 
-        # Stage 5b: Install CSI driver + generate PVC manifest
+        # Stage 5b: CSI driver + PVC manifest
         stage_install_csi(kubeconfig)
+
+        # Stage 5c: nginx-ingress + cert-manager + TLS  (Plan 123-P5 ISSUE-018)
+        # Ordering: nginx LB IP -> DNS update -> cert-manager -> Ingress (ISSUE-020)
+        stage_5c_ingress_tls(kubeconfig)
 
         stage_kubernetes(kubeconfig)
 
-        # Stage 5c: Inject DB + SOS credentials as K8s secrets
+        # Stage 5d: Inject DB + SOS credentials as K8s secrets
         stage_inject_secrets(kubeconfig, db_info, sos_info)
 
         stage_verify(kubeconfig)
 
-        # Stage 6b: Connectivity test (Plan 122-DEH ISSUE-005) — non-fatal
+        # Stage 6b: Connectivity test -- now uses LB IP (Plan 123-P5 ISSUE-016)
         stage_connectivity_test(kubeconfig)
 
         stage_report()
@@ -1563,8 +1664,6 @@ if __name__ == "__main__":
         import traceback
         fail(f"Pipeline exception: {e}")
         traceback.print_exc()
-        # Save partial results on failure
         (OUT / "deployment_report_partial.json").write_text(json.dumps(RESULTS, indent=2))
-        # AUTO-CLEANUP: delete any Exoscale resources created in this run (ISSUE-008)
         pipeline_abort_cleanup()
         sys.exit(1)
