@@ -1,0 +1,9 @@
+feat(dns): add Exoscale DNS automation scripts
+
+- update_dns.py: update A records for jobtrackerpro.ch -> nginx-ingress LB IP
+- probe_dns.py: diagnostic — lists DNS zones across all Exoscale API endpoints
+- create_dns_zone.py: attempt zone creation in deploy account
+- LESSON ISSUE-015: DNS zone is in a separate Exoscale account; cannot be
+  updated with the deploy API key until zone is migrated to this account.
+  Manual action required: login to portal.exoscale.com (other account),
+  update A records jobtrackerpro.ch + www.jobtrackerpro.ch -> 159.100.248.98
