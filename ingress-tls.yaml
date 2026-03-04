@@ -1,0 +1,57 @@
+# ClusterIssuer — Let's Encrypt production
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@jobtrackerpro.ch
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+    - http01:
+        ingress:
+          ingressClassName: nginx
+---
+# Ingress — routes jobtrackerpro.ch + www → docker-jtp:80
+# nginx-ingress handles TLS termination, cert-manager issues the cert
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jobtrackerpro-ingress
+  namespace: exo-jtp-prod
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - jobtrackerpro.ch
+    - www.jobtrackerpro.ch
+    secretName: jobtrackerpro-tls
+  rules:
+  - host: jobtrackerpro.ch
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: docker-jtp
+            port:
+              number: 80
+  - host: www.jobtrackerpro.ch
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: docker-jtp
+            port:
+              number: 80

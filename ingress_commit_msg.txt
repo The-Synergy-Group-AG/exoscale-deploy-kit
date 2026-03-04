@@ -1,0 +1,22 @@
+feat(infra): deploy nginx-ingress + cert-manager for HTTPS on jobtrackerpro.ch
+
+- nginx-ingress-controller v1.12.0 deployed (namespace: ingress-nginx)
+  LB IP: 159.100.248.98 (port 80/443 verified responding HTTP 404 = nginx up)
+- cert-manager v1.16.3 deployed (namespace: cert-manager)
+  All 3 pods running: cainjector, controller, webhook
+- ClusterIssuer: letsencrypt-prod (HTTP01/nginx solver)
+- Ingress: jobtrackerpro.ch + www.jobtrackerpro.ch -> docker-jtp:80
+  TLS secret: jobtrackerpro-tls (auto-issued by cert-manager on DNS propagation)
+  SSL-redirect: true (HTTP -> HTTPS enforced)
+
+ACTION REQUIRED: Update DNS A records at registrar:
+  jobtrackerpro.ch     A  159.100.248.98
+  www.jobtrackerpro.ch A  159.100.248.98
+
+Cert auto-issues within ~2 minutes of DNS propagation.
+Monitor: kubectl -n exo-jtp-prod get certificate jobtrackerpro-tls
+
+Cluster access summary:
+  http://159.100.250.135/  -> HTTP 200 (direct gateway, always available)
+  http://159.100.248.98/   -> HTTP 404 (nginx-ingress, awaiting DNS)
+  https://jobtrackerpro.ch -> will work after DNS + cert issuance
