@@ -1,0 +1,11 @@
+feat(test): add run_us_tests_v1.py — US endpoint test suite
+
+Discovers all domain routes from live OpenAPI specs, fires smoke requests
+for every (route, method), maps results to US IDs from route descriptions.
+
+PASS = HTTP < 500 | POST/PUT/PATCH sent with empty JSON body {}
+Path params ({name}, {id}) replaced with safe test placeholders.
+Outputs JSON + Markdown reports auto-named with UTC timestamp.
+
+Test run: 1236/1248 endpoints PASSED (99.0%), 702/702 US IDs (100%)
+Duration: 39.8s across 219 services
