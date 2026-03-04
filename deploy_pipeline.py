@@ -925,6 +925,77 @@ def stage_5c_ingress_tls(kubeconfig: str) -> None:
     ok(f"nginx-ingress LB IP: {ingress_lb_ip}")
     RESULTS["resources"]["ingress"] = {"lb_ip": ingress_lb_ip, "domain": domain}
 
+    # ── 5c-1b: Fix K8s CCM NLB port mismatch (ISSUE-021) ─────────────────────
+    # Exoscale K8s CCM creates the nginx-ingress NLB with wrong NodePort targets.
+    # Both port-80 and port-443 listeners target the first NodePort assigned (wrong).
+    # Without this fix cert-manager HTTP-01 challenges ALWAYS FAIL (cert never issued).
+    # Fix: dynamically read actual NodePorts from K8s, update NLB via Exoscale API.
+    # Discovered 2026-03-04 (Plan 123 Phase 5). fix_k8s_nlb.py was the manual fix.
+    log("5c-1b: Fixing K8s CCM NLB port assignments (ISSUE-021)...")
+    http_nodeport_str = _cap([
+        "kubectl", "--insecure-skip-tls-verify",
+        "-n", "ingress-nginx", "get", "svc", "ingress-nginx-controller",
+        "-o", "jsonpath={.spec.ports[?(@.port==80)].nodePort}"
+    ])
+    https_nodeport_str = _cap([
+        "kubectl", "--insecure-skip-tls-verify",
+        "-n", "ingress-nginx", "get", "svc", "ingress-nginx-controller",
+        "-o", "jsonpath={.spec.ports[?(@.port==443)].nodePort}"
+    ])
+    if not http_nodeport_str or not https_nodeport_str:
+        warn("  Cannot get nginx-ingress NodePorts -- NLB port fix skipped")
+        warn("  HTTP-01 cert challenge may fail! Run: python3 fix_k8s_nlb.py")
+    else:
+        http_np  = int(http_nodeport_str)
+        https_np = int(https_nodeport_str)
+        log(f"  nginx-ingress NodePorts: HTTP={http_np}, HTTPS={https_np}")
+        try:
+            from exoscale.api.v2 import Client as _ExoClient
+            _exo = _ExoClient(cfg["exo_key"], cfg["exo_secret"], zone=cfg["exoscale_zone"])
+            # Find K8s-created NLB by IP — name changes each deploy, never hardcode it
+            _all_nlbs = _exo.list_load_balancers().get("load-balancers", [])
+            _k8s_nlb  = next((n for n in _all_nlbs if n.get("ip") == ingress_lb_ip), None)
+            if not _k8s_nlb:
+                log("  NLB not yet visible — waiting 10s and retrying...")
+                time.sleep(10)
+                _all_nlbs = _exo.list_load_balancers().get("load-balancers", [])
+                _k8s_nlb  = next((n for n in _all_nlbs if n.get("ip") == ingress_lb_ip), None)
+            if _k8s_nlb:
+                _nlb_id   = _k8s_nlb["id"]
+                log(f"  K8s NLB found: {_nlb_id[:8]}... IP={ingress_lb_ip}")
+                _detail   = _exo.get_load_balancer(id=_nlb_id)
+                _port_map = {80: http_np, 443: https_np}
+                for _svc in _detail.get("services", []):
+                    _port   = _svc.get("port")
+                    _svc_id = _svc.get("id")
+                    _cur_hc = _svc.get("healthcheck", {}).get("port")
+                    _target = _port_map.get(_port)
+                    if _target is None:
+                        continue
+                    if _cur_hc == _target:
+                        log(f"  port {_port}: already -> {_target} (OK)")
+                    else:
+                        log(f"  port {_port}: {_cur_hc} -> {_target} (fixing)")
+                        _exo.update_load_balancer_service(
+                            id=_nlb_id, service_id=_svc_id,
+                            protocol="tcp",
+                            target_port=_target,
+                            healthcheck={"port": _target, "mode": "tcp",
+                                         "interval": 10, "timeout": 5, "retries": 1},
+                        )
+                ok(f"NLB port assignments fixed: port 80->{http_np}, port 443->{https_np}")
+                RESULTS["resources"]["ingress"]["nlb_port_fix"] = {
+                    "http_nodeport": http_np,
+                    "https_nodeport": https_np,
+                    "nlb_id": _nlb_id,
+                }
+            else:
+                warn(f"  K8s NLB with IP {ingress_lb_ip} not found -- port fix skipped")
+                warn("  Manual fix required: python3 fix_k8s_nlb.py")
+        except Exception as _e:
+            warn(f"  NLB port fix error: {_e}")
+            warn("  Manual fallback: python3 fix_k8s_nlb.py")
+
     # ── 5c-2: Update DNS (ISSUE-020: DNS BEFORE cert-manager) ────────────────
     dns_cfg = cfg.get("dns", {})
     if dns_cfg.get("enabled") and dns_cfg.get("zone_account") == "current":
