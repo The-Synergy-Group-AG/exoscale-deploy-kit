@@ -177,6 +177,20 @@ else
     SKIP_SERVICES=true
 fi
 
+# Check 11: CPU Budget Validation (Lesson 34c/36 — CRITICAL)
+# 3 nodes × 3700m × 0.75 / 220 services = 37.8m headroom — use 10m (safe)
+NODE_COUNT_CFG=$(grep 'node_count:' "$SCRIPT_DIR/config.yaml" 2>/dev/null | awk '{print $2}' || echo 3)
+NUM_SERVICES=220
+CLUSTER_CPU_M=$((NODE_COUNT_CFG * 3700))
+MAX_SAFE_REQUEST_M=$(( (CLUSTER_CPU_M * 75 / 100) / NUM_SERVICES ))
+echo "  [INFO] CPU budget: ${NODE_COUNT_CFG} nodes × 3700m × 0.75 / ${NUM_SERVICES} svcs = ${MAX_SAFE_REQUEST_M}m safe request"
+if [ "${MAX_SAFE_REQUEST_M}" -lt 10 ]; then
+    echo "  [FAIL] CPU budget: cluster too small for ${NUM_SERVICES} services with 10m each"
+    PREFLIGHT_PASS=false
+else
+    echo "  [PASS] CPU budget: ${MAX_SAFE_REQUEST_M}m/svc available (using 10m requests = safe)"
+fi
+
 echo ""
 
 if [ "$PREFLIGHT_PASS" = "false" ]; then
@@ -272,6 +286,12 @@ if [ "$SKIP_SERVICES" = "false" ] && [ "$DEPLOY_EXIT" -eq 0 ]; then
         echo "[$(date '+%H:%M:%S')] Stage 5e: manifests  = $SERVICE_MANIFESTS_DIR"
         echo ""
 
+        # -- Step 2.5b: Remove ResourceQuota (Lesson 34b -- CRITICAL) --
+        echo "[$(date '+%H:%M:%S')] Step 2.5b: Removing ResourceQuota (Lesson 34b)"
+        kubectl delete resourcequota --all -n "${K8S_NS}" \
+            --kubeconfig="${KUBECONFIG_PATH}" --ignore-not-found=true 2>&1 || true
+        echo "[$(date '+%H:%M:%S')] OK  Step 2.5b: ResourceQuota cleared"
+        echo ""
         # Generate per-service manifests
         cd "$SCRIPT_DIR"
         python3 -X utf8 gen_service_manifests.py \

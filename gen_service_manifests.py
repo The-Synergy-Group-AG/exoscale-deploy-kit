@@ -34,17 +34,17 @@ from typing import Optional
 
 # ── Resource defaults (fallback if config.json missing) ──────────────────────
 RESOURCE_FALLBACK: dict[str, str] = {
-    "cpu_request":    "50m",
+    "cpu_request":    "10m",
     "memory_request": "64Mi",
-    "cpu_limit":      "200m",
+    "cpu_limit":      "500m",
     "memory_limit":   "256Mi",
 }
 
 # Tier overrides for services without individual config.json resource keys
 RESOURCE_TIERS: dict[str, dict[str, str]] = {
-    "small":  {"cpu_request": "50m",  "memory_request": "64Mi",  "cpu_limit": "200m",  "memory_limit": "256Mi"},
-    "medium": {"cpu_request": "100m", "memory_request": "128Mi", "cpu_limit": "500m",  "memory_limit": "512Mi"},
-    "large":  {"cpu_request": "200m", "memory_request": "256Mi", "cpu_limit": "1000m", "memory_limit": "1Gi"},
+    "small":  {"cpu_request": "10m",  "memory_request": "64Mi",  "cpu_limit": "200m",  "memory_limit": "256Mi"},
+    "medium": {"cpu_request": "10m", "memory_request": "128Mi", "cpu_limit": "500m",  "memory_limit": "512Mi"},
+    "large":  {"cpu_request": "10m", "memory_request": "256Mi", "cpu_limit": "1000m", "memory_limit": "1Gi"},
 }
 
 # Script location — all paths are relative to the exoscale-deploy-kit directory
@@ -147,6 +147,11 @@ metadata:
     version: "9"
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
   selector:
     matchLabels:
       app: {dns_name}
