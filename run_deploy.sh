@@ -6,12 +6,13 @@
 # Plan 125 Phase 1: Step 2.5 — Stage 5e/5f per-service pod deployment
 # Plan 125 Lesson 35: Step 2.6 — Post-deploy monitoring sync (self-healing)
 # Plan 125 Phase 2: Step 2.7 — Post-deploy service verification + full test suite
+# Lesson 39b: Fix node_count whitespace arithmetic crash in CPU budget check
 # ============================================================
 # Usage:
 #   ./run_deploy.sh            # Interactive wizard + deploy
 #   ./run_deploy.sh --auto     # Use config.yaml, no wizard
 #   ./run_deploy.sh --teardown # Teardown THEN deploy (full cycle)
-#   ./run_deploy.sh --dry-run  # Teardown dry-run only (no deploy)
+#   ./run_deploy.sh --dry-run  # Preflight check only (no deploy)
 #
 # Features:
 #   - LESSON 22: Forces python -X utf8 (fixes Exoscale SDK cp1252 crash)
@@ -46,7 +47,6 @@ export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 export PYTHONIOENCODING=utf-8
 export PYTHONUTF8=1
-# The -X utf8 flag is set on the python3 command below (most reliable fix)
 
 # ── LESSON 27: Ensure ~/.local/bin is in PATH (helm lives here) ─────────────
 export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
@@ -59,12 +59,12 @@ SKIP_SERVICES=false
 
 for arg in "$@"; do
     case "$arg" in
-        --teardown)      DO_TEARDOWN=true ;;
-        --dry-run)       DRY_RUN=true ;;
-        --auto)          DEPLOY_ARGS="--auto" ;;
-        --wizard)        DEPLOY_ARGS="" ;;
+        --teardown)       DO_TEARDOWN=true ;;
+        --dry-run)        DRY_RUN=true ;;
+        --auto)           DEPLOY_ARGS="--auto" ;;
+        --wizard)         DEPLOY_ARGS="" ;;
         --skip-preflight) DEPLOY_ARGS="$DEPLOY_ARGS --skip-preflight" ;;
-        --skip-services) SKIP_SERVICES=true ;;  # Plan 125: skip Stage 5e/5f
+        --skip-services)  SKIP_SERVICES=true ;;
     esac
 done
 
@@ -82,26 +82,26 @@ cat <<'BANNER'
   Lesson 38: KSM single target (no triplication)
 ============================================================
 BANNER
-echo "  Timestamp:    $TS"
-echo "  Log file:     $LOG_FILE"
-echo "  Teardown:     $DO_TEARDOWN"
-echo "  Dry-run:      $DRY_RUN"
+echo "  Timestamp:     $TS"
+echo "  Log file:      $LOG_FILE"
+echo "  Teardown:      $DO_TEARDOWN"
+echo "  Dry-run:       $DRY_RUN"
 echo "  Skip-services: $SKIP_SERVICES"
-echo "  Args:         $DEPLOY_ARGS"
+echo "  Args:          $DEPLOY_ARGS"
 echo ""
 
-# ── Pre-Deploy Checklist (Strategic — Plan 122-DEH) ─────────
+# ── Pre-Deploy Checklist ──────────────────────────────────────
 echo "============================================================"
 echo "  PRE-DEPLOY CHECKLIST"
 echo "============================================================"
 
 PREFLIGHT_PASS=true
 
-# Check 1: Docker daemon
+# Check 1: Docker
 if docker info >/dev/null 2>&1; then
     echo "  [PASS] Docker daemon: running"
 else
-    echo "  [FAIL] Docker daemon: NOT running — start Docker before deploying"
+    echo "  [FAIL] Docker daemon: NOT running"
     PREFLIGHT_PASS=false
 fi
 
@@ -113,17 +113,17 @@ else
     PREFLIGHT_PASS=false
 fi
 
-# Check 3: helm (LESSON 27 — required for Stage 5c ingress + cert-manager)
+# Check 3: helm
 if helm version --short >/dev/null 2>&1; then
     HELM_VER=$(helm version --short 2>/dev/null | head -1)
     echo "  [PASS] helm: $HELM_VER"
 else
-    echo "  [FAIL] helm: NOT found (required for Stage 5c ingress-nginx + cert-manager)"
-    echo "         Install: cd /tmp && curl -fsSL https://get.helm.sh/helm-v3.17.1-linux-amd64.tar.gz | tar xz && cp linux-amd64/helm ~/.local/bin/"
+    echo "  [FAIL] helm: NOT found"
+    echo "         Install: curl -fsSL https://get.helm.sh/helm-v3.17.1-linux-amd64.tar.gz | tar xz && cp linux-amd64/helm ~/.local/bin/"
     PREFLIGHT_PASS=false
 fi
 
-# Check 4: Python 3 with -X utf8 (Lesson 22)
+# Check 4: Python 3.9+
 if python3 -X utf8 -c "import sys; assert sys.version_info >= (3,9)" 2>/dev/null; then
     PYVER=$(python3 --version 2>&1)
     echo "  [PASS] Python: $PYVER (UTF-8 mode: OK)"
@@ -132,11 +132,11 @@ else
     PREFLIGHT_PASS=false
 fi
 
-# Check 5: config.yaml exists and readable
+# Check 5: config.yaml
 if [ -f "$SCRIPT_DIR/config.yaml" ]; then
-    PROJ=$(grep 'project_name:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}')
-    VER=$(grep 'service_version:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d "'")
-    NODE_SIZE=$(grep 'node_type_size:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}')
+    PROJ=$(grep 'project_name:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d '[:space:]\r')
+    VER=$(grep 'service_version:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d "'[:space:]\r")
+    NODE_SIZE=$(grep 'node_type_size:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d '[:space:]\r')
     echo "  [PASS] config.yaml: project=$PROJ version=$VER node=$NODE_SIZE"
 else
     echo "  [FAIL] config.yaml not found"
@@ -158,15 +158,15 @@ else
     PREFLIGHT_PASS=false
 fi
 
-# Check 7: DNS for Exoscale zone
-EXO_ZONE=$(grep 'exoscale_zone:' "$SCRIPT_DIR/config.yaml" 2>/dev/null | awk '{print $2}' || echo "ch-dk-2")
+# Check 7: DNS
+EXO_ZONE=$(grep 'exoscale_zone:' "$SCRIPT_DIR/config.yaml" 2>/dev/null | awk '{print $2}' | tr -d '[:space:]\r' || echo "ch-dk-2")
 if getent hosts "api-${EXO_ZONE}.exoscale.com" >/dev/null 2>&1; then
     echo "  [PASS] DNS: api-${EXO_ZONE}.exoscale.com resolves"
 else
     echo "  [WARN] DNS: api-${EXO_ZONE}.exoscale.com not resolving — check network/VPN"
 fi
 
-# Check 8: Disk space (>= 2GB free)
+# Check 8: Disk space
 FREE_KB=$(df -k "$SCRIPT_DIR" | awk 'NR==2 {print $4}')
 FREE_GB=$((FREE_KB / 1024 / 1024))
 if [ "$FREE_GB" -ge 2 ]; then
@@ -175,7 +175,7 @@ else
     echo "  [WARN] Disk space: only ${FREE_GB}GB free (recommend >= 2GB)"
 fi
 
-# Check 9: prep_services.py exists
+# Check 9: prep_services.py
 if [ -f "$SCRIPT_DIR/prep_services.py" ]; then
     echo "  [PASS] prep_services.py: found"
 else
@@ -183,7 +183,7 @@ else
     PREFLIGHT_PASS=false
 fi
 
-# Check 10: gen_service_manifests.py exists (Plan 125 Phase 1)
+# Check 10: gen_service_manifests.py (Plan 125 Phase 1)
 if [ -f "$SCRIPT_DIR/gen_service_manifests.py" ]; then
     echo "  [PASS] gen_service_manifests.py: found (Plan 125 Stage 5e)"
 else
@@ -191,7 +191,7 @@ else
     SKIP_SERVICES=true
 fi
 
-# Check 11: run_service_tests.py exists (Plan 125 Phase 2 Step 2.7)
+# Check 11: run_service_tests.py (Plan 125 Phase 2 Step 2.7)
 if [ -f "$SCRIPT_DIR/run_service_tests.py" ]; then
     echo "  [PASS] run_service_tests.py: found (Plan 125 Step 2.7b)"
 else
@@ -199,10 +199,14 @@ else
 fi
 
 # Check 12: CPU Budget Validation (Lesson 34c/36 — CRITICAL)
+# Lesson 39b fix: strip all whitespace + CR from grep result before arithmetic
 # 3 nodes × 3700m × 0.75 / 220 services = 37.8m headroom — use 10m (safe)
-NODE_COUNT_CFG=$(grep 'node_count:' "$SCRIPT_DIR/config.yaml" 2>/dev/null | awk '{print $2}' || echo 3)
+NODE_COUNT_CFG=$(grep 'node_count:' "$SCRIPT_DIR/config.yaml" 2>/dev/null \
+    | awk '{print $2}' | tr -d '[:space:]\r\n' || true)
+NODE_COUNT_CFG="${NODE_COUNT_CFG:-3}"
+if ! [[ "$NODE_COUNT_CFG" =~ ^[0-9]+$ ]]; then NODE_COUNT_CFG=3; fi
 NUM_SERVICES=220
-CLUSTER_CPU_M=$((NODE_COUNT_CFG * 3700))
+CLUSTER_CPU_M=$(( NODE_COUNT_CFG * 3700 ))
 MAX_SAFE_REQUEST_M=$(( (CLUSTER_CPU_M * 75 / 100) / NUM_SERVICES ))
 echo "  [INFO] CPU budget: ${NODE_COUNT_CFG} nodes × 3700m × 0.75 / ${NUM_SERVICES} svcs = ${MAX_SAFE_REQUEST_M}m safe request"
 if [ "${MAX_SAFE_REQUEST_M}" -lt 10 ]; then
@@ -222,9 +226,10 @@ fi
 echo "  [OK] All critical checks passed — proceeding"
 echo ""
 
-# ── Dry run: just report ─────────────────────────────────────
+# ── Dry run: preflight only ───────────────────────────────────
 if [ "$DRY_RUN" = "true" ]; then
-    echo "DRY RUN: would run teardown + stage-services + deploy + stage-5e + monitoring-sync + test-suite. Exiting."
+    echo "DRY RUN: preflight passed. Engine ready for Run 5."
+    echo "  To deploy: cd $SCRIPT_DIR && bash run_deploy.sh --auto"
     exit 0
 fi
 
@@ -236,34 +241,31 @@ echo ""
 # ── Step 1: Optional teardown ───────────────────────────────
 if [ "$DO_TEARDOWN" = "true" ]; then
     echo "============================================================"
-    echo "  STEP 1: TEARDOWN — Decommissioning existing infrastructure"
+    echo "  STEP 1: TEARDOWN"
     echo "============================================================"
     cd "$SCRIPT_DIR"
     set +e
     python3 -X utf8 teardown.py --force 2>&1
     TEAR_EXIT=$?
     set -e
-    echo ""
     if [ $TEAR_EXIT -ne 0 ]; then
-        echo "[WARN] Teardown exited with code $TEAR_EXIT — continuing to deploy"
+        echo "[WARN] Teardown exited $TEAR_EXIT — continuing to deploy"
     else
         echo "[OK] Teardown complete"
     fi
-    echo ""
-    # Brief pause to let Exoscale fully release locks
-    echo "Waiting 30s for Exoscale to fully release resources..."
+    echo "Waiting 30s for Exoscale to release resources..."
     sleep 30
 fi
 
 # ── Step 1.5: Stage latest generated services ───────────────
 echo "============================================================"
-echo "  STEP 1.5: STAGE SERVICES — auto-selecting latest generation"
+echo "  STEP 1.5: STAGE SERVICES"
 echo "============================================================"
 cd "$SCRIPT_DIR"
 python3 -X utf8 prep_services.py 2>&1
 PREP_EXIT=$?
 if [ $PREP_EXIT -ne 0 ]; then
-    echo "[ABORT] prep_services.py FAILED (exit=$PREP_EXIT) — cannot build Docker image without services"
+    echo "[ABORT] prep_services.py FAILED (exit=$PREP_EXIT)"
     exit 1
 fi
 echo "[OK] Service staging complete"
@@ -271,7 +273,7 @@ echo ""
 
 # ── Step 2: Deploy ──────────────────────────────────────────
 echo "============================================================"
-echo "  STEP 2: DEPLOYMENT — Fresh deploy with Plan 122-DEH engine"
+echo "  STEP 2: DEPLOYMENT"
 echo "============================================================"
 cd "$SCRIPT_DIR"
 set +e
@@ -285,35 +287,33 @@ echo "  STEP 2 COMPLETED — Exit code: $DEPLOY_EXIT"
 echo "============================================================"
 echo ""
 
-# ── Step 2.5: Stage 5e/5f — Per-Service Pod Deployment (Plan 125) ────────────
+# ── Step 2.5: Stage 5e/5f — Per-Service Pod Deployment (Plan 125) ─────────
 if [ "$SKIP_SERVICES" = "false" ] && [ "$DEPLOY_EXIT" -eq 0 ]; then
     echo "============================================================"
-    echo "  STEP 2.5: STAGE 5e — Deploying 219 Service Pods (Plan 125)"
+    echo "  STEP 2.5: STAGE 5e — Deploying 219 Service Pods"
     echo "============================================================"
 
-    # Find latest kubeconfig from deploy_pipeline output
     KUBECONFIG_PATH=$(find "$OUTPUTS_DIR" -name "kubeconfig.yaml" | sort | tail -1)
-    K8S_NS=$(grep 'k8s_namespace:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}')
-    SVC_VER=$(grep 'service_version:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d "'")
+    K8S_NS=$(grep 'k8s_namespace:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d '[:space:]\r')
+    SVC_VER=$(grep 'service_version:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d "'[:space:]\r")
     SVC_IMAGE="iandrewitz/docker-jtp:${SVC_VER}"
     SERVICE_MANIFESTS_DIR="$OUTPUTS_DIR/k8s-services-${TS}"
 
     if [ -z "$KUBECONFIG_PATH" ]; then
-        echo "[WARN] Stage 5e: No kubeconfig found in $OUTPUTS_DIR — skipping service pod deployment"
+        echo "[WARN] Stage 5e: No kubeconfig found — skipping"
     else
         echo "[$(date '+%H:%M:%S')] Stage 5e: kubeconfig = $KUBECONFIG_PATH"
         echo "[$(date '+%H:%M:%S')] Stage 5e: image      = $SVC_IMAGE"
         echo "[$(date '+%H:%M:%S')] Stage 5e: namespace  = $K8S_NS"
-        echo "[$(date '+%H:%M:%S')] Stage 5e: manifests  = $SERVICE_MANIFESTS_DIR"
         echo ""
 
-        # -- Step 2.5b: Remove ResourceQuota (Lesson 34b -- CRITICAL) --
+        # Step 2.5b: Remove ResourceQuota (Lesson 34b — CRITICAL)
         echo "[$(date '+%H:%M:%S')] Step 2.5b: Removing ResourceQuota (Lesson 34b)"
         kubectl delete resourcequota --all -n "${K8S_NS}" \
             --kubeconfig="${KUBECONFIG_PATH}" --ignore-not-found=true 2>&1 || true
         echo "[$(date '+%H:%M:%S')] OK  Step 2.5b: ResourceQuota cleared"
         echo ""
-        # Generate per-service manifests
+
         cd "$SCRIPT_DIR"
         python3 -X utf8 gen_service_manifests.py \
             --output-dir "${SERVICE_MANIFESTS_DIR}" \
@@ -322,11 +322,10 @@ if [ "$SKIP_SERVICES" = "false" ] && [ "$DEPLOY_EXIT" -eq 0 ]; then
         GEN_EXIT=$?
 
         if [ $GEN_EXIT -ne 0 ]; then
-            echo "[WARN] Stage 5e: gen_service_manifests.py failed (exit=$GEN_EXIT) — skipping apply"
+            echo "[WARN] Stage 5e: gen_service_manifests.py failed (exit=$GEN_EXIT)"
         else
             MANIFEST_COUNT=$(ls "${SERVICE_MANIFESTS_DIR}"/*.yaml 2>/dev/null | wc -l)
-            echo "[$(date '+%H:%M:%S')] Stage 5e: Applying ${MANIFEST_COUNT} service manifests (batches of 50)..."
-            echo ""
+            echo "[$(date '+%H:%M:%S')] Stage 5e: Applying ${MANIFEST_COUNT} manifests (batches of 50)..."
 
             BATCH=0
             for yaml_file in "${SERVICE_MANIFESTS_DIR}"/*.yaml; do
@@ -338,16 +337,15 @@ if [ "$SKIP_SERVICES" = "false" ] && [ "$DEPLOY_EXIT" -eq 0 ]; then
                 fi
             done
 
-            echo ""
-            echo "[$(date '+%H:%M:%S')] OK  Stage 5e: ${BATCH}/${MANIFEST_COUNT} service manifests applied"
+            echo "[$(date '+%H:%M:%S')] OK  Stage 5e: ${BATCH}/${MANIFEST_COUNT} manifests applied"
             echo ""
 
-            # ── Stage 5f: Wait for service pods to be Running ────────────────
+            # Stage 5f: Wait for Running
             echo "============================================================"
             echo "  STEP 2.5: STAGE 5f — Waiting for Service Pods Ready"
             echo "============================================================"
 
-            TIMEOUT_S=600   # 10 minutes max
+            TIMEOUT_S=600
             START_T=$(date +%s)
             LAST_REPORTED="-1"
 
@@ -362,40 +360,36 @@ if [ "$SKIP_SERVICES" = "false" ] && [ "$DEPLOY_EXIT" -eq 0 ]; then
                 ELAPSED=$(( $(date +%s) - START_T ))
 
                 if [ "${RUNNING}" != "${LAST_REPORTED}" ]; then
-                    echo "[$(date '+%H:%M:%S')] Stage 5f: ${RUNNING}/219 service pods running (${ELAPSED}s elapsed)..."
+                    echo "[$(date '+%H:%M:%S')] Stage 5f: ${RUNNING}/219 pods running (${ELAPSED}s)..."
                     LAST_REPORTED="${RUNNING}"
                 fi
 
                 if [ "${RUNNING}" -ge 200 ]; then
-                    echo "[$(date '+%H:%M:%S')] OK  Stage 5f: ${RUNNING}/219 service pods ready — threshold met"
+                    echo "[$(date '+%H:%M:%S')] OK  Stage 5f: ${RUNNING}/219 ready — threshold met"
                     break
                 fi
 
                 if [ "${ELAPSED}" -gt "${TIMEOUT_S}" ]; then
-                    echo "[$(date '+%H:%M:%S')] WARN Stage 5f: Timeout after ${TIMEOUT_S}s — ${RUNNING}/219 pods running"
-                    echo "  Run: kubectl get pods -n ${K8S_NS} --kubeconfig=${KUBECONFIG_PATH} | grep -v Running"
+                    echo "[$(date '+%H:%M:%S')] WARN Stage 5f: Timeout ${TIMEOUT_S}s — ${RUNNING}/219 running"
                     break
                 fi
 
                 sleep 15
             done
 
-            echo ""
             echo "[$(date '+%H:%M:%S')] OK  Stage 5e/5f complete"
         fi
     fi
 elif [ "$SKIP_SERVICES" = "true" ]; then
-    echo "[INFO] Step 2.5: Skipped (--skip-services flag or gen_service_manifests.py not found)"
+    echo "[INFO] Step 2.5: Skipped (--skip-services)"
 elif [ "$DEPLOY_EXIT" -ne 0 ]; then
     echo "[WARN] Step 2.5: Skipped — deploy_pipeline.py failed (exit=$DEPLOY_EXIT)"
 fi
 
-# ── Step 2.6: Post-Deploy Monitoring Sync (Lesson 35 + Lesson 38) ────────────
-# Auto-heals dashboards after every successful deploy:
-#   2.6a kube-state-metrics deployed (NodePort 30808) → live K8s metrics
-#   2.6b prometheus.yml updated with new node IPs (ONE target only — Lesson 38)
-#        → Prometheus restarted
-#   2.6c engine outputs synced with latest manifests → exporter restarted
+# ── Step 2.6: Post-Deploy Monitoring Sync (Lesson 35 + 38) ──────────────────
+# 2.6a KSM deployed (NodePort 30808)
+# 2.6b prometheus.yml updated — ONE target only (Lesson 38) → Prometheus restart
+# 2.6c engine outputs synced → exporter restart
 if [ "$DEPLOY_EXIT" -eq 0 ]; then
     LATEST_KC=$(find "$OUTPUTS_DIR" -name "kubeconfig.yaml" | sort | tail -1)
     LATEST_RUN_DIR=$(find "$OUTPUTS_DIR" -maxdepth 1 -type d -name '[0-9]*' | sort | tail -1)
@@ -403,30 +397,27 @@ if [ "$DEPLOY_EXIT" -eq 0 ]; then
 
     set +e
     bash "$SCRIPT_DIR/_post_deploy_monitoring.sh" \
-        "${LATEST_KC}" \
-        "${LATEST_RUN_TS}" \
-        "${OUTPUTS_DIR}" 2>&1
+        "${LATEST_KC}" "${LATEST_RUN_TS}" "${OUTPUTS_DIR}" 2>&1
     MONITORING_EXIT=$?
     set -e
     if [ $MONITORING_EXIT -ne 0 ]; then
-        echo "[WARN] Step 2.6: Monitoring sync exited with code $MONITORING_EXIT (non-fatal)"
+        echo "[WARN] Step 2.6: Monitoring sync exited $MONITORING_EXIT (non-fatal)"
     fi
 else
     echo "[INFO] Step 2.6: Skipped — deploy failed (exit=$DEPLOY_EXIT)"
 fi
 
 # ── Step 2.7: Post-Deploy Service Verification (Plan 125 Phase 2) ────────────
-# 2.7a — /health sweep of all 220 service pods (confirms readiness gate)
-# 2.7b — Full per-service test suite: unit, integration, e2e, performance,
-#          security, user_stories (via kubectl exec inside each pod, 20 workers)
+# 2.7a /health sweep — all 220 pods, 20 workers
+# 2.7b Full per-service test suite — unit/integration/e2e/perf/security/stories
 if [ "$DEPLOY_EXIT" -eq 0 ] && [ "$SKIP_SERVICES" = "false" ]; then
     LATEST_KC=$(find "$OUTPUTS_DIR" -name "kubeconfig.yaml" | sort | tail -1)
-    K8S_NS=$(grep 'k8s_namespace:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}')
+    K8S_NS=$(grep 'k8s_namespace:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d '[:space:]\r')
     HEALTH_REPORT="$OUTPUTS_DIR/health_${TS}.json"
     TEST_REPORT="$OUTPUTS_DIR/test_results_${TS}.json"
 
     if [ -z "$LATEST_KC" ]; then
-        echo "[WARN] Step 2.7: No kubeconfig found — skipping service verification"
+        echo "[WARN] Step 2.7: No kubeconfig — skipping"
     else
         echo ""
         echo "============================================================"
@@ -444,8 +435,7 @@ if [ "$DEPLOY_EXIT" -eq 0 ] && [ "$SKIP_SERVICES" = "false" ]; then
         set -e
         echo ""
         if [ $HEALTH_EXIT -ne 0 ]; then
-            echo "[WARN] Step 2.7a: Health sweep below 80% threshold (exit=$HEALTH_EXIT)"
-            echo "  Report: $HEALTH_REPORT"
+            echo "[WARN] Step 2.7a: Below 80% threshold (exit=$HEALTH_EXIT) — Report: $HEALTH_REPORT"
         else
             echo "[OK]   Step 2.7a: /health sweep PASSED"
         fi
@@ -468,8 +458,7 @@ if [ "$DEPLOY_EXIT" -eq 0 ] && [ "$SKIP_SERVICES" = "false" ]; then
         set -e
         echo ""
         if [ $TEST_EXIT -ne 0 ]; then
-            echo "[WARN] Step 2.7b: Test suite below 80% pass threshold (exit=$TEST_EXIT)"
-            echo "  Report: $TEST_REPORT"
+            echo "[WARN] Step 2.7b: Below 80% pass threshold (exit=$TEST_EXIT) — Report: $TEST_REPORT"
         else
             echo "[OK]   Step 2.7b: Full test suite PASSED"
         fi
@@ -478,7 +467,7 @@ else
     if [ "$DEPLOY_EXIT" -ne 0 ]; then
         echo "[INFO] Step 2.7: Skipped — deploy failed (exit=$DEPLOY_EXIT)"
     else
-        echo "[INFO] Step 2.7: Skipped (--skip-services flag)"
+        echo "[INFO] Step 2.7: Skipped (--skip-services)"
     fi
 fi
 
@@ -496,78 +485,67 @@ HEALTH_REPORT_FINAL="${OUTPUTS_DIR}/health_${TS}.json"
 TEST_REPORT_FINAL="${OUTPUTS_DIR}/test_results_${TS}.json"
 
 python3 -X utf8 - <<PYEOF
-import json, os, subprocess, sys
+import json, subprocess, sys
 from datetime import datetime
 from pathlib import Path
 
-ts = "$TS"
-log_file = "$LOG_FILE"
-deploy_exit = $DEPLOY_EXIT
-latest_report = "$LATEST_REPORT"
-out_file = "$POSTMORTEM_FILE"
-health_report = "$HEALTH_REPORT_FINAL"
-test_report = "$TEST_REPORT_FINAL"
+ts           = "$TS"
+log_file     = "$LOG_FILE"
+deploy_exit  = $DEPLOY_EXIT
+latest_rpt   = "$LATEST_REPORT"
+out_file     = "$POSTMORTEM_FILE"
+health_rpt   = "$HEALTH_REPORT_FINAL"
+test_rpt     = "$TEST_REPORT_FINAL"
 
 pm = {
-    "timestamp": ts,
-    "completed_at": datetime.now().isoformat(),
+    "timestamp":          ts,
+    "completed_at":       datetime.now().isoformat(),
     "deployment_success": deploy_exit == 0,
-    "exit_code": deploy_exit,
-    "log_file": log_file,
-    "deployment_report": None,
-    "health_report": None,
-    "test_report": None,
-    "issues_detected": [],
-    "git_commit": "",
-    "plan": "125",
+    "exit_code":          deploy_exit,
+    "log_file":           log_file,
+    "deployment_report":  None,
+    "health_report":      None,
+    "test_report":        None,
+    "issues_detected":    [],
+    "git_commit":         "",
+    "plan":               "125",
 }
 
-# Attach deployment_report.json if found
-if latest_report and Path(latest_report).exists():
+if latest_rpt and Path(latest_rpt).exists():
     try:
-        pm["deployment_report"] = json.loads(Path(latest_report).read_text())
+        pm["deployment_report"] = json.loads(Path(latest_rpt).read_text())
     except Exception as e:
         pm["issues_detected"].append(f"Could not parse deployment report: {e}")
 
-# Attach health sweep summary
-if Path(health_report).exists():
+if Path(health_rpt).exists():
     try:
-        hr = json.loads(Path(health_report).read_text())
-        pm["health_report"] = hr.get("summary", {})
+        pm["health_report"] = json.loads(Path(health_rpt).read_text()).get("summary", {})
     except Exception:
         pass
 
-# Attach test results summary
-if Path(test_report).exists():
+if Path(test_rpt).exists():
     try:
-        tr = json.loads(Path(test_report).read_text())
-        pm["test_report"] = tr.get("summary", {})
+        pm["test_report"] = json.loads(Path(test_rpt).read_text()).get("summary", {})
     except Exception:
         pass
 
-# Scan log for known error patterns
 if Path(log_file).exists():
     log_content = Path(log_file).read_text(errors="replace")
-    patterns = [
+    for pattern, label in [
         ("FAIL",          "Pipeline stage FAILED"),
         ("CrashLoopBack", "Pod CrashLoopBackOff detected"),
         ("ErrImagePull",  "Image pull failure"),
         ("HTTP 500",      "Exoscale API 500 error"),
-        ("conflict",      "API conflict (409) during resource creation"),
+        ("conflict",      "API conflict (409)"),
         ("WARN",          "Pipeline warnings present"),
-    ]
-    for pattern, label in patterns:
+    ]:
         count = log_content.count(pattern)
         if count > 0:
             pm["issues_detected"].append(f"{label} ({count} occurrences)")
 
-# Get current git commit
 try:
-    result = subprocess.run(
-        ["git", "log", "--oneline", "-1"],
-        capture_output=True, text=True,
-        cwd="$SCRIPT_DIR"
-    )
+    result = subprocess.run(["git", "log", "--oneline", "-1"],
+        capture_output=True, text=True, cwd="$SCRIPT_DIR")
     pm["git_commit"] = result.stdout.strip()
 except Exception:
     pass
@@ -575,7 +553,7 @@ except Exception:
 Path(out_file).write_text(json.dumps(pm, indent=2))
 print(f"[POSTMORTEM] Report: {out_file}")
 if pm["issues_detected"]:
-    print(f"[POSTMORTEM] Issues detected ({len(pm['issues_detected'])}):")
+    print(f"[POSTMORTEM] Issues ({len(pm['issues_detected'])}):")
     for issue in pm["issues_detected"]:
         print(f"  - {issue}")
 if pm["deployment_success"]:
