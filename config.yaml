@@ -43,7 +43,7 @@ database:
   enabled: true
   type: mysql
   deployment: managed
-  version: '8.4'
+  version: '8'
   storage_gb: 20
   replicas: 1
 autoscaling:
