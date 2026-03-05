@@ -12,10 +12,11 @@
 # Plan 125 Phase 0: autoscaling.min_replicas 2->1 (dev/single-user deployment)
 #   autoscaling.max_replicas 10->3 (single user, no need for 10 gateway replicas)
 #   database.enabled false (AI-First application -- dual-mode DBaaS is optional)
+# Plan 125 Phase 1: service_version 8->9 (docker-jtp:9 with pytest support)
 # =============================================================
 project_name: jtp-test1
 service_name: docker-jtp
-service_version: '8'
+service_version: '9'
 docker_hub_user: iandrewitz
 environment: production
 exoscale_zone: ch-dk-2

@@ -3,6 +3,7 @@
 # JTP Exoscale Deployment Runner
 # Plan 122-DEH | Lesson 22: -X utf8 encoding fix
 # Plan 123-P5+: Step 1.5 — auto-stage latest generated services
+# Plan 125 Phase 1: Step 2.5 — Stage 5e/5f per-service pod deployment
 # ============================================================
 # Usage:
 #   ./run_deploy.sh            # Interactive wizard + deploy
@@ -15,6 +16,7 @@
 #   - LESSON 27: Adds ~/.local/bin to PATH so helm is always found
 #   - STEP 1.5: Automatically stages latest generated-v* services via
 #               prep_services.py (no manual version pinning required)
+#   - STEP 2.5: Deploys 219 individual service pods (Plan 125 Stage 5e/5f)
 #   - Tees ALL output to timestamped log file for post-mortem analysis
 #   - Pre-flight checklist before any cloud activity
 #   - Automated post-mortem JSON generation after completion
@@ -42,14 +44,16 @@ export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 DO_TEARDOWN=false
 DRY_RUN=false
 DEPLOY_ARGS="--auto"
+SKIP_SERVICES=false
 
 for arg in "$@"; do
     case "$arg" in
-        --teardown)  DO_TEARDOWN=true ;;
-        --dry-run)   DRY_RUN=true ;;
-        --auto)      DEPLOY_ARGS="--auto" ;;
-        --wizard)    DEPLOY_ARGS="" ;;
+        --teardown)      DO_TEARDOWN=true ;;
+        --dry-run)       DRY_RUN=true ;;
+        --auto)          DEPLOY_ARGS="--auto" ;;
+        --wizard)        DEPLOY_ARGS="" ;;
         --skip-preflight) DEPLOY_ARGS="$DEPLOY_ARGS --skip-preflight" ;;
+        --skip-services) SKIP_SERVICES=true ;;  # Plan 125: skip Stage 5e/5f
     esac
 done
 
@@ -61,13 +65,15 @@ cat <<'BANNER'
 ============================================================
   JTP EXOSCALE DEPLOYMENT RUNNER
   Plan 122-DEH hardened pipeline + Plan 123-P5+ auto-staging
+  Plan 125 Phase 1: 219 per-service pod deployment (Stage 5e/5f)
 ============================================================
 BANNER
-echo "  Timestamp: $TS"
-echo "  Log file:  $LOG_FILE"
-echo "  Teardown:  $DO_TEARDOWN"
-echo "  Dry-run:   $DRY_RUN"
-echo "  Args:      $DEPLOY_ARGS"
+echo "  Timestamp:    $TS"
+echo "  Log file:     $LOG_FILE"
+echo "  Teardown:     $DO_TEARDOWN"
+echo "  Dry-run:      $DRY_RUN"
+echo "  Skip-services: $SKIP_SERVICES"
+echo "  Args:         $DEPLOY_ARGS"
 echo ""
 
 # ── Pre-Deploy Checklist (Strategic — Plan 122-DEH) ─────────
@@ -163,6 +169,14 @@ else
     PREFLIGHT_PASS=false
 fi
 
+# Check 10: gen_service_manifests.py exists (Plan 125 Phase 1)
+if [ -f "$SCRIPT_DIR/gen_service_manifests.py" ]; then
+    echo "  [PASS] gen_service_manifests.py: found (Plan 125 Stage 5e)"
+else
+    echo "  [WARN] gen_service_manifests.py: NOT found — Stage 5e will be skipped"
+    SKIP_SERVICES=true
+fi
+
 echo ""
 
 if [ "$PREFLIGHT_PASS" = "false" ]; then
@@ -175,7 +189,7 @@ echo ""
 
 # ── Dry run: just report ─────────────────────────────────────
 if [ "$DRY_RUN" = "true" ]; then
-    echo "DRY RUN: would run teardown + stage-services + deploy. Exiting."
+    echo "DRY RUN: would run teardown + stage-services + deploy + stage-5e. Exiting."
     exit 0
 fi
 
@@ -225,8 +239,115 @@ echo "============================================================"
 echo "  STEP 2: DEPLOYMENT — Fresh deploy with Plan 122-DEH engine"
 echo "============================================================"
 cd "$SCRIPT_DIR"
+set +e
 python3 -X utf8 deploy_pipeline.py $DEPLOY_ARGS 2>&1
 DEPLOY_EXIT=$?
+set -e
+
+echo ""
+echo "============================================================"
+echo "  STEP 2 COMPLETED — Exit code: $DEPLOY_EXIT"
+echo "============================================================"
+echo ""
+
+# ── Step 2.5: Stage 5e/5f — Per-Service Pod Deployment (Plan 125) ────────────
+if [ "$SKIP_SERVICES" = "false" ] && [ "$DEPLOY_EXIT" -eq 0 ]; then
+    echo "============================================================"
+    echo "  STEP 2.5: STAGE 5e — Deploying 219 Service Pods (Plan 125)"
+    echo "============================================================"
+
+    # Find latest kubeconfig from deploy_pipeline output
+    KUBECONFIG_PATH=$(find "$OUTPUTS_DIR" -name "kubeconfig.yaml" | sort | tail -1)
+    K8S_NS=$(grep 'k8s_namespace:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}')
+    SVC_VER=$(grep 'service_version:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d "'")
+    SVC_IMAGE="iandrewitz/docker-jtp:${SVC_VER}"
+    SERVICE_MANIFESTS_DIR="$OUTPUTS_DIR/k8s-services-${TS}"
+
+    if [ -z "$KUBECONFIG_PATH" ]; then
+        echo "[WARN] Stage 5e: No kubeconfig found in $OUTPUTS_DIR — skipping service pod deployment"
+    else
+        echo "[$(date '+%H:%M:%S')] Stage 5e: kubeconfig = $KUBECONFIG_PATH"
+        echo "[$(date '+%H:%M:%S')] Stage 5e: image      = $SVC_IMAGE"
+        echo "[$(date '+%H:%M:%S')] Stage 5e: namespace  = $K8S_NS"
+        echo "[$(date '+%H:%M:%S')] Stage 5e: manifests  = $SERVICE_MANIFESTS_DIR"
+        echo ""
+
+        # Generate per-service manifests
+        cd "$SCRIPT_DIR"
+        python3 -X utf8 gen_service_manifests.py \
+            --output-dir "${SERVICE_MANIFESTS_DIR}" \
+            --image "${SVC_IMAGE}" \
+            --namespace "${K8S_NS}" 2>&1
+        GEN_EXIT=$?
+
+        if [ $GEN_EXIT -ne 0 ]; then
+            echo "[WARN] Stage 5e: gen_service_manifests.py failed (exit=$GEN_EXIT) — skipping apply"
+        else
+            MANIFEST_COUNT=$(ls "${SERVICE_MANIFESTS_DIR}"/*.yaml 2>/dev/null | wc -l)
+            echo "[$(date '+%H:%M:%S')] Stage 5e: Applying ${MANIFEST_COUNT} service manifests (batches of 50)..."
+            echo ""
+
+            BATCH=0
+            for yaml_file in "${SERVICE_MANIFESTS_DIR}"/*.yaml; do
+                kubectl apply -f "${yaml_file}" --kubeconfig="${KUBECONFIG_PATH}" 2>&1
+                BATCH=$((BATCH + 1))
+                if [ $((BATCH % 50)) -eq 0 ]; then
+                    echo "[$(date '+%H:%M:%S')] Stage 5e: Applied ${BATCH}/${MANIFEST_COUNT} — sleeping 5s..."
+                    sleep 5
+                fi
+            done
+
+            echo ""
+            echo "[$(date '+%H:%M:%S')] OK  Stage 5e: ${BATCH}/${MANIFEST_COUNT} service manifests applied"
+            echo ""
+
+            # ── Stage 5f: Wait for service pods to be Running ────────────────
+            echo "============================================================"
+            echo "  STEP 2.5: STAGE 5f — Waiting for Service Pods Ready"
+            echo "============================================================"
+
+            TIMEOUT_S=600   # 10 minutes max
+            START_T=$(date +%s)
+            LAST_REPORTED="-1"
+
+            while true; do
+                RUNNING=$(kubectl get pods -n "${K8S_NS}" \
+                    --kubeconfig="${KUBECONFIG_PATH}" \
+                    --field-selector=status.phase=Running \
+                    --no-headers 2>/dev/null \
+                    | grep -v "docker-jtp\|nginx\|cert-manager\|ingress" \
+                    | wc -l || echo 0)
+
+                ELAPSED=$(( $(date +%s) - START_T ))
+
+                if [ "${RUNNING}" != "${LAST_REPORTED}" ]; then
+                    echo "[$(date '+%H:%M:%S')] Stage 5f: ${RUNNING}/219 service pods running (${ELAPSED}s elapsed)..."
+                    LAST_REPORTED="${RUNNING}"
+                fi
+
+                if [ "${RUNNING}" -ge 200 ]; then
+                    echo "[$(date '+%H:%M:%S')] OK  Stage 5f: ${RUNNING}/219 service pods ready — threshold met"
+                    break
+                fi
+
+                if [ "${ELAPSED}" -gt "${TIMEOUT_S}" ]; then
+                    echo "[$(date '+%H:%M:%S')] WARN Stage 5f: Timeout after ${TIMEOUT_S}s — ${RUNNING}/219 pods running"
+                    echo "  Run: kubectl get pods -n ${K8S_NS} --kubeconfig=${KUBECONFIG_PATH} | grep -v Running"
+                    break
+                fi
+
+                sleep 15
+            done
+
+            echo ""
+            echo "[$(date '+%H:%M:%S')] OK  Stage 5e/5f complete"
+        fi
+    fi
+elif [ "$SKIP_SERVICES" = "true" ]; then
+    echo "[INFO] Step 2.5: Skipped (--skip-services flag or gen_service_manifests.py not found)"
+elif [ "$DEPLOY_EXIT" -ne 0 ]; then
+    echo "[WARN] Step 2.5: Skipped — deploy_pipeline.py failed (exit=$DEPLOY_EXIT)"
+fi
 
 echo ""
 echo "============================================================"
@@ -259,6 +380,7 @@ pm = {
     "deployment_report": None,
     "issues_detected": [],
     "git_commit": "",
+    "plan": "125",
 }
 
 # Attach deployment_report.json if found
