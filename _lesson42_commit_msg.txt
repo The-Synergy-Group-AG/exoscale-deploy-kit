@@ -1,0 +1,47 @@
+Lesson 42: service source decoupled from deploy kit
+
+SERVICE SOURCE ARCHITECTURE (strategic refactor)
+
+PROBLEM:
+  service/services/ contained a stale, flattened copy of service code
+  from an old generation. The deploy kit was out-of-sync with the Service
+  Engine. New generations were never reflected in deployments.
+
+SOLUTION: Build-Time Injection
+  Service files are no longer stored in this repository.
+  Source of truth: engines/service_engine/outputs/CURRENT -> generated-v*/
+  service/services/ is now a GITIGNORED build-time workspace.
+
+CHANGES:
+  prep_services.py  -- upgraded with:
+    - CURRENT pointer priority (engines/.../outputs/CURRENT file)
+    - --version flag for explicit generation pinning (rollback support)
+    - --dry-run flag (preview without writing)
+    - --validate-only flag (resolve + report generation, no sync)
+    - Post-sync validation: every service must have main.py
+    - Enriched manifest JSON (generation, synced_at, files_copied, missing_main)
+    - Exit code 2 for partial failure (allows caller to decide)
+
+  build_and_push.sh -- rewritten:
+    - Reads DOCKER_USER, IMAGE_NAME, VERSION from config.yaml (no hardcoding)
+    - Calls prep_services.py as Step 1 before docker build
+    - Gates on sync exit code (abort on fatal, warn on partial)
+    - --dry-run, --no-push, --version CLI flags
+
+  .gitignore -- added:
+    service/services/             # build-time workspace
+    service/services_manifest.json
+
+  service/services/* -- REMOVED from git tracking (2,410 files)
+    Files still exist on disk (populated by prep_services.py at build time)
+    but are no longer tracked or committed.
+
+WORKFLOW for new generation:
+  1. Service Engine generates: engines/.../outputs/generated-v8.2.25/
+  2. Update CURRENT file:      echo generated-v8.2.25 > outputs/CURRENT
+  3. Run build:                bash build_and_push.sh
+  => prep_services.py auto-syncs 219 services from new generation
+  => Docker image built with fresh service code
+  => No manual file copying required
+
+Validated: generated-v8.2.24 -- 219 services, 2409 files, 0 skipped, 0 missing main.py

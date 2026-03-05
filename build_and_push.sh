@@ -1,76 +1,142 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================
-# Build and push docker-jtp:6 to Docker Hub
-# Plan 121 — applies all lessons learned from Plan 120
+# build_and_push.sh — Build and push docker-jtp to Docker Hub
 # ============================================================
-# WHAT CHANGED IN :6 vs :5:
-#   - Gateway v7: PROXY_TIMEOUT=2.5s default (was 5.0s)
-#   - Connection pool: max_connections=50 (was 500)
-#   - keepalive_expiry=5s (was 30s)
-#   - No kubectl set env patch needed after deploy
+# Architecture:
+#   Service source files are NOT stored in this repository.
+#   They are owned by the Service Engine and live at:
+#     engines/service_engine/outputs/<generation>/services/
+#
+#   prep_services.py reads the CURRENT pointer file to determine
+#   which generation to use, then syncs service/src/ files into
+#   the Docker build workspace (service/services/) — a gitignored
+#   ephemeral artifact that exists only during the build.
+#
+# Usage:
+#   ./build_and_push.sh                    # uses CURRENT generation
+#   ./build_and_push.sh --version 8.2.22   # pin to specific generation
+#   ./build_and_push.sh --dry-run          # sync + report, no docker build
+#   ./build_and_push.sh --no-push          # build only, skip docker push
+#
+# Configuration: config.yaml (project_name, service_name, service_version)
 # ============================================================
+set -euo pipefail
 
-set -e  # Exit on any error
-
-DOCKER_USER="iandrewitz"
-IMAGE_NAME="docker-jtp"
-VERSION="6"
-FULL_TAG="${DOCKER_USER}/${IMAGE_NAME}:${VERSION}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_DIR="${SCRIPT_DIR}/service"
+CONFIG="${SCRIPT_DIR}/config.yaml"
 
+# ── Parse CLI args ────────────────────────────────────────────────────────────
+GEN_VERSION=""
+DRY_RUN=false
+NO_PUSH=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --version|-v) GEN_VERSION="$2"; shift 2 ;;
+        --dry-run)    DRY_RUN=true; shift ;;
+        --no-push)    NO_PUSH=true; shift ;;
+        *) echo "Unknown argument: $1"; exit 1 ;;
+    esac
+done
+
+# ── Read version from config.yaml ────────────────────────────────────────────
+if [[ ! -f "$CONFIG" ]]; then
+    echo "❌ config.yaml not found at: $CONFIG"
+    exit 1
+fi
+
+DOCKER_USER=$(python3 -c "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c['docker_hub_user'])")
+IMAGE_NAME=$(python3  -c "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c['service_name'])")
+VERSION=$(python3     -c "import yaml; c=yaml.safe_load(open('$CONFIG')); print(str(c['service_version']))")
+
+FULL_TAG="${DOCKER_USER}/${IMAGE_NAME}:${VERSION}"
+LATEST_TAG="${DOCKER_USER}/${IMAGE_NAME}:latest"
+
+echo ""
 echo "============================================================"
-echo "  Building ${FULL_TAG}"
-echo "  Plan 121 — Gateway v7 with PROXY_TIMEOUT=2.5s baked in"
+echo "  JTP Build & Push Pipeline"
+echo "  Image   : ${FULL_TAG}"
+echo "  Config  : ${CONFIG}"
+[[ "$DRY_RUN" == "true" ]] && echo "  Mode    : DRY RUN (no docker build/push)"
+[[ "$NO_PUSH" == "true" ]] && echo "  Mode    : NO PUSH (build only)"
 echo "============================================================"
 echo ""
 
-# ── Step 1: Prep service source files ────────────────────────
-echo "Step 1: Preparing 219 service source files..."
+# ── Step 1: Sync services from Service Engine output ─────────────────────────
+echo "Step 1: Sync service source from Service Engine output..."
 cd "${SCRIPT_DIR}"
-python3 prep_services.py
+
+SYNC_ARGS=""
+[[ -n "$GEN_VERSION" ]] && SYNC_ARGS="--version ${GEN_VERSION}"
+[[ "$DRY_RUN" == "true" ]] && SYNC_ARGS="${SYNC_ARGS} --dry-run"
+
+if ! python3 prep_services.py ${SYNC_ARGS}; then
+    EXIT_CODE=$?
+    if [[ $EXIT_CODE -eq 2 ]]; then
+        echo ""
+        echo "⚠️  Sync completed with validation warnings (some services missing main.py)."
+        echo "   Continuing build — check services_manifest.json for details."
+    else
+        echo ""
+        echo "❌ Service sync FAILED (exit code ${EXIT_CODE}). Aborting build."
+        exit 1
+    fi
+fi
 echo ""
 
-# ── Step 2: Copy app_v6.py as app.py for the Dockerfile ──────
-echo "Step 2: Setting gateway app (app_v6.py → service/app.py)..."
+# Stop here if dry run
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo "============================================================"
+    echo "  DRY RUN complete — no Docker image built or pushed"
+    echo "============================================================"
+    exit 0
+fi
+
+# ── Step 2: Set gateway entrypoint ───────────────────────────────────────────
+echo "Step 2: Set gateway entrypoint (app_v6.py → service/app.py)..."
 cp "${SERVICE_DIR}/app_v6.py" "${SERVICE_DIR}/app.py"
-echo "  ✅ app.py = gateway v7 (PROXY_TIMEOUT=2.5, pool=50)"
+echo "  ✅ app.py = Gateway v7 (PROXY_TIMEOUT=2.5s, pool=50)"
 echo ""
 
-# ── Step 3: Build the Docker image ───────────────────────────
-echo "Step 3: Building Docker image ${FULL_TAG}..."
+# ── Step 3: Build Docker image ────────────────────────────────────────────────
+echo "Step 3: Build Docker image ${FULL_TAG} (platform: linux/amd64)..."
 BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 docker build \
     --build-arg BUILD_TIME_ARG="${BUILD_TIME}" \
     --tag "${FULL_TAG}" \
-    --tag "${DOCKER_USER}/${IMAGE_NAME}:latest" \
+    --tag "${LATEST_TAG}" \
     --platform linux/amd64 \
     "${SERVICE_DIR}"
 echo ""
 echo "  ✅ Build complete"
 echo ""
 
-# ── Step 4: Verify the image ─────────────────────────────────
-echo "Step 4: Verifying image..."
+# ── Step 4: Verify image ─────────────────────────────────────────────────────
+echo "Step 4: Verify image..."
 docker images "${DOCKER_USER}/${IMAGE_NAME}"
 echo ""
 
-# ── Step 5: Push to Docker Hub ───────────────────────────────
-echo "Step 5: Pushing ${FULL_TAG} to Docker Hub..."
-echo "  (Ensure you are logged in: docker login)"
-docker push "${FULL_TAG}"
-docker push "${DOCKER_USER}/${IMAGE_NAME}:latest"
-echo ""
-echo "  ✅ Push complete"
+# ── Step 5: Push to Docker Hub ───────────────────────────────────────────────
+if [[ "$NO_PUSH" == "true" ]]; then
+    echo "Step 5: Push skipped (--no-push)"
+else
+    echo "Step 5: Push ${FULL_TAG} to Docker Hub..."
+    echo "  (Ensure you are logged in: docker login)"
+    docker push "${FULL_TAG}"
+    docker push "${LATEST_TAG}"
+    echo ""
+    echo "  ✅ Push complete"
+fi
 echo ""
 
-# ── Summary ──────────────────────────────────────────────────
+# ── Summary ──────────────────────────────────────────────────────────────────
 echo "============================================================"
-echo "  ✅ COMPLETE: ${FULL_TAG} is ready on Docker Hub"
+echo "  ✅ COMPLETE: ${FULL_TAG} is ready"
 echo ""
 echo "  Next steps:"
-echo "  1. Update deploy manifest:  image: ${FULL_TAG}"
-echo "  2. Provision new cluster:   python3 deploy_pipeline.py"
-echo "  3. Verify gateway version:  curl http://<NODE_IP>:30671/health"
-echo "     Expected: {\"version\": 7, \"proxy_timeout\": 2.5}"
+echo "  1. Run deployment : bash run_deploy.sh"
+echo "  2. Or directly    : python3 deploy_pipeline.py"
+echo "  3. Verify gateway : curl http://<NODE_IP>:30671/health"
+echo "     Expected        : {\"version\": 7, \"proxy_timeout\": 2.5}"
 echo "============================================================"

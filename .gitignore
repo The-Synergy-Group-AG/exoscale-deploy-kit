@@ -1,9 +1,17 @@
+
 # ── Credentials (NEVER commit) ────────────────────────
 .env
 
 # ── Runtime outputs (generated per deployment) ────────
 outputs/
 !outputs/.gitkeep
+
+# ── Service build workspace ────────────────────────────
+# Populated by prep_services.py at build time.
+# Source of truth: engines/service_engine/outputs/CURRENT
+# These are ephemeral build artifacts — NEVER commit them.
+service/services/
+service/services_manifest.json
 
 # ── Kubernetes runtime artifacts ──────────────────────
 kubeconfig
