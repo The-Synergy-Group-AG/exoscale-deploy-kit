@@ -4,6 +4,7 @@
 # Plan 122-DEH | Lesson 22: -X utf8 encoding fix
 # Plan 123-P5+: Step 1.5 — auto-stage latest generated services
 # Plan 125 Phase 1: Step 2.5 — Stage 5e/5f per-service pod deployment
+# Plan 125 Lesson 35: Step 2.6 — Post-deploy monitoring sync (self-healing)
 # ============================================================
 # Usage:
 #   ./run_deploy.sh            # Interactive wizard + deploy
@@ -14,6 +15,9 @@
 # Features:
 #   - LESSON 22: Forces python -X utf8 (fixes Exoscale SDK cp1252 crash)
 #   - LESSON 27: Adds ~/.local/bin to PATH so helm is always found
+#   - LESSON 35: Step 2.6 auto-deploys kube-state-metrics + updates
+#                prometheus.yml node IPs + syncs engine outputs after
+#                every successful deployment (self-healing dashboards)
 #   - STEP 1.5: Automatically stages latest generated-v* services via
 #               prep_services.py (no manual version pinning required)
 #   - STEP 2.5: Deploys 219 individual service pods (Plan 125 Stage 5e/5f)
@@ -66,6 +70,7 @@ cat <<'BANNER'
   JTP EXOSCALE DEPLOYMENT RUNNER
   Plan 122-DEH hardened pipeline + Plan 123-P5+ auto-staging
   Plan 125 Phase 1: 219 per-service pod deployment (Stage 5e/5f)
+  Lesson 35: Post-deploy monitoring sync (Stage 2.6)
 ============================================================
 BANNER
 echo "  Timestamp:    $TS"
@@ -203,7 +208,7 @@ echo ""
 
 # ── Dry run: just report ─────────────────────────────────────
 if [ "$DRY_RUN" = "true" ]; then
-    echo "DRY RUN: would run teardown + stage-services + deploy + stage-5e. Exiting."
+    echo "DRY RUN: would run teardown + stage-services + deploy + stage-5e + monitoring-sync. Exiting."
     exit 0
 fi
 
@@ -367,6 +372,30 @@ elif [ "$SKIP_SERVICES" = "true" ]; then
     echo "[INFO] Step 2.5: Skipped (--skip-services flag or gen_service_manifests.py not found)"
 elif [ "$DEPLOY_EXIT" -ne 0 ]; then
     echo "[WARN] Step 2.5: Skipped — deploy_pipeline.py failed (exit=$DEPLOY_EXIT)"
+fi
+
+# ── Step 2.6: Post-Deploy Monitoring Sync (Lesson 35) ────────────────────────
+# Auto-heals dashboards after every successful deploy:
+#   2.6a kube-state-metrics deployed (NodePort 30808) → live K8s metrics
+#   2.6b prometheus.yml updated with new node IPs → Prometheus restarted
+#   2.6c engine outputs synced with latest manifests → exporter restarted
+if [ "$DEPLOY_EXIT" -eq 0 ]; then
+    LATEST_KC=$(find "$OUTPUTS_DIR" -name "kubeconfig.yaml" | sort | tail -1)
+    LATEST_RUN_DIR=$(find "$OUTPUTS_DIR" -maxdepth 1 -type d -name '[0-9]*' | sort | tail -1)
+    LATEST_RUN_TS=$(basename "$LATEST_RUN_DIR" 2>/dev/null || echo "$TS")
+
+    set +e
+    bash "$SCRIPT_DIR/_post_deploy_monitoring.sh" \
+        "${LATEST_KC}" \
+        "${LATEST_RUN_TS}" \
+        "${OUTPUTS_DIR}" 2>&1
+    MONITORING_EXIT=$?
+    set -e
+    if [ $MONITORING_EXIT -ne 0 ]; then
+        echo "[WARN] Step 2.6: Monitoring sync exited with code $MONITORING_EXIT (non-fatal)"
+    fi
+else
+    echo "[INFO] Step 2.6: Skipped — deploy failed (exit=$DEPLOY_EXIT)"
 fi
 
 echo ""
