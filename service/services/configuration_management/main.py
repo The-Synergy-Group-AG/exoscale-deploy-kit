@@ -25,14 +25,14 @@ logger = logging.getLogger(__name__)
 
 # Config from all 6 FADS registries
 with open("config.json", "r") as _f:
-    _cfg = json.load(_f)
+    config = json.load(_f)
 
-SERVICE_PORT        = _cfg.get('port', 8118)
-RESOURCE_TIER       = _cfg.get('resource_tier', 'small')
-KUBERNETES_NS       = _cfg.get('deployment', {}).get('kubernetes_namespace', 'jtp')
-API_TIMEOUT         = _cfg.get('variables', {}).get('api_timeout', 30)
-RATE_LIMIT_RPM      = _cfg.get('variables', {}).get('rate_limit_rpm', 1000)
-HARMONY_THRESHOLD   = _cfg.get('variables', {}).get('harmony_threshold', 0.997)
+SERVICE_PORT        = config.get('port', 8118)
+RESOURCE_TIER       = config.get('resource_tier', 'small')
+KUBERNETES_NS       = config.get('deployment', {}).get('kubernetes_namespace', 'jtp')
+API_TIMEOUT         = config.get('variables', {}).get('api_timeout', 30)
+RATE_LIMIT_RPM      = config.get('variables', {}).get('rate_limit_rpm', 1000)
+HARMONY_THRESHOLD   = config.get('variables', {}).get('harmony_threshold', 0.997)
 
 app = FastAPI(
     title="Configuration Management API",
@@ -46,16 +46,16 @@ async def root():
     return {
         "service": "configuration_management", "type": "backend",
         "domain": "configuration", "status": "running",
-        "template": _cfg.get("generated_from_template", "unknown"),
+        "template": config.get("generated_from_template", "unknown"),
         "port": SERVICE_PORT, "resource_tier": RESOURCE_TIER,
         "kubernetes_namespace": KUBERNETES_NS,
-        "biological_harmony": _cfg.get("biological_harmony", 0.997),
-        "consciousness_level": _cfg.get("consciousness_level", "GODHOOD"),
-        "biological_system": _cfg.get("biological_system", "General"),
-        "endpoints": _cfg.get("endpoints", []),
-        "registry_sources": _cfg.get("registry_sources", {}),
-        "variables_loaded": list(_cfg.get("variables", {}).keys()),
-        "version": _cfg.get("version", "1.0.0"),
+        "biological_harmony": config.get("biological_harmony", 0.997),
+        "consciousness_level": config.get("consciousness_level", "GODHOOD"),
+        "biological_system": config.get("biological_system", "General"),
+        "endpoints": config.get("endpoints", []),
+        "registry_sources": config.get("registry_sources", {}),
+        "variables_loaded": list(config.get("variables", {}).keys()),
+        "version": config.get("version", "1.0.0"),
     }
 
 
@@ -89,8 +89,8 @@ async def config():
     return {"service": "configuration_management", "domain": "configuration",
             "endpoint": "/config", "method": "GET",
             "status": "ok", "data": {},
-            "template": _cfg.get("generated_from_template"),
-            "biological_harmony": _cfg.get("biological_harmony", 0.997),
+            "template": config.get("generated_from_template"),
+            "biological_harmony": config.get("biological_harmony", 0.997),
             "timestamp": time.time()}
 
 @app.put("/config", summary="Update configuration", status_code=200)
@@ -99,8 +99,8 @@ async def put_config(request: dict = None):
     return {"service": "configuration_management", "domain": "configuration",
             "endpoint": "/config", "method": "PUT",
             "status": "success", "data": request or {},
-            "template": _cfg.get("generated_from_template"),
-            "biological_harmony": _cfg.get("biological_harmony", 0.997),
+            "template": config.get("generated_from_template"),
+            "biological_harmony": config.get("biological_harmony", 0.997),
             "timestamp": time.time()}
 
 @app.get("/settings", summary="Get system settings")
@@ -109,8 +109,8 @@ async def settings():
     return {"service": "configuration_management", "domain": "configuration",
             "endpoint": "/settings", "method": "GET",
             "status": "ok", "data": {},
-            "template": _cfg.get("generated_from_template"),
-            "biological_harmony": _cfg.get("biological_harmony", 0.997),
+            "template": config.get("generated_from_template"),
+            "biological_harmony": config.get("biological_harmony", 0.997),
             "timestamp": time.time()}
 
 @app.post("/settings/reset", summary="Reset settings to defaults", status_code=201)
@@ -119,8 +119,8 @@ async def settings_reset(request: dict = None):
     return {"service": "configuration_management", "domain": "configuration",
             "endpoint": "/settings/reset", "method": "POST",
             "status": "success", "data": request or {},
-            "template": _cfg.get("generated_from_template"),
-            "biological_harmony": _cfg.get("biological_harmony", 0.997),
+            "template": config.get("generated_from_template"),
+            "biological_harmony": config.get("biological_harmony", 0.997),
             "timestamp": time.time()}
 
 @app.get("/features", summary="List feature flags")
@@ -129,8 +129,8 @@ async def features():
     return {"service": "configuration_management", "domain": "configuration",
             "endpoint": "/features", "method": "GET",
             "status": "ok", "data": {},
-            "template": _cfg.get("generated_from_template"),
-            "biological_harmony": _cfg.get("biological_harmony", 0.997),
+            "template": config.get("generated_from_template"),
+            "biological_harmony": config.get("biological_harmony", 0.997),
             "timestamp": time.time()}
 
 @app.put("/features/{name}", summary="Toggle feature flag", status_code=200)
@@ -139,8 +139,8 @@ async def features_name(request: dict = None):
     return {"service": "configuration_management", "domain": "configuration",
             "endpoint": "/features/{name}", "method": "PUT",
             "status": "success", "data": request or {},
-            "template": _cfg.get("generated_from_template"),
-            "biological_harmony": _cfg.get("biological_harmony", 0.997),
+            "template": config.get("generated_from_template"),
+            "biological_harmony": config.get("biological_harmony", 0.997),
             "timestamp": time.time()}
 
 
