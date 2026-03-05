@@ -5,6 +5,7 @@
 # Plan 123-P5+: Step 1.5 — auto-stage latest generated services
 # Plan 125 Phase 1: Step 2.5 — Stage 5e/5f per-service pod deployment
 # Plan 125 Lesson 35: Step 2.6 — Post-deploy monitoring sync (self-healing)
+# Plan 125 Phase 2: Step 2.7 — Post-deploy service verification + full test suite
 # ============================================================
 # Usage:
 #   ./run_deploy.sh            # Interactive wizard + deploy
@@ -18,9 +19,15 @@
 #   - LESSON 35: Step 2.6 auto-deploys kube-state-metrics + updates
 #                prometheus.yml node IPs + syncs engine outputs after
 #                every successful deployment (self-healing dashboards)
+#   - LESSON 38: Step 2.6b writes ONLY ONE KSM target IP (not all nodes)
+#                KSM is a single pod — N targets = N× data triplication
 #   - STEP 1.5: Automatically stages latest generated-v* services via
 #               prep_services.py (no manual version pinning required)
 #   - STEP 2.5: Deploys 219 individual service pods (Plan 125 Stage 5e/5f)
+#   - STEP 2.7: Post-deploy service verification
+#               2.7a — /health sweep of all 220 service pods
+#               2.7b — Full per-service test suite (unit, integration, e2e,
+#                      performance, security, user_stories) via kubectl exec
 #   - Tees ALL output to timestamped log file for post-mortem analysis
 #   - Pre-flight checklist before any cloud activity
 #   - Automated post-mortem JSON generation after completion
@@ -70,7 +77,9 @@ cat <<'BANNER'
   JTP EXOSCALE DEPLOYMENT RUNNER
   Plan 122-DEH hardened pipeline + Plan 123-P5+ auto-staging
   Plan 125 Phase 1: 219 per-service pod deployment (Stage 5e/5f)
+  Plan 125 Phase 2: Post-deploy service verification + test suite (Step 2.7)
   Lesson 35: Post-deploy monitoring sync (Stage 2.6)
+  Lesson 38: KSM single target (no triplication)
 ============================================================
 BANNER
 echo "  Timestamp:    $TS"
@@ -182,7 +191,14 @@ else
     SKIP_SERVICES=true
 fi
 
-# Check 11: CPU Budget Validation (Lesson 34c/36 — CRITICAL)
+# Check 11: run_service_tests.py exists (Plan 125 Phase 2 Step 2.7)
+if [ -f "$SCRIPT_DIR/run_service_tests.py" ]; then
+    echo "  [PASS] run_service_tests.py: found (Plan 125 Step 2.7b)"
+else
+    echo "  [WARN] run_service_tests.py: NOT found — Step 2.7b test suite will be skipped"
+fi
+
+# Check 12: CPU Budget Validation (Lesson 34c/36 — CRITICAL)
 # 3 nodes × 3700m × 0.75 / 220 services = 37.8m headroom — use 10m (safe)
 NODE_COUNT_CFG=$(grep 'node_count:' "$SCRIPT_DIR/config.yaml" 2>/dev/null | awk '{print $2}' || echo 3)
 NUM_SERVICES=220
@@ -208,7 +224,7 @@ echo ""
 
 # ── Dry run: just report ─────────────────────────────────────
 if [ "$DRY_RUN" = "true" ]; then
-    echo "DRY RUN: would run teardown + stage-services + deploy + stage-5e + monitoring-sync. Exiting."
+    echo "DRY RUN: would run teardown + stage-services + deploy + stage-5e + monitoring-sync + test-suite. Exiting."
     exit 0
 fi
 
@@ -374,10 +390,11 @@ elif [ "$DEPLOY_EXIT" -ne 0 ]; then
     echo "[WARN] Step 2.5: Skipped — deploy_pipeline.py failed (exit=$DEPLOY_EXIT)"
 fi
 
-# ── Step 2.6: Post-Deploy Monitoring Sync (Lesson 35) ────────────────────────
+# ── Step 2.6: Post-Deploy Monitoring Sync (Lesson 35 + Lesson 38) ────────────
 # Auto-heals dashboards after every successful deploy:
 #   2.6a kube-state-metrics deployed (NodePort 30808) → live K8s metrics
-#   2.6b prometheus.yml updated with new node IPs → Prometheus restarted
+#   2.6b prometheus.yml updated with new node IPs (ONE target only — Lesson 38)
+#        → Prometheus restarted
 #   2.6c engine outputs synced with latest manifests → exporter restarted
 if [ "$DEPLOY_EXIT" -eq 0 ]; then
     LATEST_KC=$(find "$OUTPUTS_DIR" -name "kubeconfig.yaml" | sort | tail -1)
@@ -398,6 +415,73 @@ else
     echo "[INFO] Step 2.6: Skipped — deploy failed (exit=$DEPLOY_EXIT)"
 fi
 
+# ── Step 2.7: Post-Deploy Service Verification (Plan 125 Phase 2) ────────────
+# 2.7a — /health sweep of all 220 service pods (confirms readiness gate)
+# 2.7b — Full per-service test suite: unit, integration, e2e, performance,
+#          security, user_stories (via kubectl exec inside each pod, 20 workers)
+if [ "$DEPLOY_EXIT" -eq 0 ] && [ "$SKIP_SERVICES" = "false" ]; then
+    LATEST_KC=$(find "$OUTPUTS_DIR" -name "kubeconfig.yaml" | sort | tail -1)
+    K8S_NS=$(grep 'k8s_namespace:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}')
+    HEALTH_REPORT="$OUTPUTS_DIR/health_${TS}.json"
+    TEST_REPORT="$OUTPUTS_DIR/test_results_${TS}.json"
+
+    if [ -z "$LATEST_KC" ]; then
+        echo "[WARN] Step 2.7: No kubeconfig found — skipping service verification"
+    else
+        echo ""
+        echo "============================================================"
+        echo "  STEP 2.7a: SERVICE HEALTH SWEEP (/health on all pods)"
+        echo "============================================================"
+        set +e
+        python3 -X utf8 "$SCRIPT_DIR/service_health_check.py" \
+            --kubeconfig    "${LATEST_KC}" \
+            --namespace     "${K8S_NS}" \
+            --workers       20 \
+            --timeout       10 \
+            --fail-threshold 0.80 \
+            --output-json   "${HEALTH_REPORT}" 2>&1
+        HEALTH_EXIT=$?
+        set -e
+        echo ""
+        if [ $HEALTH_EXIT -ne 0 ]; then
+            echo "[WARN] Step 2.7a: Health sweep below 80% threshold (exit=$HEALTH_EXIT)"
+            echo "  Report: $HEALTH_REPORT"
+        else
+            echo "[OK]   Step 2.7a: /health sweep PASSED"
+        fi
+
+        echo ""
+        echo "============================================================"
+        echo "  STEP 2.7b: FULL PER-SERVICE TEST SUITE RUNNER"
+        echo "  Suites: unit, integration, e2e, performance, security, user_stories"
+        echo "  220 services via kubectl exec (20 parallel workers)"
+        echo "============================================================"
+        set +e
+        python3 -X utf8 "$SCRIPT_DIR/run_service_tests.py" \
+            --kubeconfig    "${LATEST_KC}" \
+            --namespace     "${K8S_NS}" \
+            --workers       20 \
+            --suite-timeout 180 \
+            --fail-threshold 0.80 \
+            --output-json   "${TEST_REPORT}" 2>&1
+        TEST_EXIT=$?
+        set -e
+        echo ""
+        if [ $TEST_EXIT -ne 0 ]; then
+            echo "[WARN] Step 2.7b: Test suite below 80% pass threshold (exit=$TEST_EXIT)"
+            echo "  Report: $TEST_REPORT"
+        else
+            echo "[OK]   Step 2.7b: Full test suite PASSED"
+        fi
+    fi
+else
+    if [ "$DEPLOY_EXIT" -ne 0 ]; then
+        echo "[INFO] Step 2.7: Skipped — deploy failed (exit=$DEPLOY_EXIT)"
+    else
+        echo "[INFO] Step 2.7: Skipped (--skip-services flag)"
+    fi
+fi
+
 echo ""
 echo "============================================================"
 echo "  DEPLOYMENT COMPLETED — Exit code: $DEPLOY_EXIT"
@@ -408,6 +492,8 @@ echo ""
 # ── Step 3: Post-mortem report ───────────────────────────────
 POSTMORTEM_FILE="$OUTPUTS_DIR/postmortem_${TS}.json"
 LATEST_REPORT=$(find "$OUTPUTS_DIR" -name "deployment_report.json" -newer "$SCRIPT_DIR/config.yaml" 2>/dev/null | sort | tail -1)
+HEALTH_REPORT_FINAL="${OUTPUTS_DIR}/health_${TS}.json"
+TEST_REPORT_FINAL="${OUTPUTS_DIR}/test_results_${TS}.json"
 
 python3 -X utf8 - <<PYEOF
 import json, os, subprocess, sys
@@ -419,6 +505,8 @@ log_file = "$LOG_FILE"
 deploy_exit = $DEPLOY_EXIT
 latest_report = "$LATEST_REPORT"
 out_file = "$POSTMORTEM_FILE"
+health_report = "$HEALTH_REPORT_FINAL"
+test_report = "$TEST_REPORT_FINAL"
 
 pm = {
     "timestamp": ts,
@@ -427,6 +515,8 @@ pm = {
     "exit_code": deploy_exit,
     "log_file": log_file,
     "deployment_report": None,
+    "health_report": None,
+    "test_report": None,
     "issues_detected": [],
     "git_commit": "",
     "plan": "125",
@@ -438,6 +528,22 @@ if latest_report and Path(latest_report).exists():
         pm["deployment_report"] = json.loads(Path(latest_report).read_text())
     except Exception as e:
         pm["issues_detected"].append(f"Could not parse deployment report: {e}")
+
+# Attach health sweep summary
+if Path(health_report).exists():
+    try:
+        hr = json.loads(Path(health_report).read_text())
+        pm["health_report"] = hr.get("summary", {})
+    except Exception:
+        pass
+
+# Attach test results summary
+if Path(test_report).exists():
+    try:
+        tr = json.loads(Path(test_report).read_text())
+        pm["test_report"] = tr.get("summary", {})
+    except Exception:
+        pass
 
 # Scan log for known error patterns
 if Path(log_file).exists():

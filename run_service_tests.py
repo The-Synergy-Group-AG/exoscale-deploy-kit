@@ -1,272 +1,417 @@
 #!/usr/bin/env python3
 """
-run_service_tests.py  v3
-Tests every deployed service (/, /health, /status) against the live gateway.
-  - / and /health are REQUIRED for all services
-  - /status is REQUIRED for frontend, OPTIONAL (404 OK) for backend
-Workers: 5  |  Timeout: 15s
+run_service_tests.py — Plan 125 Post-Deployment Full Test Suite Runner
+=======================================================================
+After all services are live and healthy, runs the complete per-service
+test suite (unit, integration, e2e, performance, security, user_stories)
+via kubectl exec inside each pod.
+
+Flow:
+  1. Get all running service pods (excl. gateway/system)
+  2. Parallel health sweep — confirm /health returns 200 (quick gate)
+  3. For each pod, run: kubectl exec pod -- python -m pytest tests/ -q --tb=short
+  4. Collect PASS / FAIL / ERROR / SKIP per service + per suite type
+  5. Generate JSON report + print summary table
+  6. Exit 1 if healthy fraction < --fail-threshold (default 0.80)
+
+Usage:
+    python3 run_service_tests.py \\
+        --kubeconfig outputs/20260305_125732/kubeconfig.yaml \\
+        --namespace exo-jtp-prod
+
+    python3 run_service_tests.py \\
+        --kubeconfig outputs/20260305_125732/kubeconfig.yaml \\
+        --namespace exo-jtp-prod \\
+        --workers 20 \\
+        --output-json outputs/test_results_20260305_125732.json \\
+        --suites unit integration e2e
+
+Plan: 125-True-Microservices-Deployment
+Phase: 2 — Post-Deployment Verification
+Step: 2.7b
 """
+from __future__ import annotations
 
+import argparse
 import json
-import pathlib
+import subprocess
+import sys
 import time
-import urllib.request
-import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
-def p(*a, **kw):
-    print(*a, **kw, flush=True)
+# ── Test suite directories (in execution order) ───────────────────────────────
+ALL_SUITES = ["unit", "integration", "e2e", "performance", "security", "user_stories"]
 
-def ep_icon(res):
-    """Return human-readable pass/fail string for one endpoint result."""
-    if res["ok"]:
-        return "200-OK"
-    sc = res["status_code"]
-    if sc == 404:
-        return "404"
-    if sc == 0:
-        return "TIMEOUT"
-    return "ERR-" + str(sc)
-
-GATEWAY      = "http://159.100.249.9"
-SERVICES_DIR = pathlib.Path(__file__).parent / "service" / "services"
-TIMEOUT      = 15
-WORKERS      = 5
-
-REPORT_DIR = pathlib.Path(__file__).parent.parent / "docs" / "plans" / "119-Factory-E2E-Test-3"
-REPORT_DIR.mkdir(parents=True, exist_ok=True)
-JSON_REPORT = REPORT_DIR / "service_test_results.json"
-MD_REPORT   = REPORT_DIR / "SERVICE_TEST_REPORT.md"
+# ── Status codes ─────────────────────────────────────────────────────────────
+STATUS_PASS    = "PASS"
+STATUS_FAIL    = "FAIL"
+STATUS_ERROR   = "ERROR"     # kubectl exec failed / pod not running
+STATUS_SKIP    = "SKIP"      # pod not Running
+STATUS_NOTESTS = "NO_TESTS"  # tests/ dir empty or pytest not found
 
 
-def http_get(url, timeout=TIMEOUT):
-    t0 = time.time()
+# ── Pod discovery ─────────────────────────────────────────────────────────────
+def get_running_service_pods(kubeconfig: str, namespace: str) -> list[dict]:
+    """Return list of {name, phase, service_name} for all running service pods."""
+    cmd = [
+        "kubectl", "get", "pods",
+        "-n", namespace,
+        "--kubeconfig", kubeconfig,
+        "-o", "json",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError(f"kubectl get pods failed: {result.stderr.strip()}")
+
+    items = json.loads(result.stdout).get("items", [])
+    pods = []
+    skip_patterns = ["docker-jtp", "nginx", "cert-manager", "cm-acme",
+                     "coredns", "calico", "kube-state", "kube-proxy"]
+
+    for item in items:
+        name  = item["metadata"]["name"]
+        phase = item.get("status", {}).get("phase", "Unknown")
+
+        if any(skip in name for skip in skip_patterns):
+            continue
+
+        # Extract SERVICE_NAME env var to get canonical service name
+        envs = item.get("spec", {}).get("containers", [{}])[0].get("env", [])
+        svc_name = next(
+            (e["value"] for e in envs if e.get("name") == "SERVICE_NAME"),
+            name
+        )
+        pods.append({"name": name, "phase": phase, "service_name": svc_name})
+
+    return pods
+
+
+# ── Health check gate ─────────────────────────────────────────────────────────
+def quick_health_check(kubeconfig: str, namespace: str, pod_name: str,
+                       timeout: int = 5) -> bool:
+    """Returns True if /health returns HTTP 200, False otherwise."""
+    cmd = [
+        "kubectl", "exec", "-n", namespace,
+        "--kubeconfig", kubeconfig,
+        pod_name, "--",
+        "curl", "-sf", "--max-time", str(timeout),
+        "-o", "/dev/null", "-w", "%{http_code}",
+        "http://localhost:8000/health",
+    ]
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "jtp-tester/3"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            body = r.read().decode("utf-8", errors="replace")
-            ms = round((time.time() - t0) * 1000, 1)
-            try:
-                parsed = json.loads(body)
-            except Exception:
-                parsed = {"raw": body[:300]}
-            return {"ok": True, "status_code": r.status, "body": parsed, "latency_ms": ms}
-    except urllib.error.HTTPError as e:
-        ms = round((time.time() - t0) * 1000, 1)
-        return {"ok": False, "status_code": e.code, "body": {}, "latency_ms": ms, "error": str(e)}
-    except Exception as e:
-        ms = round((time.time() - t0) * 1000, 1)
-        return {"ok": False, "status_code": 0, "body": {}, "latency_ms": ms, "error": str(e)[:120]}
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+        return result.returncode == 0 and result.stdout.strip() == "200"
+    except Exception:
+        return False
 
 
-def detect_type(name):
-    cfg = SERVICES_DIR / name / "config.json"
-    if cfg.exists():
-        try:
-            return json.loads(cfg.read_text()).get("type", "backend")
-        except Exception:
-            pass
-    return "frontend" if "frontend" in name else "backend"
+# ── Per-suite test runner ─────────────────────────────────────────────────────
+def run_suite_in_pod(kubeconfig: str, namespace: str, pod_name: str,
+                     suite: str, timeout: int = 120) -> dict:
+    """
+    Run a specific test suite directory inside the pod.
+    Returns: {suite, passed, failed, errors, skipped, duration_s, output}
+    """
+    t0 = time.monotonic()
+    cmd = [
+        "kubectl", "exec", "-n", namespace,
+        "--kubeconfig", kubeconfig,
+        pod_name, "--",
+        "python", "-m", "pytest",
+        f"tests/{suite}/",
+        "-q", "--tb=short", "--no-header",
+        "--color=no",
+        f"--timeout={timeout - 10}",  # pytest-timeout if available
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout
+        )
+        duration = time.monotonic() - t0
+        output = (result.stdout + result.stderr).strip()
+
+        # Parse pytest summary line: "X passed, Y failed, Z error in Ns"
+        passed = failed = errors = skipped = 0
+        for line in output.splitlines():
+            line_l = line.lower()
+            if "passed" in line_l or "failed" in line_l or "error" in line_l:
+                import re
+                nums = re.findall(r"(\d+)\s+(passed|failed|error|skip)", line_l)
+                for count, label in nums:
+                    if "pass" in label:   passed  = int(count)
+                    elif "fail" in label: failed  = int(count)
+                    elif "error" in label: errors = int(count)
+                    elif "skip" in label: skipped = int(count)
+
+        # If pytest couldn't find the directory (no tests collected)
+        if "no tests ran" in output.lower() or "no such file or directory" in output.lower():
+            return {"suite": suite, "passed": 0, "failed": 0, "errors": 0,
+                    "skipped": 0, "duration_s": duration,
+                    "status": STATUS_NOTESTS, "output": output[:200]}
+
+        status = STATUS_PASS if (result.returncode == 0 and failed == 0 and errors == 0) \
+                 else STATUS_FAIL
+
+        return {
+            "suite": suite,
+            "passed": passed, "failed": failed,
+            "errors": errors, "skipped": skipped,
+            "duration_s": round(duration, 1),
+            "status": status,
+            "output": output[-500:] if len(output) > 500 else output,
+        }
+
+    except subprocess.TimeoutExpired:
+        return {"suite": suite, "passed": 0, "failed": 0, "errors": 1, "skipped": 0,
+                "duration_s": round(time.monotonic() - t0, 1),
+                "status": STATUS_ERROR, "output": f"kubectl exec timeout after {timeout}s"}
+    except Exception as exc:
+        return {"suite": suite, "passed": 0, "failed": 0, "errors": 1, "skipped": 0,
+                "duration_s": round(time.monotonic() - t0, 1),
+                "status": STATUS_ERROR, "output": str(exc)[:200]}
 
 
-def test_service(name):
-    svc_type = detect_type(name)
-    base = GATEWAY + "/api/" + name
-    eps = {}
-    req_ok = True
+# ── Full per-service test run ─────────────────────────────────────────────────
+def test_service_pod(kubeconfig: str, namespace: str, pod: dict,
+                     suites: list[str], health_timeout: int = 5,
+                     suite_timeout: int = 120) -> dict:
+    """
+    Run all requested test suites for one service pod.
+    Returns a result dict for the service.
+    """
+    pod_name    = pod["name"]
+    svc_name    = pod["service_name"]
+    t0          = time.monotonic()
 
-    for ep in ["/", "/health"]:
-        r = http_get(base + ep)
-        eps[ep] = r
-        if not r["ok"]:
-            req_ok = False
+    if pod["phase"] != "Running":
+        return {
+            "service": svc_name, "pod": pod_name,
+            "overall_status": STATUS_SKIP, "phase": pod["phase"],
+            "health": False, "suites": [], "duration_s": 0,
+        }
 
-    r_status = http_get(base + "/status")
-    eps["/status"] = r_status
+    # 1. Quick health gate
+    healthy = quick_health_check(kubeconfig, namespace, pod_name, timeout=health_timeout)
+    if not healthy:
+        return {
+            "service": svc_name, "pod": pod_name,
+            "overall_status": STATUS_ERROR, "phase": pod["phase"],
+            "health": False, "suites": [],
+            "duration_s": round(time.monotonic() - t0, 1),
+            "detail": "/health did not return 200",
+        }
 
-    if svc_type == "frontend":
-        status_ok = r_status["ok"]
-    else:
-        status_ok = r_status["ok"] or r_status["status_code"] == 404
+    # 2. Run each suite sequentially inside the pod
+    suite_results = []
+    any_fail = False
+    for suite in suites:
+        sr = run_suite_in_pod(kubeconfig, namespace, pod_name, suite, timeout=suite_timeout)
+        suite_results.append(sr)
+        if sr["status"] in (STATUS_FAIL, STATUS_ERROR):
+            any_fail = True
 
-    passed = req_ok and status_ok
-    avg = round(sum(eps[e]["latency_ms"] for e in eps) / len(eps), 1)
+    overall = STATUS_FAIL if any_fail else STATUS_PASS
+    total_passed = sum(s["passed"] for s in suite_results)
+    total_failed = sum(s["failed"] + s["errors"] for s in suite_results)
 
     return {
-        "service": name,
-        "type": svc_type,
-        "passed": passed,
-        "required_ok": req_ok,
-        "status_ok": r_status["ok"],
-        "endpoints": eps,
-        "avg_latency_ms": avg,
+        "service":        svc_name,
+        "pod":            pod_name,
+        "overall_status": overall,
+        "phase":          pod["phase"],
+        "health":         True,
+        "total_passed":   total_passed,
+        "total_failed":   total_failed,
+        "suites":         suite_results,
+        "duration_s":     round(time.monotonic() - t0, 1),
     }
 
 
-def main():
-    now = datetime.now(timezone.utc).isoformat()
-    p("[" + now + "] Service test run v3 — " + GATEWAY)
-    p("Workers: " + str(WORKERS) + "  Timeout: " + str(TIMEOUT) + "s\n")
+# ── Parallel sweep ─────────────────────────────────────────────────────────────
+def run_all_tests(kubeconfig: str, namespace: str, suites: list[str],
+                  workers: int = 10, health_timeout: int = 5,
+                  suite_timeout: int = 120) -> list[dict]:
+    """Run full test suite on all service pods in parallel."""
+    print(f"\n[test-runner] Fetching pods from namespace: {namespace}")
+    pods = get_running_service_pods(kubeconfig, namespace)
+    print(f"[test-runner] Found {len(pods)} service pods")
+    print(f"[test-runner] Test suites: {', '.join(suites)}")
+    print(f"[test-runner] Workers: {workers}  Suite timeout: {suite_timeout}s")
+    print()
 
-    services = sorted(
-        d.name for d in SERVICES_DIR.iterdir()
-        if d.is_dir() and (d / "main.py").exists()
-    )
-    total = len(services)
-    p("Services to test: " + str(total))
+    results: list[dict] = []
+    total  = len(pods)
+    done   = 0
 
-    # Gateway health
-    p("\n[1/3] Gateway /health ...")
-    gw = http_get(GATEWAY + "/health", timeout=5)
-    svc_loaded = gw.get("body", {}).get("services_loaded", "?")
-    svc_failed = gw.get("body", {}).get("services_failed", "?")
-    gw_ok = "OK" if gw["ok"] else "FAIL"
-    p("  /health: " + gw_ok + "  services_loaded=" + str(svc_loaded) +
-      "  services_failed=" + str(svc_failed) + "  " + str(gw["latency_ms"]) + "ms")
-
-    # Per-service tests
-    p("\n[2/3] Testing " + str(total) + " services (" + str(WORKERS) + " workers) ...")
-    results = []
-    passed = 0
-    failed = 0
-
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        futures = {pool.submit(test_service, name): name for name in services}
-        done = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(
+                test_service_pod,
+                kubeconfig, namespace, pod, suites, health_timeout, suite_timeout
+            ): pod
+            for pod in pods
+        }
         for future in as_completed(futures):
+            result = future.result()
+            results.append(result)
             done += 1
-            r = future.result()
-            results.append(r)
-            if r["passed"]:
-                passed += 1
-            else:
-                failed += 1
-                parts = []
-                for ep in r["endpoints"]:
-                    parts.append(ep + "=" + ep_icon(r["endpoints"][ep]))
-                p("  FAIL [" + str(done) + "/" + str(total) + "] " +
-                  r["service"] + "  " + " | ".join(parts))
-            if done % 50 == 0:
-                p("  ... " + str(done) + "/" + str(total) +
-                  " pass=" + str(passed) + " fail=" + str(failed))
+            status = result["overall_status"]
+            icon   = "✅" if status == STATUS_PASS else (
+                     "⏭️" if status == STATUS_SKIP else "❌")
+            p = result.get("total_passed", 0)
+            f = result.get("total_failed", 0)
+            d = f"{result.get('duration_s', 0):.0f}s"
+            print(f"  [{done:>3}/{total}] {icon} {result['service']:<55} "
+                  f"{status:<10} tests={p}✅/{f}❌  {d}")
 
-    p("  Complete " + str(total) + "/" + str(total) +
-      " pass=" + str(passed) + " fail=" + str(failed))
+    return results
 
-    results.sort(key=lambda x: x["service"])
-    finished = datetime.now(timezone.utc).isoformat()
 
-    failures    = [r for r in results if not r["passed"]]
-    avg_lat     = round(sum(r["avg_latency_ms"] for r in results) / total, 1)
-    n_frontend  = sum(1 for r in results if r["type"] == "frontend")
-    n_backend   = sum(1 for r in results if r["type"] == "backend")
-    n_status_ok = sum(1 for r in results if r["status_ok"])
+# ── Summary printer ───────────────────────────────────────────────────────────
+def print_summary(results: list[dict], suites: list[str]) -> None:
+    counts = {STATUS_PASS: 0, STATUS_FAIL: 0, STATUS_ERROR: 0,
+              STATUS_SKIP: 0, STATUS_NOTESTS: 0}
+    total_passed = total_failed = 0
 
-    # JSON report
-    summary = {
-        "gateway": GATEWAY,
-        "started_at": now,
-        "finished_at": finished,
-        "total_services": total,
-        "passed": passed,
-        "failed": failed,
-        "frontend_services": n_frontend,
-        "backend_services": n_backend,
-        "services_with_status_endpoint": n_status_ok,
-        "gateway_health_ok": gw["ok"],
-        "services_loaded_at_gateway": svc_loaded,
-        "avg_service_latency_ms": avg_lat,
-        "failures": [
-            {
-                "service": r["service"],
-                "type": r["type"],
-                "endpoints": {
-                    ep: {
-                        "ok": r["endpoints"][ep]["ok"],
-                        "status_code": r["endpoints"][ep]["status_code"],
-                        "error": r["endpoints"][ep].get("error", ""),
-                    }
-                    for ep in r["endpoints"]
-                },
-            }
-            for r in failures
-        ],
-    }
-    full = {"summary": summary, "gateway_health": gw, "service_tests": results}
-    JSON_REPORT.write_text(json.dumps(full, indent=2))
-    p("\n[3/3] JSON: " + str(JSON_REPORT))
+    for r in results:
+        s = r["overall_status"]
+        counts[s] = counts.get(s, 0) + 1
+        total_passed += r.get("total_passed", 0)
+        total_failed += r.get("total_failed", 0)
 
-    # Markdown report
-    status_icon = "PASS" if failed == 0 else "PARTIAL"
-    lines = [
-        "# Service Test Report — All 219 Services",
-        "**Date:** " + now[:10] + "  ",
-        "**Gateway:** " + GATEWAY + "  ",
-        "**Status:** " + status_icon + " " + str(passed) + "/" + str(total) +
-        " PASSED | " + str(failed) + " failed  ",
-        "**Avg latency:** " + str(avg_lat) + " ms  ",
-        "**Gateway:** services_loaded=" + str(svc_loaded) +
-        " | services_failed=" + str(svc_failed) + "  ",
-        "**Breakdown:** " + str(n_frontend) + " frontend | " +
-        str(n_backend) + " backend | " +
-        str(n_status_ok) + " have /status endpoint  ",
-        "",
-        "---",
-        "",
-        "## Service Results",
-        "",
-        "| # | Service | Type | / | /health | /status | Avg ms | Result |",
-        "|---|---------|------|---|---------|---------|--------|--------|",
-    ]
+    total    = len(results)
+    assessed = total - counts[STATUS_SKIP]
+    pass_rate = counts[STATUS_PASS] / max(1, assessed)
 
-    def cell(res):
-        if res["ok"]:
-            return "OK"
-        sc = res["status_code"]
-        if sc == 404:
-            return "404"
-        if sc == 0:
-            return "TMO"
-        return "E" + str(sc)
+    print("\n" + "=" * 70)
+    print("  POST-DEPLOYMENT TEST SUITE RESULTS")
+    print("=" * 70)
+    print(f"  Services assessed:  {assessed} / {total}")
+    print(f"  ✅ ALL PASS:        {counts[STATUS_PASS]}")
+    print(f"  ❌ FAILED:          {counts[STATUS_FAIL]}")
+    print(f"  🚫 ERROR:           {counts[STATUS_ERROR]}")
+    print(f"  ⏭️  SKIPPED:         {counts[STATUS_SKIP]}")
+    print(f"  Individual tests:   {total_passed} passed  /  {total_failed} failed")
+    print(f"  Service pass rate:  {pass_rate:.1%}")
+    print(f"  Suites run:         {', '.join(suites)}")
+    print("=" * 70)
 
-    for i, r in enumerate(results, 1):
-        e = r["endpoints"]
-        result_cell = "PASS" if r["passed"] else "FAIL"
-        lines.append(
-            "| " + str(i) + " | `" + r["service"] + "` | " + r["type"] + " | " +
-            cell(e["/"]) + " | " + cell(e["/health"]) + " | " + cell(e["/status"]) + " | " +
-            str(r["avg_latency_ms"]) + " | " + result_cell + " |"
+    # Per-suite breakdown
+    suite_totals: dict[str, dict] = {s: {"passed": 0, "failed": 0, "notests": 0} for s in suites}
+    for r in results:
+        for sr in r.get("suites", []):
+            suite = sr["suite"]
+            if suite in suite_totals:
+                suite_totals[suite]["passed"]  += sr.get("passed", 0)
+                suite_totals[suite]["failed"]  += sr.get("failed", 0) + sr.get("errors", 0)
+                if sr["status"] == STATUS_NOTESTS:
+                    suite_totals[suite]["notests"] += 1
+
+    print("\n  PER-SUITE BREAKDOWN:")
+    for suite, t in suite_totals.items():
+        print(f"    {suite:<20}  {t['passed']:>4} passed  {t['failed']:>4} failed"
+              f"  ({t['notests']} services had no {suite}/ tests)")
+
+    # Failed services detail
+    failed_svcs = [r for r in results if r["overall_status"] in (STATUS_FAIL, STATUS_ERROR)]
+    if failed_svcs:
+        print(f"\n  FAILED SERVICES ({len(failed_svcs)}):")
+        for r in sorted(failed_svcs, key=lambda x: x["service"]):
+            print(f"    ❌ {r['service']}")
+            for sr in r.get("suites", []):
+                if sr["status"] in (STATUS_FAIL, STATUS_ERROR):
+                    print(f"       → {sr['suite']}: {sr['status']}  "
+                          f"{sr.get('failed',0)+sr.get('errors',0)} failed")
+                    if sr.get("output"):
+                        # Print last few lines of pytest output
+                        lines = sr["output"].splitlines()
+                        for line in lines[-5:]:
+                            print(f"         {line}")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="JTP Post-Deployment Service Test Suite Runner"
+    )
+    parser.add_argument("--kubeconfig", required=True)
+    parser.add_argument("--namespace", default="exo-jtp-prod")
+    parser.add_argument("--workers", type=int, default=10,
+                        help="Parallel pod workers (default: 10)")
+    parser.add_argument("--suites", nargs="+", default=ALL_SUITES,
+                        choices=ALL_SUITES,
+                        help=f"Test suites to run (default: all = {ALL_SUITES})")
+    parser.add_argument("--health-timeout", type=int, default=5,
+                        help="Health check timeout per pod in seconds (default: 5)")
+    parser.add_argument("--suite-timeout", type=int, default=120,
+                        help="Max seconds per suite per pod (default: 120)")
+    parser.add_argument("--output-json", help="Save full results to JSON file")
+    parser.add_argument("--fail-threshold", type=float, default=0.80,
+                        help="Min fraction of services that must PASS (default: 0.80)")
+    args = parser.parse_args()
+
+    ts = datetime.now().isoformat()
+    print(f"[test-runner] JTP Post-Deployment Test Suite Runner — {ts}")
+    print(f"[test-runner] kubeconfig: {args.kubeconfig}")
+    print(f"[test-runner] namespace:  {args.namespace}")
+    print(f"[test-runner] workers:    {args.workers}")
+    print(f"[test-runner] suites:     {args.suites}")
+
+    try:
+        results = run_all_tests(
+            kubeconfig    = args.kubeconfig,
+            namespace     = args.namespace,
+            suites        = args.suites,
+            workers       = args.workers,
+            health_timeout = args.health_timeout,
+            suite_timeout  = args.suite_timeout,
         )
+    except Exception as exc:
+        print(f"[test-runner] FATAL: {exc}", file=sys.stderr)
+        return 1
 
-    if failures:
-        lines += ["", "---", "", "## Failures Detail", ""]
-        for r in failures:
-            lines.append("### `" + r["service"] + "` (" + r["type"] + ")")
-            for ep, d in r["endpoints"].items():
-                status = "OK" if d["ok"] else ("404-expected" if d["status_code"] == 404 else "FAIL")
-                lines.append("- **" + ep + "**: HTTP " + str(d["status_code"]) +
-                             " [" + status + "] " + d.get("error", ""))
-            lines.append("")
+    print_summary(results, args.suites)
 
-    lines += ["", "---",
-              "*Generated: " + finished + "*  ",
-              "*JSON: `" + JSON_REPORT.name + "`*"]
-    MD_REPORT.write_text("\n".join(lines))
-    p("Markdown: " + str(MD_REPORT))
+    # Save JSON report
+    if args.output_json:
+        report = {
+            "timestamp":    ts,
+            "kubeconfig":   args.kubeconfig,
+            "namespace":    args.namespace,
+            "suites_run":   args.suites,
+            "results":      results,
+            "summary": {
+                "total":        len(results),
+                STATUS_PASS:    sum(1 for r in results if r["overall_status"] == STATUS_PASS),
+                STATUS_FAIL:    sum(1 for r in results if r["overall_status"] == STATUS_FAIL),
+                STATUS_ERROR:   sum(1 for r in results if r["overall_status"] == STATUS_ERROR),
+                STATUS_SKIP:    sum(1 for r in results if r["overall_status"] == STATUS_SKIP),
+                "total_tests_passed": sum(r.get("total_passed", 0) for r in results),
+                "total_tests_failed": sum(r.get("total_failed", 0) for r in results),
+            }
+        }
+        out_path = Path(args.output_json)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, indent=2))
+        print(f"\n[test-runner] Full report saved: {out_path}")
 
-    # Console summary
-    p("\n" + "=" * 60)
-    p("RESULT:  " + str(passed) + "/" + str(total) + " PASSED  |  " + str(failed) + " FAILED")
-    p("Frontend: " + str(n_frontend) + "  Backend: " + str(n_backend))
-    p("Services with /status: " + str(n_status_ok))
-    p("Avg latency: " + str(avg_lat) + " ms")
-    if failures:
-        p("\nFailed services (" + str(len(failures)) + "):")
-        for r in failures:
-            p("  x " + r["service"] + " (" + r["type"] + ")")
-    p("=" * 60)
+    # Exit code decision
+    assessed  = [r for r in results if r["overall_status"] != STATUS_SKIP]
+    pass_count = sum(1 for r in assessed if r["overall_status"] == STATUS_PASS)
+    rate       = pass_count / max(1, len(assessed))
+
+    if rate < args.fail_threshold:
+        print(f"\n[test-runner] ❌ FAIL: {rate:.1%} services passed < "
+              f"{args.fail_threshold:.0%} threshold")
+        return 1
+
+    print(f"\n[test-runner] ✅ PASS: {rate:.1%} services passed ≥ "
+          f"{args.fail_threshold:.0%} threshold")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
