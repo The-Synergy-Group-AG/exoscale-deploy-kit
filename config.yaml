@@ -9,6 +9,9 @@
 # Plan 121: service_version 6 -- docker-jtp:6 (Gateway v7, PROXY_TIMEOUT=2.5s)
 # Plan 123 Phase 4: service_version updated to 8 -- docker-jtp:8 (real implementations)
 # Plan 123 Phase 5: added dns: section for DNS automation (ISSUE-015)
+# Plan 125 Phase 0: autoscaling.min_replicas 2->1 (dev/single-user deployment)
+#   autoscaling.max_replicas 10->3 (single user, no need for 10 gateway replicas)
+#   database.enabled false (AI-First application -- dual-mode DBaaS is optional)
 # =============================================================
 project_name: jtp-test1
 service_name: docker-jtp
@@ -40,7 +43,9 @@ ingress:
   domain: jobtrackerpro.ch
   cert_email: andrewitz@gmail.com
 database:
-  enabled: true
+  # AI-First application: DBaaS is DUAL-MODE ONLY (Plan 125 Amendment)
+  # Set enabled: true only when dual-mode traditional services are being deployed
+  enabled: false
   type: mysql
   deployment: managed
   version: '8'
@@ -48,8 +53,11 @@ database:
   replicas: 1
 autoscaling:
   enabled: true
-  min_replicas: 2
-  max_replicas: 10
+  # Plan 125: min_replicas reduced to 1 for dev/single-user deployment
+  # Increase to 2+ for production multi-user load
+  min_replicas: 1
+  # Plan 125: max_replicas reduced to 3 for dev/single-user deployment
+  max_replicas: 3
   cpu_target_percent: 70
   memory_target_percent: 80
 resources:
