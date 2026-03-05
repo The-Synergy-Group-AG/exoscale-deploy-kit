@@ -179,7 +179,7 @@ spec:
             httpGet:
               path: /health
               port: 8000
-            initialDelaySeconds: 30
+            initialDelaySeconds: 120
             periodSeconds: 30
             failureThreshold: 3
             timeoutSeconds: 5
