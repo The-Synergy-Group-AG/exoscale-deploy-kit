@@ -127,6 +127,13 @@ def _delete_nodepool_robust(c, cluster_id: str, pool_id: str, pool_name: str,
     Returns True if nodepool is confirmed deleted, False if all attempts exhausted.
     """
     MAX_ATTEMPTS = 12
+    # LESSON 41: Distinguish transient 409 (race condition) from persistent-forbidden 409
+    # (Instance Pool locked). After FORBIDDEN_ESCALATE_AFTER consecutive cycles where
+    # state="running" but DELETE returns 409 "forbidden", the API is genuinely refusing.
+    # In this case, NEVER delete individual instances — the Instance Pool recreates them.
+    # Escalate with console path: Compute -> Instance Pools -> delete pool manually.
+    forbidden_consecutive = 0
+    FORBIDDEN_ESCALATE_AFTER = 3
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         # ── Pre-flight: check current state before attempting DELETE ──────────
@@ -182,8 +189,31 @@ def _delete_nodepool_robust(c, cluster_id: str, pool_id: str, pool_name: str,
             if ("409" in err_str or "400" in err_str) and attempt < MAX_ATTEMPTS:
                 # LESSON 40b: min(attempt×60, 300) gives 60s, 120s, 180s, 240s, 300s, 300s...
                 wait_s = min(attempt * 60, 300)
+                # LESSON 41: track consecutive "state=running + 409 forbidden" cycles.
+                # Transient 409 clears when the deprovisioning window ends (backoff handles it).
+                # Persistent 409 = Instance Pool locked — escalate after 3 consecutive cycles.
+                if "forbidden" in err_str.lower():
+                    forbidden_consecutive += 1
+                    if forbidden_consecutive >= FORBIDDEN_ESCALATE_AFTER:
+                        warn(f"Nodepool {pool_name}: 409 'forbidden' on {forbidden_consecutive} "
+                             f"consecutive attempts — Exoscale Instance Pool is locked.")
+                        warn("  The API is refusing deletion; retrying will not help.")
+                        warn("  MANUAL ACTION REQUIRED:")
+                        warn("  1. Open https://portal.exoscale.com")
+                        warn("  2. Navigate: Compute -> Instance Pools")
+                        warn(f"  3. Find and delete the pool: {pool_name}")
+                        warn("  4. Wait for all instances to terminate (~2-5 min)")
+                        warn("  5. Re-run: python3 teardown.py --force")
+                        results["errors"].append({
+                            "type": "nodepool", "id": pool_id, "name": pool_name,
+                            "error": "Instance Pool locked — manual console deletion required: "
+                                     "Compute -> Instance Pools -> delete " + pool_name
+                        })
+                        return False
+                else:
+                    forbidden_consecutive = 0  # reset on non-forbidden 409
                 warn(f"Nodepool {pool_name}: conflict (attempt {attempt}/{MAX_ATTEMPTS}) "
-                     f"— VMs still deprovisioning, backing off {wait_s}s...")
+                     f"— backing off {wait_s}s...")
                 time.sleep(wait_s)
             else:
                 warn(f"Nodepool {pool_name}: {err_str[:120]}")

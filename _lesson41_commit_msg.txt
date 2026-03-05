@@ -1,0 +1,25 @@
+Lesson 41: escalate on persistent 409 forbidden — Instance Pool manual path
+
+ROOT CAUSE (confirmed by Run 4 failure):
+  When the Exoscale API returns 409 "Nodepool deletion is forbidden" persistently,
+  the backing Instance Pool is in a locked/confused state. Retrying via API for
+  10+ minutes does not help — and deleting individual instances is pointless because
+  the Instance Pool controller immediately recreates any deleted VM.
+
+  The correct manual path is: Compute -> Instance Pools -> delete the pool directly.
+  After the Instance Pool is gone, the cluster and SG can be deleted normally.
+
+CODE CHANGE in _delete_nodepool_robust():
+  Added forbidden_consecutive counter (resets on non-forbidden 409).
+  After FORBIDDEN_ESCALATE_AFTER=3 consecutive "state=running + 409 forbidden" cycles:
+    - Print MANUAL ACTION REQUIRED with exact console steps:
+        1. https://portal.exoscale.com
+        2. Compute -> Instance Pools
+        3. Delete the pool named [pool_name]
+        4. Wait ~2-5 min for instances to terminate
+        5. Re-run: python3 teardown.py --force
+    - Record error and return False immediately (no further retries)
+
+  Transient 409 (race condition after K8s namespace delete) still uses the
+  LESSON 40b backoff strategy (min(attempt*60, 300)s) since "forbidden" will
+  not appear in those error messages — only in the persistent-lock case.
