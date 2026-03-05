@@ -278,6 +278,26 @@ def stage_preflight() -> None:
             "install kubectl: https://kubernetes.io/docs/tasks/tools/"
         )
 
+    # LESSON 27: helm required for Stage 5c (ingress-nginx + cert-manager via Helm)
+    # Without this check the pipeline crashes with FileNotFoundError mid-run (after
+    # spending ~3 minutes provisioning Exoscale infrastructure).
+    r_helm = subprocess.run(
+        ["helm", "version", "--short"],
+        capture_output=True, text=True, timeout=10
+    )
+    if r_helm.returncode == 0:
+        helm_ver = r_helm.stdout.strip().split("\n")[0]
+        ok(f"helm: available ({helm_ver})")
+    else:
+        ingress_cfg = cfg.get("ingress", {})
+        if ingress_cfg.get("enabled", False):
+            failures.append(
+                "helm not found -- required for Stage 5c (ingress-nginx + cert-manager). "
+                "Install: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash"
+            )
+        else:
+            warn("helm not found (OK -- ingress disabled, Stage 5c will be skipped)")
+
     if cfg.get("exo_key") and cfg.get("exo_secret"):
         ok(f"Exoscale credentials: set (key={cfg['exo_key'][:8]}...)")
     else:
@@ -1423,7 +1443,7 @@ def stage_dbaas() -> dict | None:
                 termination_protection=term_protect,
             )
         elif db_type == "mysql":
-            c.create_dbaas_service_mysq(
+            c.create_dbaas_service_mysql(  # LESSON 28: was 'mysq' (typo fixed)
                 name=db_name,
                 plan=db_plan,
                 version=db_ver,
