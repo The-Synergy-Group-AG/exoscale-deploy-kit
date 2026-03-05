@@ -12,6 +12,7 @@
 #
 # Features:
 #   - LESSON 22: Forces python -X utf8 (fixes Exoscale SDK cp1252 crash)
+#   - LESSON 27: Adds ~/.local/bin to PATH so helm is always found
 #   - STEP 1.5: Automatically stages latest generated-v* services via
 #               prep_services.py (no manual version pinning required)
 #   - Tees ALL output to timestamped log file for post-mortem analysis
@@ -33,6 +34,9 @@ export LC_ALL=en_US.UTF-8
 export PYTHONIOENCODING=utf-8
 export PYTHONUTF8=1
 # The -X utf8 flag is set on the python3 command below (most reliable fix)
+
+# ── LESSON 27: Ensure ~/.local/bin is in PATH (helm lives here) ─────────────
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
 # ── Parse args ──────────────────────────────────────────────
 DO_TEARDOWN=false
@@ -89,7 +93,17 @@ else
     PREFLIGHT_PASS=false
 fi
 
-# Check 3: Python 3 with -X utf8 (Lesson 22)
+# Check 3: helm (LESSON 27 — required for Stage 5c ingress + cert-manager)
+if helm version --short >/dev/null 2>&1; then
+    HELM_VER=$(helm version --short 2>/dev/null | head -1)
+    echo "  [PASS] helm: $HELM_VER"
+else
+    echo "  [FAIL] helm: NOT found (required for Stage 5c ingress-nginx + cert-manager)"
+    echo "         Install: cd /tmp && curl -fsSL https://get.helm.sh/helm-v3.17.1-linux-amd64.tar.gz | tar xz && cp linux-amd64/helm ~/.local/bin/"
+    PREFLIGHT_PASS=false
+fi
+
+# Check 4: Python 3 with -X utf8 (Lesson 22)
 if python3 -X utf8 -c "import sys; assert sys.version_info >= (3,9)" 2>/dev/null; then
     PYVER=$(python3 --version 2>&1)
     echo "  [PASS] Python: $PYVER (UTF-8 mode: OK)"
@@ -98,7 +112,7 @@ else
     PREFLIGHT_PASS=false
 fi
 
-# Check 4: config.yaml exists and readable
+# Check 5: config.yaml exists and readable
 if [ -f "$SCRIPT_DIR/config.yaml" ]; then
     PROJ=$(grep 'project_name:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}')
     VER=$(grep 'service_version:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d "'")
@@ -109,7 +123,7 @@ else
     PREFLIGHT_PASS=false
 fi
 
-# Check 5: .env credentials
+# Check 6: .env credentials
 if [ -f "$SCRIPT_DIR/.env" ]; then
     HAS_EXO=$(grep -c 'EXO_API_KEY=' "$SCRIPT_DIR/.env" 2>/dev/null || echo 0)
     HAS_DHT=$(grep -c 'DOCKER_HUB_TOKEN=' "$SCRIPT_DIR/.env" 2>/dev/null || echo 0)
@@ -124,7 +138,7 @@ else
     PREFLIGHT_PASS=false
 fi
 
-# Check 6: DNS for Exoscale zone
+# Check 7: DNS for Exoscale zone
 EXO_ZONE=$(grep 'exoscale_zone:' "$SCRIPT_DIR/config.yaml" 2>/dev/null | awk '{print $2}' || echo "ch-dk-2")
 if getent hosts "api-${EXO_ZONE}.exoscale.com" >/dev/null 2>&1; then
     echo "  [PASS] DNS: api-${EXO_ZONE}.exoscale.com resolves"
@@ -132,7 +146,7 @@ else
     echo "  [WARN] DNS: api-${EXO_ZONE}.exoscale.com not resolving — check network/VPN"
 fi
 
-# Check 7: Disk space (>= 2GB free)
+# Check 8: Disk space (>= 2GB free)
 FREE_KB=$(df -k "$SCRIPT_DIR" | awk 'NR==2 {print $4}')
 FREE_GB=$((FREE_KB / 1024 / 1024))
 if [ "$FREE_GB" -ge 2 ]; then
@@ -141,7 +155,7 @@ else
     echo "  [WARN] Disk space: only ${FREE_GB}GB free (recommend >= 2GB)"
 fi
 
-# Check 8: prep_services.py exists
+# Check 9: prep_services.py exists
 if [ -f "$SCRIPT_DIR/prep_services.py" ]; then
     echo "  [PASS] prep_services.py: found"
 else
