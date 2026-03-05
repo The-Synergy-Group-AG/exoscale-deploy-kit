@@ -1173,6 +1173,22 @@ def stage_5c_ingress_tls(kubeconfig: str) -> None:
     ingress_yaml = generate_ingress_yaml(domain, cert_email, namespace, svc_name, svc_port)
     ingress_file = f"/tmp/ingress-tls-{TS}.yaml"
     Path(ingress_file).write_text(ingress_yaml)
+    # LESSON 31: Ensure application namespace exists before applying ingress YAML
+    # Stage 5c runs before Stage 5 (K8s manifests) which normally creates namespaces.
+    try:
+        _ns_r = subprocess.run(
+            ["kubectl", "--insecure-skip-tls-verify", "create", "namespace", namespace],
+            env=env, check=False, capture_output=True, text=True
+        )
+        if _ns_r.returncode == 0:
+            ok(f"Namespace pre-created for ingress: {namespace}")
+        elif "already exists" in (_ns_r.stderr or ""):
+            log(f"Namespace already exists: {namespace} (OK)")
+        else:
+            warn(f"Namespace create note: {_ns_r.stderr.strip() or _ns_r.stdout.strip()}")
+    except Exception as _ns_e:
+        warn(f"Namespace pre-create error (non-fatal): {_ns_e}")
+
     _run(["kubectl", "--insecure-skip-tls-verify", "apply", "-f", ingress_file])
     ok(f"ClusterIssuer + Ingress applied (manifest: {ingress_file})")
 
