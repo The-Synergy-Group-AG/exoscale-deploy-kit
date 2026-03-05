@@ -161,6 +161,92 @@ def ok(msg):    print(f"[{datetime.now().strftime('%H:%M:%S')}] OK {msg}")
 def warn(msg):  print(f"[{datetime.now().strftime('%H:%M:%S')}] WARN {msg}")
 def fail(msg):  print(f"[{datetime.now().strftime('%H:%M:%S')}] FAIL {msg}")
 def section(s): print(f"\n{'='*60}\n  {s}\n{'='*60}")
+
+
+# =============================================================================
+#  GRAFANA REAL-TIME ANNOTATION HELPER
+#  Plan 123-P5+: Pushes stage events as annotations to localhost Grafana so the
+#  jtp-deployment-dashboard shows a live timeline of the deployment progress.
+#  Non-fatal: if Grafana is unreachable the pipeline continues unaffected.
+# =============================================================================
+import urllib.request as _urllib_req
+import urllib.error   as _urllib_err
+import base64         as _base64
+
+_GF_ENV_FILE = Path(__file__).parent.parent / "monitoring" / "grafana" / ".env"
+
+
+def _load_gf_env() -> dict:
+    """Parse monitoring/grafana/.env for GRAFANA_URL / USER / PASSWORD."""
+    env: dict = {}
+    if _GF_ENV_FILE.exists():
+        for line in _GF_ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, _, v = line.partition("=")
+                env[k.strip()] = v.strip()
+    return env
+
+
+_GF_CFG  = _load_gf_env()
+_GF_URL  = _GF_CFG.get("GRAFANA_URL",      "http://localhost:3000")
+_GF_USER = _GF_CFG.get("GRAFANA_USER",     "admin")
+_GF_PASS = _GF_CFG.get("GRAFANA_PASSWORD", "admin")
+
+
+def gf_annotate(text: str, tags: list | None = None, is_error: bool = False) -> None:
+    """
+    Push a deployment-stage annotation to the local Grafana instance.
+    Non-fatal: errors are logged as WARNs and pipeline continues.
+    """
+    try:
+        if tags is None:
+            tags = []
+        base_tags = ["deployment", "jtp", cfg.get("project_name", "jtp"), TS]
+        all_tags  = list(dict.fromkeys(base_tags + tags + (["error"] if is_error else [])))
+        prefix    = "[FAIL] " if is_error else "[OK] "
+        payload   = json.dumps({
+            "text":  prefix + text,
+            "tags":  all_tags,
+            "time":  int(datetime.now().timestamp() * 1000),
+        }).encode("utf-8")
+        creds = _base64.b64encode(f"{_GF_USER}:{_GF_PASS}".encode()).decode()
+        req   = _urllib_req.Request(
+            f"{_GF_URL.rstrip('/')}/api/annotations",
+            data=payload,
+            headers={
+                "Content-Type":  "application/json",
+                "Authorization": f"Basic {creds}",
+            },
+            method="POST",
+        )
+        with _urllib_req.urlopen(req, timeout=3) as resp:
+            if resp.status == 200:
+                log(f"[Grafana] Annotation: {text[:70]}")
+    except Exception as _exc:
+        warn(f"[Grafana] Annotation skipped (non-fatal): {_exc}")
+
+
+def gf_stage_start(stage: str, detail: str = "") -> None:
+    """Annotate Grafana at the START of a pipeline stage."""
+    msg = f"STAGE {stage} -- START"
+    if detail:
+        msg += f" | {detail}"
+    gf_annotate(msg, tags=[f"stage:{stage.lower().replace(' ', '_')}"])
+
+
+def gf_stage_end(stage: str, status: str = "success", detail: str = "") -> None:
+    """Annotate Grafana at the END of a pipeline stage."""
+    is_err = status.lower() in ("fail", "failed", "error")
+    msg    = f"STAGE {stage} -- {status.upper()}"
+    if detail:
+        msg += f" | {detail}"
+    gf_annotate(msg,
+                tags=[f"stage:{stage.lower().replace(' ', '_')}", status.lower()],
+                is_error=is_err)
+
 def elapsed(t): return f"{time.time()-t:.0f}s"
 
 
@@ -1732,23 +1818,41 @@ if __name__ == "__main__":
     if "--skip-preflight" in sys.argv:
         warn("STAGE 0: Preflight skipped (--skip-preflight flag set -- not recommended)")
     else:
+        gf_stage_start('0 Preflight')
         stage_preflight()
+        gf_stage_end('0 Preflight', 'success')
 
     try:
+        gf_stage_start('1 Docker Build', IMAGE)
         stage_docker_build()
+        gf_stage_end('1 Docker Build', 'success', IMAGE)
+        gf_stage_start('2 Docker Push', IMAGE)
         stage_docker_push()
+        gf_stage_end('2 Docker Push', 'success', IMAGE)
 
+        gf_stage_start('3b Object Storage')
         sos_info = stage_object_storage()
+        gf_stage_end('3b Object Storage', 'success')
+        gf_stage_start('3b DBaaS')
         db_info  = stage_dbaas()
+        gf_stage_end('3b DBaaS', 'success')
 
+        gf_stage_start('3 Exoscale Infra', cfg.get('exoscale_zone',''))
         kubeconfig = stage_exoscale()
+        gf_stage_end('3 Exoscale Infra', 'success')
+        gf_stage_start('4 Wait Nodes')
         stage_wait_for_nodes(kubeconfig)
+        gf_stage_end('4 Wait Nodes', 'success')
 
         stage_sg_post_attach()
+        gf_stage_start('4b Node Labels')
         stage_label_nodes(kubeconfig)
+        gf_stage_end('4b Node Labels', 'success')
 
         # Stage 5b: CSI driver + PVC manifest
+        gf_stage_start('5b CSI Driver')
         stage_install_csi(kubeconfig)
+        gf_stage_end('5b CSI Driver', 'success')
 
         # ISSUE-017: Refresh kubeconfig before Stage 5c -- TLS cert may have rotated
         # during the 3-8 min node wait (Exoscale SKS rotates certs periodically).
@@ -1758,24 +1862,37 @@ if __name__ == "__main__":
 
         # Stage 5c: nginx-ingress + cert-manager + TLS  (Plan 123-P5 ISSUE-018)
         # Ordering: nginx LB IP -> NLB port fix (ISSUE-021) -> DNS -> cert-manager -> Ingress
+        gf_stage_start('5c Ingress TLS', cfg.get('ingress',{}).get('domain',''))
         stage_5c_ingress_tls(kubeconfig)
+        gf_stage_end('5c Ingress TLS', 'success')
 
+        gf_stage_start('5 K8s Manifests')
         stage_kubernetes(kubeconfig)
+        gf_stage_end('5 K8s Manifests', 'success')
 
         # Stage 5d: Inject DB + SOS credentials as K8s secrets
+        gf_stage_start('5d Inject Secrets')
         stage_inject_secrets(kubeconfig, db_info, sos_info)
+        gf_stage_end('5d Inject Secrets', 'success')
 
+        gf_stage_start('6 Verify Pods')
         stage_verify(kubeconfig)
+        gf_stage_end('6 Verify Pods', 'success')
 
         # Stage 6b: Connectivity test -- now uses LB IP (Plan 123-P5 ISSUE-016)
+        gf_stage_start('6b Connectivity Test')
         stage_connectivity_test(kubeconfig)
+        gf_stage_end('6b Connectivity Test', 'success')
 
+        gf_stage_start('7 Final Report')
         stage_report()
+        gf_stage_end('7 Final Report', 'success', f'Image={IMAGE}')
     except SystemExit:
         raise
     except Exception as e:
         import traceback
         fail(f"Pipeline exception: {e}")
+        gf_annotate(f"PIPELINE EXCEPTION: {e}", tags=['exception'], is_error=True)
         traceback.print_exc()
         (OUT / "deployment_report_partial.json").write_text(json.dumps(RESULTS, indent=2))
         pipeline_abort_cleanup()

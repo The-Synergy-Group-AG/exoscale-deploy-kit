@@ -2,6 +2,7 @@
 # ============================================================
 # JTP Exoscale Deployment Runner
 # Plan 122-DEH | Lesson 22: -X utf8 encoding fix
+# Plan 123-P5+: Step 1.5 — auto-stage latest generated services
 # ============================================================
 # Usage:
 #   ./run_deploy.sh            # Interactive wizard + deploy
@@ -11,6 +12,8 @@
 #
 # Features:
 #   - LESSON 22: Forces python -X utf8 (fixes Exoscale SDK cp1252 crash)
+#   - STEP 1.5: Automatically stages latest generated-v* services via
+#               prep_services.py (no manual version pinning required)
 #   - Tees ALL output to timestamped log file for post-mortem analysis
 #   - Pre-flight checklist before any cloud activity
 #   - Automated post-mortem JSON generation after completion
@@ -53,7 +56,7 @@ mkdir -p "$OUTPUTS_DIR"
 cat <<'BANNER'
 ============================================================
   JTP EXOSCALE DEPLOYMENT RUNNER
-  Plan 122-DEH hardened pipeline
+  Plan 122-DEH hardened pipeline + Plan 123-P5+ auto-staging
 ============================================================
 BANNER
 echo "  Timestamp: $TS"
@@ -138,6 +141,14 @@ else
     echo "  [WARN] Disk space: only ${FREE_GB}GB free (recommend >= 2GB)"
 fi
 
+# Check 8: prep_services.py exists
+if [ -f "$SCRIPT_DIR/prep_services.py" ]; then
+    echo "  [PASS] prep_services.py: found"
+else
+    echo "  [FAIL] prep_services.py: NOT found"
+    PREFLIGHT_PASS=false
+fi
+
 echo ""
 
 if [ "$PREFLIGHT_PASS" = "false" ]; then
@@ -150,7 +161,7 @@ echo ""
 
 # ── Dry run: just report ─────────────────────────────────────
 if [ "$DRY_RUN" = "true" ]; then
-    echo "DRY RUN: would run teardown + deploy. Exiting."
+    echo "DRY RUN: would run teardown + stage-services + deploy. Exiting."
     exit 0
 fi
 
@@ -180,6 +191,20 @@ if [ "$DO_TEARDOWN" = "true" ]; then
     echo "Waiting 30s for Exoscale to fully release resources..."
     sleep 30
 fi
+
+# ── Step 1.5: Stage latest generated services ───────────────
+echo "============================================================"
+echo "  STEP 1.5: STAGE SERVICES — auto-selecting latest generation"
+echo "============================================================"
+cd "$SCRIPT_DIR"
+python3 -X utf8 prep_services.py 2>&1
+PREP_EXIT=$?
+if [ $PREP_EXIT -ne 0 ]; then
+    echo "[ABORT] prep_services.py FAILED (exit=$PREP_EXIT) — cannot build Docker image without services"
+    exit 1
+fi
+echo "[OK] Service staging complete"
+echo ""
 
 # ── Step 2: Deploy ──────────────────────────────────────────
 echo "============================================================"
