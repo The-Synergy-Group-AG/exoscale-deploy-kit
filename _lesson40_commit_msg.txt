@@ -1,0 +1,34 @@
+Lesson 40: robust nodepool teardown — poll+backoff replaces 3×30s retry
+
+ROOT CAUSE:
+  Exoscale returns 409 "Nodepool deletion is forbidden" when the cluster VMs
+  are still deprovisioning after K8s namespace deletion. The old code gave up
+  after 3 attempts x max 90s total — far less than the 5-10 min Exoscale needs.
+
+ARCHITECTURAL FIX — two shared helpers (no duplication across both code paths):
+
+  _get_nodepool_state(c, cluster_id, pool_id) -> str
+    Polls get_sks_cluster() and returns the nodepool state string.
+    Returns "deleted" if the nodepool is absent from cluster data or on 404.
+    Used as a pre-flight before every DELETE attempt (LESSON 40a).
+
+  _delete_nodepool_robust(c, cluster_id, pool_id, pool_name, results) -> bool
+    LESSON 40a: Pre-flight state check before each DELETE call.
+      "deleting" -> already in progress; poll every 30s until gone (10 min window)
+      "deleted"  -> already gone; record success, return True
+      "running"  -> issue DELETE; wait for op completion via c.wait()
+      other      -> wait 30s and re-check (handles "upgrading", "creating" etc.)
+    LESSON 40b: On 409/400: min(attempt*60, 300)s backoff, 12 attempts max
+      = 60s, 120s, 180s, 240s, 300s, 300s... (~34 min total patience)
+      Covers full Exoscale VM deprovisioning window (typical 5-10 min, worst 15 min)
+    On 404: nodepool gone between state-check and DELETE -> success
+
+  _delete_sgs_robust(c, proj_sgs, results) -> None
+    LESSON 40c: SG deletion with 5 attempts x 60s = 5 min patience.
+    Waits 30s before first attempt (cluster needs time to start releasing lock),
+    then 60s between each retry.
+    Replaces old Step 5 (10s wait + 1 attempt) + Step 6 (1x30s retry).
+
+LESSON 40d: teardown_from_report() now calls the same shared helpers,
+  eliminating duplicated nodepool/SG deletion logic and ensuring both
+  code paths (main teardown + from-report) have identical robustness.

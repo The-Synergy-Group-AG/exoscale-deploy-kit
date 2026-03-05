@@ -23,6 +23,16 @@ Usage:
   python3 teardown.py --force            # No confirmation prompts
   python3 teardown.py --dry-run          # Show what would be deleted, no changes made
   python3 teardown.py --cluster-id <id>  # Target specific cluster ID only
+
+Lessons applied:
+  LESSON 17: 409 = nodepool in transient state — original retry (3×30s)
+  LESSON 40: Root-cause fix — replace 3×30s retry with proper poll+backoff strategy:
+    40a: Poll cluster nodepools state before each deletion attempt
+         If state is already "deleting" → wait for completion, don't re-issue delete
+    40b: 12 attempts, min(attempt×60, 300)s backoff = up to 12 min patience per nodepool
+         Covers full Exoscale VM deprovisioning window (~5-10 min typical, 12 min worst case)
+    40c: SG deletion retry: 5 attempts × 60s = 5 min patience after cluster/nodepool gone
+    40d: teardown_from_report uses same robust nodepool deletion helper (no duplication)
 """
 import argparse
 import json
@@ -73,6 +83,175 @@ def run_kubectl(cmd: list[str], kubeconfig: str, capture: bool = True) -> "subpr
     return subprocess.run(cmd, env=env, capture_output=capture, text=True)
 
 
+def _get_nodepool_state(c, cluster_id: str, pool_id: str) -> str:
+    """
+    Poll the cluster to retrieve the current state of a specific nodepool.
+    Returns the state string (e.g. "running", "deleting", "deleted", "error")
+    or "unknown" if the nodepool can no longer be found within the cluster data.
+
+    LESSON 40a: Polling state before each deletion attempt avoids issuing a
+    DELETE call on a nodepool that is already transitioning — Exoscale returns
+    409 "forbidden" in that window, which is not a transient error but a
+    "you already asked, wait for the op to complete" signal.
+    """
+    try:
+        cluster_data = c.get_sks_cluster(id=cluster_id)
+        for np in cluster_data.get("nodepools", []):
+            if np.get("id") == pool_id:
+                return np.get("state", "unknown")
+        # Nodepool not present in cluster data → already deleted
+        return "deleted"
+    except Exception as e:
+        if "404" in str(e) or "not found" in str(e).lower():
+            return "deleted"
+        return "unknown"
+
+
+def _delete_nodepool_robust(c, cluster_id: str, pool_id: str, pool_name: str,
+                            results: dict) -> bool:
+    """
+    Delete a single SKS nodepool with a robust poll-and-retry strategy.
+
+    LESSON 40b strategy:
+      - Pre-flight: check current nodepool state before issuing DELETE
+        * "deleting" → already in progress; wait for it to complete, return True
+        * "deleted"  → already gone; record as deleted, return True
+        * "running"  → issue DELETE; on success wait for op, return True
+        * other      → wait 30s and re-check before next attempt
+      - On 409/400 from DELETE: wait min(attempt×60, 300)s then retry
+        * 60s, 120s, 180s, 240s, 300s, 300s, ... (12 attempts = up to ~34 min patience)
+      - On 404 from DELETE: nodepool gone between state-check and DELETE → record success
+      - After MAX_ATTEMPTS: log error, return False (cluster deletion will also fail but
+        the error is recorded clearly so the operator knows which nodepool is stuck)
+
+    Returns True if nodepool is confirmed deleted, False if all attempts exhausted.
+    """
+    MAX_ATTEMPTS = 12
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        # ── Pre-flight: check current state before attempting DELETE ──────────
+        state = _get_nodepool_state(c, cluster_id, pool_id)
+        log(f"  Nodepool {pool_name} state: {state} (attempt {attempt}/{MAX_ATTEMPTS})")
+
+        if state == "deleted":
+            ok(f"Nodepool already deleted: {pool_name}")
+            results["deleted"].append({"type": "nodepool", "id": pool_id, "name": pool_name})
+            return True
+
+        if state == "deleting":
+            # Deletion already accepted by Exoscale — poll until gone rather than re-issuing DELETE
+            log(f"  Nodepool {pool_name} is already deleting — waiting for completion (30s polling)...")
+            for _ in range(20):   # up to 20 × 30s = 10 min polling window
+                time.sleep(30)
+                new_state = _get_nodepool_state(c, cluster_id, pool_id)
+                if new_state in ("deleted", "unknown"):
+                    ok(f"Nodepool {pool_name} deletion confirmed")
+                    results["deleted"].append({"type": "nodepool", "id": pool_id, "name": pool_name})
+                    return True
+                log(f"  Still deleting ({new_state}) — waiting...")
+            warn(f"Nodepool {pool_name}: timed out waiting for 'deleting' to complete")
+            results["errors"].append({"type": "nodepool", "id": pool_id,
+                                      "error": "Timed out waiting for deletion in 'deleting' state"})
+            return False
+
+        if state not in ("running", "unknown"):
+            # Unexpected state (e.g. "creating", "upgrading") — wait before retry
+            log(f"  Nodepool {pool_name} in unexpected state '{state}' — waiting 30s...")
+            time.sleep(30)
+            continue
+
+        # ── Attempt DELETE ────────────────────────────────────────────────────
+        try:
+            op    = c.delete_sks_nodepool(id=cluster_id, sks_nodepool_id=pool_id)
+            op_id = op.get("id")
+            if op_id:
+                log(f"  Nodepool delete accepted (op:{op_id}) — waiting for completion...")
+                c.wait(op_id, max_wait_time=600)
+            ok(f"Nodepool deleted: {pool_name}")
+            results["deleted"].append({"type": "nodepool", "id": pool_id, "name": pool_name})
+            return True
+
+        except Exception as e:
+            err_str = str(e)
+
+            if "404" in err_str or "not found" in err_str.lower():
+                ok(f"Nodepool already deleted: {pool_name}")
+                results["deleted"].append({"type": "nodepool", "id": pool_id, "name": pool_name})
+                return True
+
+            if ("409" in err_str or "400" in err_str) and attempt < MAX_ATTEMPTS:
+                # LESSON 40b: min(attempt×60, 300) gives 60s, 120s, 180s, 240s, 300s, 300s...
+                wait_s = min(attempt * 60, 300)
+                warn(f"Nodepool {pool_name}: conflict (attempt {attempt}/{MAX_ATTEMPTS}) "
+                     f"— VMs still deprovisioning, backing off {wait_s}s...")
+                time.sleep(wait_s)
+            else:
+                warn(f"Nodepool {pool_name}: {err_str[:120]}")
+                results["errors"].append({"type": "nodepool", "id": pool_id, "error": err_str[:120]})
+                return False
+
+    warn(f"Nodepool {pool_name}: exhausted {MAX_ATTEMPTS} attempts without success")
+    results["errors"].append({
+        "type": "nodepool", "id": pool_id,
+        "error": f"Exhausted {MAX_ATTEMPTS} deletion attempts"
+    })
+    return False
+
+
+def _delete_sgs_robust(c, proj_sgs: list, results: dict) -> None:
+    """
+    Delete security groups with up to 5×60s retry patience.
+
+    LESSON 40c: SG deletion returns 409 "in use by virtual machines" while
+    the Exoscale VMs backing the deleted nodepool are still fully deprovisioning.
+    The cluster deletion typically takes 2-4 minutes after the nodepool is gone.
+    5 attempts × 60s = 5 minutes of patience covers the observed deprovisioning window.
+
+    First attempt waits 30s (cluster needs a moment to start releasing the SG),
+    then each retry waits 60s before re-attempting.
+    """
+    MAX_SG_ATTEMPTS = 5
+
+    if not proj_sgs:
+        return
+
+    section("Step 5: Security Group Teardown")
+    if proj_sgs:
+        log("Waiting 30s for cluster VMs to begin releasing SG locks...")
+        time.sleep(30)
+
+    for sg in proj_sgs:
+        sg_id   = sg.get("id")
+        sg_name = sg.get("name")
+        log(f"Deleting security group: {sg_name} ({sg_id})...")
+        deleted_sg = False
+
+        for sg_attempt in range(1, MAX_SG_ATTEMPTS + 1):
+            try:
+                c.delete_security_group(id=sg_id)
+                ok(f"Security group deleted: {sg_name}")
+                results["deleted"].append({"type": "security_group", "id": sg_id, "name": sg_name})
+                deleted_sg = True
+                break
+            except Exception as e:
+                err_str = str(e)
+                if "404" in err_str or "not found" in err_str.lower():
+                    ok(f"Security group already gone: {sg_name}")
+                    results["deleted"].append({"type": "security_group", "id": sg_id, "name": sg_name})
+                    deleted_sg = True
+                    break
+                if sg_attempt < MAX_SG_ATTEMPTS:
+                    warn(f"SG {sg_name}: still locked (attempt {sg_attempt}/{MAX_SG_ATTEMPTS}) "
+                         f"— waiting 60s for VMs to fully stop: {err_str[:80]}")
+                    time.sleep(60)
+                else:
+                    warn(f"SG {sg_name}: deletion failed after {MAX_SG_ATTEMPTS} attempts "
+                         f"(~{MAX_SG_ATTEMPTS * 60}s patience exhausted)")
+                    warn(f"  Manual cleanup: Exoscale Console → Compute → Security Groups → {sg_name}")
+                    results["errors"].append({
+                        "type": "security_group", "id": sg_id, "name": sg_name,
+                        "error": f"{err_str[:100]}"
+                    })
 
 
 def scan_orphaned_partial_reports(outputs_dir: "Path") -> list[dict]:
@@ -122,8 +301,13 @@ def teardown_from_report(report_path: str, force: bool = False) -> None:
     Bypasses name-based discovery entirely — works even if project_name in
     config.yaml has changed since the deployment was created.
 
+    Uses the same robust poll+backoff strategy as the main teardown() function
+    (LESSON 40d — no duplication, shared helpers _delete_nodepool_robust and
+    _delete_sgs_robust).
+
     Usage:
       python3 teardown.py --from-report outputs/20260303_154858/deployment_report_partial.json
+      python3 teardown.py --force --from-report outputs/.../deployment_report_partial.json
     """
     from exoscale.api.v2 import Client
 
@@ -163,60 +347,49 @@ def teardown_from_report(report_path: str, force: bool = False) -> None:
             print("Cancelled.")
             return
 
-    # Delete cluster + nodepools first (so SG lock is released)
+    results: dict = {"deleted": [], "errors": []}
+
+    # ── Delete cluster + nodepools (LESSON 40d: uses shared robust helper) ──
     if cluster.get("id"):
+        cluster_id   = cluster["id"]
+        cluster_name = cluster.get("name", cluster_id)
         try:
-            cluster_data = c.get_sks_cluster(id=cluster["id"])
-            for np in cluster_data.get("nodepools", []):
-                try:
-                    log(f"Deleting nodepool: {np.get('name', np['id'])}...")
-                    op = c.delete_sks_nodepool(id=cluster["id"], sks_nodepool_id=np["id"])
-                    op_id = op.get("id")
-                    if op_id:
-                        c.wait(op_id, max_wait_time=180)
-                    ok(f"Nodepool deleted: {np.get('name', np['id'])}")
-                except Exception as e:
-                    warn(f"Nodepool {np.get('id', '?')}: {str(e)[:80]}")
-            log(f"Deleting cluster: {cluster.get('name', cluster['id'])}...")
-            op = c.delete_sks_cluster(id=cluster["id"])
+            cluster_data = c.get_sks_cluster(id=cluster_id)
+            nps = cluster_data.get("nodepools", [])
+            for np in nps:
+                _delete_nodepool_robust(c, cluster_id, np["id"], np.get("name", np["id"]), results)
+
+            log(f"Deleting cluster: {cluster_name}...")
+            op = c.delete_sks_cluster(id=cluster_id)
             op_id = op.get("id")
             if op_id:
-                c.wait(op_id, max_wait_time=300)
-            ok(f"Cluster deleted: {cluster.get('name', cluster['id'])}")
+                c.wait(op_id, max_wait_time=600)
+            ok(f"Cluster deleted: {cluster_name}")
+            results["deleted"].append({"type": "sks_cluster", "id": cluster_id, "name": cluster_name})
+
         except Exception as e:
-            if "404" in str(e) or "not found" in str(e).lower():
-                ok(f"Cluster already gone: {cluster.get('name', cluster['id'])}")
+            err_str = str(e)
+            if "404" in err_str or "not found" in err_str.lower():
+                ok(f"Cluster already gone: {cluster_name}")
+                results["deleted"].append({"type": "sks_cluster", "id": cluster_id, "name": cluster_name})
             else:
-                warn(f"Cluster deletion error: {str(e)[:100]}")
+                warn(f"Cluster deletion error: {err_str[:100]}")
+                results["errors"].append({"type": "sks_cluster", "id": cluster_id, "error": err_str[:100]})
 
-    # Brief pause for cluster to release SG lock
-    if cluster.get("id") and sg.get("id"):
-        log("Waiting 10s for cluster to release SG lock...")
-        time.sleep(10)
-
-    # Delete security group
+    # ── Delete security group (LESSON 40c: shared robust SG helper) ─────────
     if sg.get("id"):
-        for attempt in range(1, 4):
-            try:
-                log(f"Deleting SG: {sg.get('name', sg['id'])} (attempt {attempt}/3)...")
-                c.delete_security_group(id=sg["id"])
-                ok(f"Security group deleted: {sg.get('name', sg['id'])}")
-                break
-            except Exception as e:
-                if "404" in str(e) or "not found" in str(e).lower():
-                    ok(f"Security group already gone: {sg.get('name', sg['id'])}")
-                    break
-                if attempt < 3:
-                    warn(f"SG still locked (attempt {attempt}/3) — retrying in 15s: {str(e)[:60]}")
-                    time.sleep(15)
-                else:
-                    warn(f"SG deletion failed after 3 attempts: {str(e)[:100]}")
+        _delete_sgs_robust(c, [sg], results)
 
     sep = "=" * 60
     print(f"\n{sep}")
     print("  TEARDOWN FROM REPORT COMPLETE")
+    if results["errors"]:
+        print(f"  Errors: {len(results['errors'])}")
+        for e in results["errors"]:
+            print(f"    ❌ {e.get('type')}: {e.get('error', '?')[:80]}")
+    else:
+        print("  ✅ All resources deleted successfully")
     print(f"{sep}\n")
-
 
 
 def teardown(args: argparse.Namespace) -> None:
@@ -445,6 +618,9 @@ def teardown(args: argparse.Namespace) -> None:
         ok("No SOS buckets to delete")
 
     # ── Step 3: Delete SKS Clusters + Nodepools ───────────────────────────
+    # LESSON 40: Uses _delete_nodepool_robust for each nodepool (poll + backoff).
+    # Each nodepool gets up to 12 min patience. After all nodepools are handled,
+    # cluster deletion is attempted regardless of nodepool deletion outcome.
     section("Step 3: SKS Cluster Teardown")
     for cl in proj_clusters:
         cluster_id   = cl.get("id")
@@ -452,45 +628,28 @@ def teardown(args: argparse.Namespace) -> None:
         nps          = cl.get("nodepools", [])
 
         # Delete nodepools first (required before cluster deletion)
-        # LESSON 17: 409 = nodepool still in transient state post-deploy — retry up to 3×30s
         for np in nps:
-            pool_id   = np.get("id")
-            pool_name = np.get("name")
-            log(f"Deleting nodepool: {pool_name} ({pool_id})...")
-            np_deleted = False
-            for attempt in range(1, 4):
-                try:
-                    op    = c.delete_sks_nodepool(id=cluster_id, sks_nodepool_id=pool_id)
-                    op_id = op.get("id")
-                    log(f"  Waiting for nodepool deletion (op:{op_id})...")
-                    c.wait(op_id, max_wait_time=300)
-                    ok(f"Nodepool deleted: {pool_name}")
-                    results["deleted"].append({"type": "nodepool", "id": pool_id, "name": pool_name})
-                    np_deleted = True
-                    break
-                except Exception as e:
-                    err_str = str(e)
-                    if "409" in err_str and attempt < 3:
-                        wait_s = attempt * 30
-                        warn(f"Nodepool {pool_name}: 409 conflict (attempt {attempt}/3) — retrying in {wait_s}s...")
-                        time.sleep(wait_s)
-                    else:
-                        warn(f"Nodepool {pool_name}: {err_str[:100]}")
-                        results["errors"].append({"type": "nodepool", "id": pool_id, "error": err_str[:100]})
-                        break
+            _delete_nodepool_robust(c, cluster_id, np.get("id"), np.get("name", np.get("id")), results)
 
-        # Delete cluster
+        # Delete cluster — attempt even if nodepool deletion partially failed,
+        # Exoscale will reject with 400 if nodepools remain (error captured below).
         log(f"Deleting SKS cluster: {cluster_name} ({cluster_id})...")
         try:
             op    = c.delete_sks_cluster(id=cluster_id)
             op_id = op.get("id")
-            log(f"  Waiting for cluster deletion (op:{op_id})...")
-            c.wait(op_id, max_wait_time=600)
+            if op_id:
+                log(f"  Waiting for cluster deletion (op:{op_id})...")
+                c.wait(op_id, max_wait_time=600)
             ok(f"SKS cluster deleted: {cluster_name}")
             results["deleted"].append({"type": "sks_cluster", "id": cluster_id, "name": cluster_name})
         except Exception as e:
-            warn(f"Cluster {cluster_name}: {str(e)[:100]}")
-            results["errors"].append({"type": "sks_cluster", "id": cluster_id, "error": str(e)[:100]})
+            err_str = str(e)
+            if "404" in err_str or "not found" in err_str.lower():
+                ok(f"Cluster already deleted: {cluster_name}")
+                results["deleted"].append({"type": "sks_cluster", "id": cluster_id, "name": cluster_name})
+            else:
+                warn(f"Cluster {cluster_name}: {err_str[:100]}")
+                results["errors"].append({"type": "sks_cluster", "id": cluster_id, "error": err_str[:100]})
 
     # ── Step 4: Delete Network Load Balancers ─────────────────────────────
     section("Step 4: Load Balancer Teardown")
@@ -516,38 +675,10 @@ def teardown(args: argparse.Namespace) -> None:
                 warn(f"NLB {nlb_name}: {err_str[:100]}")
                 results["errors"].append({"type": "load_balancer", "id": nlb_id, "error": err_str[:100]})
 
-    # ── Step 5: Delete Security Groups ────────────────────────────────────
-    section("Step 5: Security Group Teardown")
-    # Short delay — clusters/NLBs need a moment to fully release SG locks
-    time.sleep(10)
-    for sg in proj_sgs:
-        sg_id   = sg.get("id")
-        sg_name = sg.get("name")
-        log(f"Deleting security group: {sg_name} ({sg_id})...")
-        try:
-            c.delete_security_group(id=sg_id)
-            ok(f"Security group deleted: {sg_name}")
-            results["deleted"].append({"type": "security_group", "id": sg_id, "name": sg_name})
-        except Exception as e:
-            warn(f"SG {sg_name}: {str(e)[:100]} — will retry after cluster fully deletes")
-            results["errors"].append({"type": "security_group", "id": sg_id, "error": str(e)[:100]})
-
-    # ── Step 6: Retry failed SG deletions ─────────────────────────────────
-    failed_sgs = [e for e in results["errors"] if e["type"] == "security_group"]
-    if failed_sgs:
-        section("Step 6: Retry Security Group Deletions")
-        log("Waiting 30s for resources to fully release SG locks...")
-        time.sleep(30)
-        for err in list(failed_sgs):
-            sg_id = err["id"]
-            try:
-                c.delete_security_group(id=sg_id)
-                ok(f"Security group deleted on retry: {sg_id}")
-                results["errors"].remove(err)
-                results["deleted"].append({"type": "security_group", "id": sg_id})
-            except Exception as e:
-                warn(f"SG still locked: {str(e)[:100]}")
-                warn("  Manual cleanup: Exoscale Console → Compute → Security Groups")
+    # ── Steps 5+6: Delete Security Groups with robust retry (LESSON 40c) ──
+    # _delete_sgs_robust handles both first attempt + retries internally,
+    # replacing the old Step 5 (10s wait + single attempt) + Step 6 (30s retry).
+    _delete_sgs_robust(c, proj_sgs, results)
 
     # ── Step 7: Verification ───────────────────────────────────────────────
     section("Step 7: Verification")
