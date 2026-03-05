@@ -9,6 +9,10 @@
 #   2.6b — Update prometheus.yml with new node IPs → restart Prometheus
 #   2.6c — Sync run manifests to deployment engine outputs → restart exporter
 #
+# Lesson 38: 2.6b now writes ONLY ONE KSM target IP (not all node IPs).
+#   KSM is a single pod — NodePort routes all IPs to same pod.
+#   Writing N targets = N× data triplication in Prometheus.
+#
 # Usage:
 #   ./_post_deploy_monitoring.sh <KUBECONFIG_PATH> <RUN_TS> <OUTPUTS_DIR>
 # ============================================================
@@ -93,7 +97,12 @@ content = p.read_text()
 
 # Replace the kube-state-metrics targets block
 # Find the static_configs targets for jtp-kube-state-metrics and replace IPs
-new_targets = "\n".join([f"          - '{ip}:30808'" for ip in ips])
+#
+# LESSON 38: KSM is a SINGLE POD — write ONLY ONE target IP (ips[0]).
+# NodePort routes all node IPs to the same pod. Using N targets = N× data triplication!
+# Run 4 had 3 targets → all metrics 3× inflated (660 services, 711 pods, 9 nodes shown).
+# Fix: always use ips[0] as the single authoritative KSM scrape endpoint.
+new_targets = f"          - '{ips[0]}:30808'  # ONE target only (Lesson 38 — prevents N× triplication)"
 
 # Replace existing IP entries under jtp-kube-state-metrics
 content = re.sub(
@@ -109,7 +118,7 @@ content = re.sub(r"run_id:\s+'[^']+'", f"run_id:     '{run_ts}'", content)
 # Update the comment with new IPs
 content = re.sub(
     r'# Run \d+ \([^\)]+\) Node IPs:[^\n]*',
-    f"# Run ({run_ts}) Node IPs: {', '.join(ips)}",
+    f"# Run ({run_ts}) Node IPs: {', '.join(ips)} — scraping only {ips[0]} (Lesson 38)",
     content
 )
 # Also update/add the Updated comment
@@ -120,7 +129,7 @@ content = re.sub(
 )
 
 p.write_text(content)
-print(f"[OK] Step 2.6b: prometheus.yml updated — node IPs: {ips}")
+print(f"[OK] Step 2.6b: prometheus.yml updated — KSM target: {ips[0]}:30808 (1 of {len(ips)} nodes)")
 PYEOF
 
 # Restart Prometheus container to pick up new config
@@ -143,6 +152,7 @@ ENGINE_CICD="$PROJECT_ROOT/engines/deployment_engine/outputs/ci_cd_pipelines"
 mkdir -p "$ENGINE_K8S" "$ENGINE_CICD"
 
 # Copy gateway manifests
+MANIFEST_COUNT=0
 if [ -d "$RUN_DIR/k8s-manifests" ]; then
     # Remove old files first (don't mix runs)
     rm -f "$ENGINE_K8S"/*.yaml 2>/dev/null || true
@@ -176,6 +186,6 @@ echo ""
 echo "============================================================"
 echo "  STEP 2.6: MONITORING SYNC COMPLETE"
 echo "  - kube-state-metrics: deployed on NodePort 30808"
-echo "  - prometheus.yml: updated with new node IPs"
+echo "  - prometheus.yml: updated — KSM target: 1 IP only (Lesson 38)"
 echo "  - deployment engine: synced with $MANIFEST_COUNT manifests"
 echo "============================================================"
