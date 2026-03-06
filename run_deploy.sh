@@ -38,6 +38,23 @@ set -euo pipefail
 # L44: ignore SIGHUP/SIGPIPE — survive terminal close / Cline background timeout
 trap '' HUP PIPE
 
+# L47: Cleanup guard — auto-teardown if infra was created but script fails.
+# Set INFRA_CREATED=true after Step 2 exits 0; this trap fires on any exit.
+INFRA_CREATED=false
+cleanup_infra() {
+    local _exit=$?
+    if [ "$INFRA_CREATED" = "true" ] && [ "$_exit" -ne 0 ]; then
+        echo ""
+        echo "============================================================"
+        echo "  L47 AUTO-CLEANUP: Step 2 created infra but script failed"
+        echo "  exit_code=$_exit  Running teardown.py --force ..."
+        echo "============================================================"
+        python3 -X utf8 teardown.py --force 2>&1 || true
+        echo "  L47 AUTO-CLEANUP: teardown complete"
+    fi
+}
+trap cleanup_infra EXIT
+
 # ── Config ──────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUTS_DIR="$SCRIPT_DIR/outputs"
@@ -288,6 +305,11 @@ echo "============================================================"
 echo "  STEP 2 COMPLETED — Exit code: $DEPLOY_EXIT"
 echo "============================================================"
 echo ""
+
+# L47: Mark infra as created so cleanup_infra trap can fire if later steps fail.
+if [ "$DEPLOY_EXIT" -eq 0 ]; then
+    INFRA_CREATED=true
+fi
 
 # ── Step 2.5: Stage 5e/5f — Per-Service Pod Deployment (Plan 125) ─────────
 if [ "$SKIP_SERVICES" = "false" ] && [ "$DEPLOY_EXIT" -eq 0 ]; then
