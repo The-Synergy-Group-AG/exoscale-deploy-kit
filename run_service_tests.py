@@ -124,7 +124,6 @@ def run_suite_in_pod(kubeconfig: str, namespace: str, pod_name: str,
         f"tests/{suite}/",
         "-q", "--tb=short", "--no-header",
         "--color=no",
-        f"--timeout={timeout - 10}",  # pytest-timeout if available
     ]
     try:
         result = subprocess.run(

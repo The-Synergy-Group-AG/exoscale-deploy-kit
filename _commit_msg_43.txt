@@ -1,0 +1,20 @@
+Lesson 43: Correct Exoscale teardown sequence — LB first
+
+LESSON 43 (user-confirmed 2026-03-06):
+The correct Exoscale resource teardown sequence is:
+  1. Delete Load Balancer   (FIRST — before nodepools/cluster)
+  2. Delete SKS Node Pools  (before cluster)
+  3. Delete SKS Cluster
+  4. Delete Security Groups (last — SG locks release after VMs fully stop)
+
+Previous teardown.py had LBs deleted AFTER clusters (Step 4 after Step 3),
+causing stuck SG deletions and requiring manual intervention.
+
+Changes:
+- teardown.py: Moved LB deletion to Step 3 (before Step 3b NodePools,
+  Step 3c Clusters, Step 4 SGs). Split cluster step into 3b/3c.
+- _nuke_all.py: Rewritten with correct sequence + final check
+- _status_check.py: Quick resource inventory (clusters/LBs/instances/SGs)
+- _find_key_methods.py: SDK method discovery (found delete_api_key(id=...))
+- _list_all_instances.py: List all instances + pools (no name filter)
+- _patch_teardown_sequence.py: Patch script that applied this fix
