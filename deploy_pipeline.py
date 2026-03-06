@@ -139,7 +139,7 @@ _slug = re.sub(r'-+', '-', re.sub(r'[^a-z0-9-]', '-', cfg['project_name'].lower(
 SG_NAME   = f"{_slug}-sg-{TS[-6:]}"
 CLUSTER_N = f"{_slug}-cluster-{TS[-6:]}"
 NLB_NAME  = f"{cfg['project_name']}-nlb-{TS[-6:]}"
-POOL_NAME = f"{_slug}-workers"
+POOL_NAME = f"{_slug}-workers-{TS[-6:]}"  # L45: unique suffix like CLUSTER_N
 
 KIT_DIR     = Path(__file__).parent
 SERVICE_DIR = KIT_DIR / "service"
