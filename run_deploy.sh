@@ -35,6 +35,8 @@
 #   - Sets LANG=en_US.UTF-8 + PYTHONIOENCODING=utf-8 as belt-and-suspenders
 # ============================================================
 set -euo pipefail
+# L44: ignore SIGHUP/SIGPIPE — survive terminal close / Cline background timeout
+trap '' HUP PIPE
 
 # ── Config ──────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
