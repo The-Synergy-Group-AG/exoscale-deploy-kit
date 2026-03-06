@@ -52,6 +52,16 @@ SCRIPT_DIR = Path(__file__).parent
 MANIFEST_PATH = SCRIPT_DIR / "service" / "services_manifest.json"
 SERVICES_DIR = SCRIPT_DIR / "service" / "services"
 
+# L46: deploy-time safe resource defaults (see L43 for rationale).
+# Requests are kept small so all 219 services fit a 3-node cluster.
+# Limits are generous — individual services may burst, but won't starve others.
+DEPLOY_RESOURCES: dict = {
+    "cpu_request":    "10m",
+    "memory_request": "64Mi",
+    "cpu_limit":      "500m",
+    "memory_limit":   "256Mi",
+}
+
 
 def to_dns_name(service_name: str) -> str:
     """Convert service filesystem name to K8s DNS-compatible name.
