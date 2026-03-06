@@ -110,20 +110,25 @@ def quick_health_check(kubeconfig: str, namespace: str, pod_name: str,
 
 # ── Per-suite test runner ─────────────────────────────────────────────────────
 def run_suite_in_pod(kubeconfig: str, namespace: str, pod_name: str,
-                     suite: str, timeout: int = 120) -> dict:
+                     suite: str, service_name: str = "",
+                     timeout: int = 120) -> dict:
     """
     Run a specific test suite directory inside the pod.
     Returns: {suite, passed, failed, errors, skipped, duration_s, output}
     """
     t0 = time.monotonic()
+    # Determine service directory inside the pod
+    svc_dir = f"/app/services/{service_name}" if service_name else "/app"
+    pytest_cmd = (
+        f"cd {svc_dir} && "
+        f"python -m pytest tests/{suite}/ "
+        "-q --tb=short --no-header --color=no"
+    )
     cmd = [
         "kubectl", "exec", "-n", namespace,
         "--kubeconfig", kubeconfig,
         pod_name, "--",
-        "python", "-m", "pytest",
-        f"tests/{suite}/",
-        "-q", "--tb=short", "--no-header",
-        "--color=no",
+        "sh", "-c", pytest_cmd,
     ]
     try:
         result = subprocess.run(
@@ -207,7 +212,7 @@ def test_service_pod(kubeconfig: str, namespace: str, pod: dict,
     suite_results = []
     any_fail = False
     for suite in suites:
-        sr = run_suite_in_pod(kubeconfig, namespace, pod_name, suite, timeout=suite_timeout)
+        sr = run_suite_in_pod(kubeconfig, namespace, pod_name, suite, service_name=svc_name, timeout=suite_timeout)
         suite_results.append(sr)
         if sr["status"] in (STATUS_FAIL, STATUS_ERROR):
             any_fail = True
