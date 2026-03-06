@@ -75,11 +75,15 @@ def to_dns_name(service_name: str) -> str:
 
 
 def load_service_resources(service_name: str) -> dict[str, str]:
-    """Load resource specification from a service's config.json.
+    """Return deploy-time safe resource spec for a service.
 
-    Prefers individual cpu_request/memory_request/cpu_limit/memory_limit fields.
-    Falls back to resource_tier lookup. Falls back to RESOURCE_FALLBACK if
-    config.json is absent or malformed.
+    LESSON 43: The service engine generates config.json with production-grade
+    requests (cpu_request: "250m", memory_request: "512Mi").  Trusting those
+    values saturates a 3-node test cluster after ~61 pods.
+
+    Fix: requests are ALWAYS overridden to DEPLOY_RESOURCES safe values
+    (10m CPU / 64Mi memory).  Limits are preserved from config.json when
+    present so individual services can still burst up to their allocation.
 
     Args:
         service_name: Filesystem name of the service directory
@@ -87,30 +91,27 @@ def load_service_resources(service_name: str) -> dict[str, str]:
     Returns:
         Dict with keys: cpu_request, memory_request, cpu_limit, memory_limit
     """
+    # Always start from deploy-time safe requests
+    result = DEPLOY_RESOURCES.copy()
+
     config_path = SERVICES_DIR / service_name / "config.json"
     if not config_path.exists():
-        return RESOURCE_FALLBACK.copy()
+        return result
 
     try:
         cfg = json.loads(config_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return RESOURCE_FALLBACK.copy()
+        return result
 
-    # Prefer explicit resource fields over tier lookup
-    has_explicit = all(
-        k in cfg for k in ("cpu_request", "memory_request", "cpu_limit", "memory_limit")
-    )
-    if has_explicit:
-        return {
-            "cpu_request":    str(cfg["cpu_request"]),
-            "memory_request": str(cfg["memory_request"]),
-            "cpu_limit":      str(cfg["cpu_limit"]),
-            "memory_limit":   str(cfg["memory_limit"]),
-        }
+    # Preserve limits from service config (generous limits are fine)
+    # but NEVER trust the service-engine cpu_request/memory_request —
+    # those are production-scale values, not test-cluster values.
+    if "cpu_limit" in cfg:
+        result["cpu_limit"] = str(cfg["cpu_limit"])
+    if "memory_limit" in cfg:
+        result["memory_limit"] = str(cfg["memory_limit"])
 
-    # Fall back to tier
-    tier = cfg.get("resource_tier", "small")
-    return RESOURCE_TIERS.get(tier, RESOURCE_FALLBACK).copy()
+    return result
 
 
 def render_yaml(
