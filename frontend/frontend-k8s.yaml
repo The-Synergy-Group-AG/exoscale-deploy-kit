@@ -1,0 +1,118 @@
+# Phase 4: Frontend Web Layer — nginx serving the JobTrackerPro service dashboard SPA
+# Deployed alongside the docker-jtp gateway in namespace exo-jtp-prod
+# Tasks 4.1 (SPA) + 4.2 (nginx manifest)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-html
+  namespace: exo-jtp-prod
+  labels:
+    app: frontend-nginx
+    phase: "4"
+data:
+  index.html: |
+    # This placeholder is overwritten by the inject-html init job below.
+    # The actual index.html is embedded via the gen-frontend-cm Job at deploy time.
+    # See: exoscale-deploy-kit/frontend/index.html
+    <!DOCTYPE html><html><body><p>Loading…</p></body></html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-nginx
+  namespace: exo-jtp-prod
+  labels:
+    app: frontend-nginx
+    phase: "4"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend-nginx
+  template:
+    metadata:
+      labels:
+        app: frontend-nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "32Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+        - name: nginx-conf
+          mountPath: /etc/nginx/conf.d
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+      volumes:
+      - name: html
+        configMap:
+          name: frontend-html
+      - name: nginx-conf
+        configMap:
+          name: frontend-nginx-conf
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-nginx-conf
+  namespace: exo-jtp-prod
+  labels:
+    app: frontend-nginx
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        # SPA fallback — all paths serve index.html
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        # Health check endpoint for K8s probes
+        location /nginx-health {
+            access_log off;
+            return 200 "ok\n";
+            add_header Content-Type text/plain;
+        }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-nginx
+  namespace: exo-jtp-prod
+  labels:
+    app: frontend-nginx
+    phase: "4"
+spec:
+  selector:
+    app: frontend-nginx
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+  type: ClusterIP

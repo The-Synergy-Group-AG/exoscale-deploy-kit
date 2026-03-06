@@ -1,0 +1,62 @@
+# Phase 4 Ingress: routes / → frontend-nginx, /api/ → docker-jtp gateway
+# Replaces ingress-tls.yaml in stage_5c after Phase 4 is live.
+# Apply with: kubectl apply -f frontend/ingress-phase4.yaml --kubeconfig <kubeconfig>
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jobtrackerpro-ingress
+  namespace: exo-jtp-prod
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # Rewrite /api/svc/path → /svc/path when forwarding to gateway
+    nginx.ingress.kubernetes.io/rewrite-target: "/$2"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - jobtrackerpro.ch
+    - www.jobtrackerpro.ch
+    secretName: jobtrackerpro-tls
+  rules:
+  - host: jobtrackerpro.ch
+    http:
+      paths:
+      # /api/* → docker-jtp gateway (strip /api prefix via rewrite)
+      - path: /api(/|$)(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: docker-jtp
+            port:
+              number: 80
+      # / → frontend nginx SPA
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend-nginx
+            port:
+              number: 80
+  - host: www.jobtrackerpro.ch
+    http:
+      paths:
+      - path: /api(/|$)(.*)
+        pathType: ImplementationSpecific
+        backend:
+          service:
+            name: docker-jtp
+            port:
+              number: 80
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend-nginx
+            port:
+              number: 80

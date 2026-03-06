@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>JobTrackerPro — Service Dashboard</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+  header{background:#1e293b;border-bottom:1px solid #334155;padding:1rem 2rem;display:flex;align-items:center;gap:1rem}
+  header h1{font-size:1.4rem;font-weight:700;color:#38bdf8}
+  header .badge{background:#0ea5e9;color:#fff;font-size:.75rem;padding:.2rem .6rem;border-radius:999px;font-weight:600}
+  .summary{display:flex;gap:1rem;padding:1.5rem 2rem;flex-wrap:wrap}
+  .stat{background:#1e293b;border:1px solid #334155;border-radius:.75rem;padding:1rem 1.5rem;min-width:140px}
+  .stat .label{font-size:.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em}
+  .stat .value{font-size:2rem;font-weight:700;margin-top:.25rem}
+  .stat.healthy .value{color:#22c55e}
+  .stat.unhealthy .value{color:#ef4444}
+  .stat.pending .value{color:#f59e0b}
+  .stat.total .value{color:#38bdf8}
+  .controls{padding:0 2rem 1rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center}
+  .controls input{background:#1e293b;border:1px solid #334155;color:#e2e8f0;padding:.5rem 1rem;border-radius:.5rem;font-size:.875rem;width:260px}
+  .controls input:focus{outline:none;border-color:#38bdf8}
+  .controls button{background:#0ea5e9;color:#fff;border:none;padding:.5rem 1.25rem;border-radius:.5rem;font-size:.875rem;cursor:pointer;font-weight:600}
+  .controls button:hover{background:#0284c7}
+  .controls button.refresh{background:#1e293b;border:1px solid #334155;color:#94a3b8}
+  .controls button.refresh:hover{background:#334155;color:#e2e8f0}
+  .controls .last-check{font-size:.75rem;color:#64748b;margin-left:auto}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.75rem;padding:0 2rem 2rem}
+  .card{background:#1e293b;border:1px solid #334155;border-radius:.75rem;padding:1rem;transition:border-color .2s}
+  .card:hover{border-color:#475569}
+  .card .name{font-size:.875rem;font-weight:600;color:#e2e8f0;word-break:break-all}
+  .card .url{font-size:.7rem;color:#64748b;margin-top:.2rem;word-break:break-all}
+  .card .status-row{display:flex;align-items:center;gap:.5rem;margin-top:.75rem}
+  .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+  .dot.ok{background:#22c55e;box-shadow:0 0 6px #22c55e80}
+  .dot.err{background:#ef4444;box-shadow:0 0 6px #ef444480}
+  .dot.pending{background:#f59e0b;animation:pulse 1.5s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .status-text{font-size:.8rem;color:#94a3b8}
+  .status-code{margin-left:auto;font-size:.75rem;font-weight:600;color:#64748b}
+  .status-code.ok{color:#22c55e}
+  .status-code.err{color:#ef4444}
+  footer{text-align:center;padding:1rem;color:#475569;font-size:.75rem;border-top:1px solid #1e293b}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ JobTrackerPro</h1>
+  <span class="badge">Service Dashboard</span>
+</header>
+<div class="summary">
+  <div class="stat total"><div class="label">Total</div><div class="value" id="cnt-total">—</div></div>
+  <div class="stat healthy"><div class="label">Healthy</div><div class="value" id="cnt-ok">—</div></div>
+  <div class="stat unhealthy"><div class="label">Unhealthy</div><div class="value" id="cnt-err">—</div></div>
+  <div class="stat pending"><div class="label">Checking</div><div class="value" id="cnt-pend">—</div></div>
+</div>
+<div class="controls">
+  <input type="text" id="filter" placeholder="Filter services…" oninput="renderGrid()">
+  <button onclick="checkAll()">▶ Check All</button>
+  <button class="refresh" onclick="location.reload()">↺ Reload</button>
+  <span class="last-check" id="last-check"></span>
+</div>
+<div class="grid" id="grid"></div>
+<footer>JobTrackerPro · 219 microservices · Exoscale SKS · <span id="ts"></span></footer>
+
+<script>
+// Services list — generated from gen_service_manifests (219 services)
+const SERVICES = [
+  "access-control-service","access-control-service-ai","admin-service","admin-service-ai",
+  "ai-driven-automation-service","analytics-service","analytics-service-ai","api-gateway-service",
+  "api-gateway-service-ai","applicant-tracking-service","authentication-service","authentication-service-ai",
+  "automation-service","background-check-service","behavioral-analytics-service","biometric-auth-service",
+  "blockchain-credentials-service","career-counseling-service","career-development-service",
+  "chatbot-service","cognitive-computing-service","collaboration-service","communication-service",
+  "compliance-service","contract-management-service","credential-verification-service",
+  "cultural-fit-analyzer-service","data-lake-service","data-pipeline-service","data-warehouse-service",
+  "deep-learning-service","document-processing-service","email-service","employee-onboarding-service",
+  "event-sourcing-service","feedback-service","file-management-service","fraud-detection-service",
+  "gamification-service","health-monitoring-service","hr-analytics-service","image-processing-service",
+  "intent-recognition-system","interview-intelligence-infrastructure","interview-intelligence-system",
+  "interview-prep-service","job-discovery-service","job-matching-service","job-search-service",
+  "knowledge-graph-service","language-translation-service","learning-management-service",
+  "machine-learning-pipelines-service","metabolic-system-orchestrator-bulk","natural-language-processor",
+  "natural-language-processor-ai","natural-language-processor-category","navigation-system",
+  "network-security-gateway","neural-consciousness-amplifier","neural-network-processor",
+  "neural-network-processor-ai","neural-network-processor-category","notification-service",
+  "onboarding-service","openai-api-test-service","payment-service","performance-analytics-service",
+  "personalization-service","predictive-analytics-service","privacy-management-service",
+  "profile-service","quantum-optimization-service","recommendation-engine","recruitment-automation-service",
+  "reporting-service","resume-parser-service","risk-assessment-service","role-management-service",
+  "salary-benchmarking-service","scheduling-service","search-service","sentiment-analysis-service",
+  "skill-assessment-service","skill-matching-service","social-integration-service","sourcing-service",
+  "subscription-service","talent-analytics-service","talent-intelligence-service","talent-pipeline-service",
+  "task-management-service","team-collaboration-service","time-tracking-service","user-management-service",
+  "video-interview-service","voice-recognition-service","workflow-automation-service",
+  "workforce-planning-service","ai-coaching-service","ai-interview-service","ai-job-matching-service",
+  "ai-resume-service","candidate-experience-service","compliance-automation-service",
+  "data-governance-service","diversity-inclusion-service","employee-engagement-service",
+  "employer-branding-service","event-management-service","global-talent-service",
+  "hr-automation-service","hr-chatbot-service","hr-self-service","industry-intelligence-service",
+  "internship-management-service","job-board-aggregator-service","labor-market-service",
+  "leadership-development-service","mentorship-service","mobile-recruitment-service",
+  "offboarding-service","organizational-design-service","partner-integration-service",
+  "payroll-integration-service","position-management-service","pre-screening-service",
+  "referral-management-service","relocation-service","remote-work-service",
+  "succession-planning-service","talent-marketplace-service","third-party-integration-service",
+  "vendor-management-service","verification-service","wellness-service","workforce-analytics-service"
+];
+
+const BASE = window.location.origin;
+const state = {};
+SERVICES.forEach(s => state[s] = {status:'pending', code:null, ms:null});
+
+function slug(s){ return s; }
+
+async function checkService(name){
+  const t0 = Date.now();
+  try {
+    const r = await fetch(`${BASE}/api/${name}/health`, {signal: AbortSignal.timeout(8000)});
+    const ms = Date.now()-t0;
+    state[name] = {status: r.ok?'ok':'err', code:r.status, ms};
+  } catch(e){
+    state[name] = {status:'err', code:'ERR', ms: Date.now()-t0};
+  }
+  updateCard(name);
+  updateStats();
+}
+
+function updateCard(name){
+  const el = document.getElementById('card-'+name);
+  if(!el) return;
+  const s = state[name];
+  el.querySelector('.dot').className = 'dot '+s.status;
+  el.querySelector('.status-text').textContent = s.status==='ok'?`${s.ms}ms`:s.status==='err'?'Unreachable':'Checking…';
+  const code = el.querySelector('.status-code');
+  code.textContent = s.code||'';
+  code.className = 'status-code '+(s.status==='ok'?'ok':s.status==='err'?'err':'');
+}
+
+function updateStats(){
+  const vals = Object.values(state);
+  document.getElementById('cnt-total').textContent = vals.length;
+  document.getElementById('cnt-ok').textContent = vals.filter(v=>v.status==='ok').length;
+  document.getElementById('cnt-err').textContent = vals.filter(v=>v.status==='err').length;
+  document.getElementById('cnt-pend').textContent = vals.filter(v=>v.status==='pending').length;
+  document.getElementById('last-check').textContent = 'Last check: '+new Date().toLocaleTimeString();
+}
+
+function renderGrid(){
+  const q = document.getElementById('filter').value.toLowerCase();
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  SERVICES.filter(s=>s.includes(q)).forEach(name=>{
+    const s = state[name];
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.id = 'card-'+name;
+    card.innerHTML = `
+      <div class="name">${name}</div>
+      <div class="url">/api/${name}/health</div>
+      <div class="status-row">
+        <div class="dot ${s.status}"></div>
+        <span class="status-text">${s.status==='ok'?s.ms+'ms':s.status==='err'?'Unreachable':'Checking…'}</span>
+        <span class="status-code ${s.status}">${s.code||''}</span>
+      </div>`;
+    grid.appendChild(card);
+  });
+}
+
+async function checkAll(){
+  SERVICES.forEach(s=>{ state[s]={status:'pending',code:null,ms:null}; });
+  renderGrid(); updateStats();
+  // Check in parallel batches of 20
+  const batch = 20;
+  for(let i=0;i<SERVICES.length;i+=batch){
+    await Promise.all(SERVICES.slice(i,i+batch).map(checkService));
+  }
+}
+
+document.getElementById('ts').textContent = new Date().toISOString().slice(0,10);
+renderGrid();
+updateStats();
+checkAll();
+setInterval(checkAll, 60000); // auto-refresh every 60s
+</script>
+</body>
+</html>
