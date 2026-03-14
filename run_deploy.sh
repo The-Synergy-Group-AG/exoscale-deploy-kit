@@ -431,9 +431,36 @@ else
     echo "[INFO] Step 2.6: Skipped — deploy failed (exit=$DEPLOY_EXIT)"
 fi
 
+# ── Step 2.6b: DNS Update (Lesson 50) ────────────────────────────────────────
+# Auto-update jobtrackerpro.ch A records to current LB IP.
+# L50: SDK list_dns_domains() is broken — _update_dns.py uses raw REST.
+# L50: Delete stale A records to avoid round-robin to dead IPs.
+if [ "$DEPLOY_EXIT" -eq 0 ]; then
+    LATEST_REPORT=$(find "$OUTPUTS_DIR" -name "deployment_report.json" | sort | tail -1)
+    LB_IP=$(python3 -c "import json; d=json.load(open('$LATEST_REPORT')); print(d['resources']['ingress']['lb_ip'])" 2>/dev/null || echo "")
+    if [ -n "$LB_IP" ]; then
+        echo ""
+        echo "============================================================"
+        echo "  STEP 2.6b: DNS UPDATE → jobtrackerpro.ch → $LB_IP"
+        echo "  (Lesson 50: auto-update A records, delete stale duplicates)"
+        echo "============================================================"
+        set +e
+        python3 -X utf8 "$SCRIPT_DIR/_update_dns.py" "$LB_IP" 2>&1
+        DNS_EXIT=$?
+        set -e
+        if [ $DNS_EXIT -ne 0 ]; then
+            echo "[WARN] Step 2.6b: DNS update failed (exit=$DNS_EXIT) — check manually"
+        else
+            echo "[OK]   Step 2.6b: DNS updated → $LB_IP"
+        fi
+    else
+        echo "[WARN] Step 2.6b: Could not extract LB_IP from deployment_report — DNS not updated"
+    fi
+fi
+
 # ── Step 2.7: Post-Deploy Service Verification (Plan 125 Phase 2) ────────────
 # 2.7a /health sweep — all 220 pods, 20 workers
-# 2.7b Full per-service test suite — unit/integration/e2e/perf/security/stories
+# 2.7b Unit tests only (L49: integration/e2e require external deps not in pod)
 if [ "$DEPLOY_EXIT" -eq 0 ] && [ "$SKIP_SERVICES" = "false" ]; then
     LATEST_KC=$(find "$OUTPUTS_DIR" -name "kubeconfig.yaml" | sort | tail -1)
     K8S_NS=$(grep 'k8s_namespace:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d '[:space:]\r')
