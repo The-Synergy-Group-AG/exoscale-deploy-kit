@@ -134,7 +134,10 @@ def _delete_nodepool_robust(c, cluster_id: str, pool_id: str, pool_name: str,
     # In this case, NEVER delete individual instances — the Instance Pool recreates them.
     # Escalate with console path: Compute -> Instance Pools -> delete pool manually.
     forbidden_consecutive = 0
-    FORBIDDEN_ESCALATE_AFTER = 3
+    # LESSON 58: Was 3 — too low. VMs take 5-10 min to deprovision after
+    # namespace deletion; 3 consecutive 409s in the first 7 min is NORMAL.
+    # Run ALL 12 attempts before escalating to manual console path.
+    FORBIDDEN_ESCALATE_AFTER = MAX_ATTEMPTS  # 12
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         # ── Pre-flight: check current state before attempting DELETE ──────────
@@ -463,9 +466,12 @@ def teardown(args: argparse.Namespace) -> None:
         for np in cl.get("nodepools", []):
             log(f"    nodepool: {np.get('name')} ({np.get('id')}) size:{np.get('size')}")
 
-    # Find NLBs matching {project_name}-*
+    # Find ALL NLBs — K8s CCM creates NLBs named 'kubernetes-<hash>',
+    # NOT prefixed with the project name. Filtering by project name misses
+    # these CCM NLBs which lock the nodepool (LESSON 32/43/58).
+    # _nuke_all.py already does this correctly — no name filter here.
     nlb_list  = c.list_load_balancers().get("load-balancers", [])
-    proj_nlbs = [n for n in nlb_list if project in n.get("name", "")]
+    proj_nlbs = nlb_list  # ALL NLBs in zone — CCM ones have no project prefix
     log(f"Load balancers ({project}): {len(proj_nlbs)}")
     for n in proj_nlbs:
         log(f"  {n.get('name')} ({n.get('id')})")
