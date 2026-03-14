@@ -38,10 +38,12 @@ COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
 
-# Copy gateway entrypoint + startup script
+# Copy gateway entrypoint + startup script + service dashboard
 # NOTE: app.py in this build = app_v6.py (gateway v7) — copied by build_and_push.sh
+# NOTE: dashboard.html copied from frontend/index.html by build_and_push.sh
 COPY app.py .
 COPY start.sh .
+COPY dashboard.html .
 
 # Copy all 219 service src directories into services/
 # Each service lands at: /app/services/{service_name}/main.py

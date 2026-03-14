@@ -22,7 +22,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gateway")
@@ -70,9 +70,16 @@ def service_to_dns(name: str) -> str:
     return SERVICE_DNS_OVERRIDES.get(name, name.replace("_", "-"))
 
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    """Gateway root."""
+    """Gateway root — serve service dashboard."""
+    with open("/app/dashboard.html") as f:
+        return f.read()
+
+
+@app.get("/gateway", response_class=JSONResponse)
+async def gateway_info():
+    """Gateway metadata (JSON) — previously served at /)."""
     return {
         "gateway": "docker-jtp-gateway",
         "version": 7,
