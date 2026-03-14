@@ -288,6 +288,29 @@ def main() -> int:
     manifest_path.write_text(json.dumps(manifest, indent=2))
     _info(f"Manifest written: {manifest_path}")
 
+    # ── L54: Patch generated test files (3 codegen bugs) ───────────────────
+    # Run _patch_generated_tests.py against the source generation so that
+    # test bugs (wrong HTTP method, duplicate names, delete+json) are fixed
+    # every time a new generation is synced. Idempotent — safe to rerun.
+    patch_script = SCRIPT_DIR / "_patch_generated_tests.py"
+    if patch_script.exists():
+        services_src = gen_path / "services"
+        _info(f"L54: Patching generated test files in {services_src.name}...")
+        import subprocess as _sp
+        patch_result = _sp.run(
+            [sys.executable, str(patch_script), str(services_src)],
+            capture_output=True, text=True
+        )
+        patched_count = patch_result.stdout.count("PATCHED")
+        if patched_count:
+            _info(f"L54: {patched_count} test files patched (codegen bug fixes)")
+        else:
+            _ok("L54: No test patches needed (already clean)")
+        if patch_result.returncode != 0:
+            _warn(f"L54: Patch script warnings: {patch_result.stderr.strip()}")
+    else:
+        _warn("L54: _patch_generated_tests.py not found — skipping test patch")
+
     print()
     if exit_code == 0:
         print("=" * 64)
