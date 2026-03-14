@@ -1770,6 +1770,38 @@ stringData:
         else:
             warn(f"SOS secret: {r.stderr[:100]}")
 
+    # L57: Create/update jtp-gateway-config ConfigMap so service pods can call
+    # each other through GATEWAY_URL (inter-service communication).
+    gateway_url = RESULTS.get("resources", {}).get("gateway_url", "")
+    if not gateway_url:
+        # Fallback: derive from ingress LB IP if connectivity test hasn't run yet
+        _ingress = RESULTS.get("resources", {}).get("ingress", {})
+        _lb_ip = _ingress.get("lb_ip", "")
+        gateway_url = f"http://{_lb_ip}" if _lb_ip else ""
+    if gateway_url:
+        gateway_cm_yaml = f"""apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jtp-gateway-config
+  namespace: {ns}
+  labels:
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+    plan: l57-inter-service
+data:
+  GATEWAY_URL: "{gateway_url}"
+  SERVICE_CALL_TIMEOUT: "2.0"
+"""
+        r_cm = subprocess.run(
+            ["kubectl", "apply", "-f", "-"],
+            input=gateway_cm_yaml, env=env, text=True, capture_output=True,
+        )
+        if r_cm.returncode == 0:
+            ok(f"ConfigMap 'jtp-gateway-config' applied (GATEWAY_URL={gateway_url})")
+        else:
+            warn(f"jtp-gateway-config ConfigMap: {r_cm.stderr[:120]}")
+    else:
+        log("GATEWAY_URL not yet resolved — jtp-gateway-config ConfigMap will be applied after connectivity test")
+
     RESULTS["stages"]["inject_secrets"] = {"status": "success"}
 
 

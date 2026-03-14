@@ -70,9 +70,16 @@ def service_to_dns(name: str) -> str:
     return SERVICE_DNS_OVERRIDES.get(name, name.replace("_", "-"))
 
 
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root():
-    """Gateway root — machine-readable metadata."""
+    """AI-First home page — dual mode interface (L56)."""
+    with open("/app/home.html") as f:
+        return f.read()
+
+
+@app.get("/api-info")
+async def api_info():
+    """Machine-readable gateway metadata (replaces old GET / JSON response)."""
     return {
         "gateway": "docker-jtp-gateway",
         "version": 7,
@@ -88,6 +95,78 @@ async def service_dashboard():
     """Service status dashboard — all 219 services with live health checks."""
     with open("/app/dashboard.html") as f:
         return f.read()
+
+
+# ── Server-side intent routing (L56) ──────────────────────────────────────────
+_CHAT_ROUTES = [
+    {"patterns": ["job", "jobs", "vacancy", "position", "apply", "application", "career"],
+     "service": "job-search-service", "path": "/jobs", "method": "GET"},
+    {"patterns": ["cv", "resume", "curriculum"],
+     "service": "cv-generation-service", "path": "/cv/generate", "method": "POST"},
+    {"patterns": ["interview", "interviews", "prep"],
+     "service": "interview-prep-service", "path": "/interviews", "method": "GET"},
+    {"patterns": ["notification", "notifications", "alert", "message"],
+     "service": "notification-service", "path": "/notifications", "method": "GET"},
+    {"patterns": ["analytic", "analytics", "metric", "dashboard"],
+     "service": "advanced-analytics-bi-service", "path": "/analytics/dashboard", "method": "GET"},
+    {"patterns": ["security", "threat", "scan", "access"],
+     "service": "access-control-service", "path": "/security/status", "method": "GET"},
+    {"patterns": ["status", "health", "system", "monitor", "uptime"],
+     "service": "monitoring-service", "path": "/status", "method": "GET"},
+    {"patterns": ["user", "users", "profile", "account"],
+     "service": "admin-service", "path": "/users", "method": "GET"},
+    {"patterns": ["payment", "billing", "invoice", "subscription"],
+     "service": "payment-processor-service", "path": "/payments", "method": "GET"},
+    {"patterns": ["log", "logs", "audit"],
+     "service": "audit-logging-service", "path": "/logs", "method": "GET"},
+]
+
+
+def _find_chat_route(msg: str):
+    lower = msg.lower()
+    for route in _CHAT_ROUTES:
+        if any(p in lower for p in route["patterns"]):
+            return route
+    return None
+
+
+@app.post("/chat/route")
+async def chat_route(request: Request):
+    """Server-side intent router for the AI-First home page (L56)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    msg = body.get("message", "")
+    route = _find_chat_route(msg)
+    if not route:
+        return {
+            "routed": False,
+            "suggestions": ["jobs", "status", "notifications", "analytics"],
+        }
+    svc_dns = service_to_dns(route["service"])
+    url = f"http://{svc_dns}:8000{route['path']}"
+    try:
+        method = route["method"]
+        if method == "GET":
+            resp = await _http_client.get(url, timeout=PROXY_TIMEOUT)
+        else:
+            resp = await _http_client.post(url, json={}, timeout=PROXY_TIMEOUT)
+        return {
+            "routed": True,
+            "service": route["service"],
+            "path": route["path"],
+            "data": resp.json(),
+        }
+    except Exception as exc:
+        logger.warning(f"chat/route error for {route['service']}: {exc}")
+        return {
+            "routed": True,
+            "service": route["service"],
+            "path": route["path"],
+            "data": None,
+            "error": "service_unavailable",
+        }
 
 
 @app.get("/health")

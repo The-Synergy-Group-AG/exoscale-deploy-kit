@@ -44,6 +44,7 @@ WORKDIR /app
 COPY app.py .
 COPY start.sh .
 COPY dashboard.html .
+COPY home.html .
 
 # Copy all 219 service src directories into services/
 # Each service lands at: /app/services/{service_name}/main.py

@@ -99,6 +99,8 @@ cp "${SERVICE_DIR}/app_v6.py" "${SERVICE_DIR}/app.py"
 echo "  ✅ app.py = Gateway v7 (PROXY_TIMEOUT=2.5s, pool=50)"
 cp "${SCRIPT_DIR}/frontend/index.html" "${SERVICE_DIR}/dashboard.html"
 echo "  ✅ dashboard.html = service dashboard (219 services)"
+cp "${SCRIPT_DIR}/frontend/home.html"  "${SERVICE_DIR}/home.html"
+echo "  ✅ home.html = AI-First dual-mode home page (L56)"
 echo ""
 
 # ── Step 3: Build Docker image ────────────────────────────────────────────────
