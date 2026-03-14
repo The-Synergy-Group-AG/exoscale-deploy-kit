@@ -321,6 +321,35 @@ if [ "$DEPLOY_EXIT" -eq 0 ]; then
     INFRA_CREATED=true
 fi
 
+# ── Step 2.1: DNS Update — immediately after LB IP is known (Lesson 51) ─────
+# L51: DNS must be updated BEFORE cert-manager runs the ACME HTTP-01 challenge.
+#      If DNS still points to the old LB IP when Let's Encrypt does secondary
+#      validation, the challenge fails (invalid) and the cert is not issued.
+#      Moving DNS update here gives ~10-15 min of propagation time while the
+#      219 service pods deploy — cert-manager only runs after ingress is live.
+if [ "$DEPLOY_EXIT" -eq 0 ]; then
+    EARLY_REPORT=$(find "$OUTPUTS_DIR" -name "deployment_report.json" | sort | tail -1)
+    EARLY_LB_IP=$(python3 -c "import json; d=json.load(open('$EARLY_REPORT')); print(d['resources']['ingress']['lb_ip'])" 2>/dev/null || echo "")
+    if [ -n "$EARLY_LB_IP" ]; then
+        echo ""
+        echo "============================================================"
+        echo "  STEP 2.1: EARLY DNS UPDATE → jobtrackerpro.ch → $EARLY_LB_IP"
+        echo "  (L51: update DNS now so it propagates before ACME challenge)"
+        echo "============================================================"
+        set +e
+        python3 -X utf8 "$SCRIPT_DIR/_update_dns.py" "$EARLY_LB_IP" 2>&1
+        EARLY_DNS_EXIT=$?
+        set -e
+        if [ $EARLY_DNS_EXIT -ne 0 ]; then
+            echo "[WARN] Step 2.1: DNS update failed (exit=$EARLY_DNS_EXIT) — cert may fail"
+        else
+            echo "[OK]   Step 2.1: DNS updated early → $EARLY_LB_IP"
+        fi
+    else
+        echo "[WARN] Step 2.1: Could not extract LB_IP — skipping early DNS update"
+    fi
+fi
+
 # ── Step 2.5: Stage 5e/5f — Per-Service Pod Deployment (Plan 125) ─────────
 if [ "$SKIP_SERVICES" = "false" ] && [ "$DEPLOY_EXIT" -eq 0 ]; then
     echo "============================================================"
