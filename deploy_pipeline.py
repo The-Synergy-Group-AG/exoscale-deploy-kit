@@ -135,6 +135,11 @@ TS        = datetime.now().strftime("%Y%m%d_%H%M%S")
 IMAGE     = f"{cfg['docker_hub_user']}/{cfg['service_name']}:{cfg['service_version']}"
 IMAGE_LTS = f"{cfg['docker_hub_user']}/{cfg['service_name']}:latest"
 
+# L39b: strip whitespace from node_count — shell layer does this via tr -d;
+# deploy_pipeline.py must also sanitize so CPU-budget arithmetic and the
+# Exoscale API size parameter never receive a string with stray whitespace.
+cfg["node_count"] = int(str(cfg.get("node_count", 3)).strip())
+
 _slug = re.sub(r'-+', '-', re.sub(r'[^a-z0-9-]', '-', cfg['project_name'].lower())).strip('-')
 SG_NAME   = f"{_slug}-sg-{TS[-6:]}"
 CLUSTER_N = f"{_slug}-cluster-{TS[-6:]}"
@@ -154,6 +159,9 @@ RESULTS = {
     "stages": {},
     "resources": {},
 }
+# L46: DEPLOY_RESOURCES must be defined — alias to RESULTS so any
+# tooling or future code referencing DEPLOY_RESOURCES finds it.
+DEPLOY_RESOURCES = RESULTS
 
 
 def log(msg):   print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
