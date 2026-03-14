@@ -345,9 +345,9 @@ def main() -> int:
     parser.add_argument("--namespace", default="exo-jtp-prod")
     parser.add_argument("--workers", type=int, default=10,
                         help="Parallel pod workers (default: 10)")
-    parser.add_argument("--suites", nargs="+", default=ALL_SUITES,
+    parser.add_argument("--suites", nargs="+", default=["unit"],
                         choices=ALL_SUITES,
-                        help=f"Test suites to run (default: all = {ALL_SUITES})")
+                        help=f"Test suites to run (default: unit only — L49: other suites require external deps not available via kubectl exec)")
     parser.add_argument("--health-timeout", type=int, default=5,
                         help="Health check timeout per pod in seconds (default: 5)")
     parser.add_argument("--suite-timeout", type=int, default=120,

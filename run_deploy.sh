@@ -466,15 +466,17 @@ if [ "$DEPLOY_EXIT" -eq 0 ] && [ "$SKIP_SERVICES" = "false" ]; then
 
         echo ""
         echo "============================================================"
-        echo "  STEP 2.7b: FULL PER-SERVICE TEST SUITE RUNNER"
-        echo "  Suites: unit, integration, e2e, performance, security, user_stories"
-        echo "  220 services via kubectl exec (20 parallel workers)"
+        echo "  STEP 2.7b: IN-POD UNIT TEST RUNNER"
+        echo "  Suites: unit only (L49: integration/e2e/perf/security/user_stories"
+        echo "          require external deps not available via kubectl exec)"
+        echo "  219 services via kubectl exec (20 parallel workers)"
         echo "============================================================"
         set +e
         python3 -X utf8 "$SCRIPT_DIR/run_service_tests.py" \
             --kubeconfig    "${LATEST_KC}" \
             --namespace     "${K8S_NS}" \
             --workers       20 \
+            --suites        unit \
             --suite-timeout 180 \
             --fail-threshold 0.80 \
             --output-json   "${TEST_REPORT}" 2>&1
