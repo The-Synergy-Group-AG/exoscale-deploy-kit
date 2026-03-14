@@ -5,8 +5,10 @@
 # Plan 123-P5+: Step 1.5 — auto-stage latest generated services
 # Plan 125 Phase 1: Step 2.5 — Stage 5e/5f per-service pod deployment
 # Plan 125 Lesson 35: Step 2.6 — Post-deploy monitoring sync (self-healing)
-# Plan 125 Phase 2: Step 2.7 — Post-deploy service verification + full test suite
+# Plan 125 Phase 2: Step 2.7 — Post-deploy service verification + unit tests
 # Lesson 39b: Fix node_count whitespace arithmetic crash in CPU budget check
+# Lesson 49: Unit-only in-pod tests (integration/e2e need external deps)
+# Lesson 50: Auto-update DNS + raw REST (SDK broken) + website verify
 # ============================================================
 # Usage:
 #   ./run_deploy.sh            # Interactive wizard + deploy
@@ -22,13 +24,21 @@
 #                every successful deployment (self-healing dashboards)
 #   - LESSON 38: Step 2.6b writes ONLY ONE KSM target IP (not all nodes)
 #                KSM is a single pod — N targets = N× data triplication
+#   - LESSON 49: Step 2.7b runs unit tests ONLY via kubectl exec.
+#                integration/e2e/performance/security/user_stories require
+#                external network access not available inside pods.
+#   - LESSON 50: Step 2.6b auto-updates jobtrackerpro.ch DNS A records to
+#                current LB IP using raw REST (SDK list_dns_domains broken).
+#                Deletes stale A records to prevent round-robin to dead IPs.
+#                Step 2.7c verifies DNS propagation, TLS cert issuance, and
+#                end-to-end website reachability before declaring success.
 #   - STEP 1.5: Automatically stages latest generated-v* services via
 #               prep_services.py (no manual version pinning required)
 #   - STEP 2.5: Deploys 219 individual service pods (Plan 125 Stage 5e/5f)
 #   - STEP 2.7: Post-deploy service verification
-#               2.7a — /health sweep of all 220 service pods
-#               2.7b — Full per-service test suite (unit, integration, e2e,
-#                      performance, security, user_stories) via kubectl exec
+#               2.7a — /health sweep of all 219 service pods
+#               2.7b — Unit tests only (L49) via kubectl exec
+#               2.7c — DNS propagation + TLS cert + website reachability
 #   - Tees ALL output to timestamped log file for post-mortem analysis
 #   - Pre-flight checklist before any cloud activity
 #   - Automated post-mortem JSON generation after completion
@@ -513,7 +523,93 @@ if [ "$DEPLOY_EXIT" -eq 0 ] && [ "$SKIP_SERVICES" = "false" ]; then
         if [ $TEST_EXIT -ne 0 ]; then
             echo "[WARN] Step 2.7b: Below 80% pass threshold (exit=$TEST_EXIT) — Report: $TEST_REPORT"
         else
-            echo "[OK]   Step 2.7b: Full test suite PASSED"
+            echo "[OK]   Step 2.7b: Unit tests PASSED"
+        fi
+
+        echo ""
+        echo "============================================================"
+        echo "  STEP 2.7c: WEBSITE REACHABILITY CHECK (L50)"
+        echo "  DNS propagation → TLS cert issuance → HTTP(S) response"
+        echo "============================================================"
+        DOMAIN="jobtrackerpro.ch"
+        LB_IP_CHECK=$(python3 -c "import json; d=json.load(open('$(find "$OUTPUTS_DIR" -name deployment_report.json | sort | tail -1)')); print(d['resources']['ingress']['lb_ip'])" 2>/dev/null || echo "")
+        WEB_EXIT=0
+
+        if [ -z "$LB_IP_CHECK" ]; then
+            echo "[WARN] Step 2.7c: Could not determine LB IP — skipping"
+        else
+            # 1. DNS propagation: wait up to 5 min for domain to resolve to LB IP
+            echo "[2.7c] Checking DNS: $DOMAIN → $LB_IP_CHECK ..."
+            DNS_OK=false
+            for i in $(seq 1 30); do
+                RESOLVED=$(python3 -c "
+import urllib.request, json
+try:
+    with urllib.request.urlopen('https://dns.google/resolve?name=$DOMAIN&type=A', timeout=5) as r:
+        ans = json.load(r).get('Answer', [])
+        ips = [a['data'] for a in ans if a.get('type') == 1]
+        print(','.join(ips))
+except: print('')
+" 2>/dev/null)
+                if echo "$RESOLVED" | grep -q "$LB_IP_CHECK"; then
+                    echo "[2.7c] DNS OK: $DOMAIN → $RESOLVED"
+                    DNS_OK=true
+                    break
+                fi
+                echo "[2.7c] DNS not yet propagated (got: ${RESOLVED:-none}) — retry $i/30 ..."
+                sleep 10
+            done
+            if [ "$DNS_OK" = "false" ]; then
+                echo "[WARN] Step 2.7c: DNS did not propagate to $LB_IP_CHECK within 5 min"
+                WEB_EXIT=1
+            fi
+
+            # 2. TLS cert: wait up to 5 min for cert-manager to issue the secret
+            echo "[2.7c] Checking TLS cert issuance ..."
+            CERT_OK=false
+            for i in $(seq 1 30); do
+                CERT_STATUS=$(KUBECONFIG="$LATEST_KC" kubectl get secret jobtrackerpro-ch-tls \
+                    -n "$K8S_NS" -o jsonpath='{.type}' 2>/dev/null || echo "")
+                if [ "$CERT_STATUS" = "kubernetes.io/tls" ]; then
+                    echo "[2.7c] TLS cert issued: jobtrackerpro-ch-tls"
+                    CERT_OK=true
+                    break
+                fi
+                echo "[2.7c] Cert not ready yet (status: ${CERT_STATUS:-missing}) — retry $i/30 ..."
+                sleep 10
+            done
+            if [ "$CERT_OK" = "false" ]; then
+                echo "[WARN] Step 2.7c: TLS cert not issued within 5 min — HTTP-only check"
+            fi
+
+            # 3. Website reachability: HTTP then HTTPS
+            echo "[2.7c] Checking website reachability ..."
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                -H "Host: $DOMAIN" "http://$LB_IP_CHECK/" --max-time 10 2>/dev/null || echo "000")
+            echo "[2.7c] HTTP response: $HTTP_CODE"
+
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "308" ] || [ "$HTTP_CODE" = "301" ] || [ "$HTTP_CODE" = "302" ]; then
+                echo "[2.7c] HTTP OK ($HTTP_CODE)"
+                if [ "$CERT_OK" = "true" ]; then
+                    HTTPS_CODE=$(curl -sk -o /dev/null -w "%{http_code}" \
+                        "https://$DOMAIN/" --max-time 10 2>/dev/null || echo "000")
+                    echo "[2.7c] HTTPS response: $HTTPS_CODE"
+                    if [ "$HTTPS_CODE" = "200" ]; then
+                        echo "[OK]   Step 2.7c: $DOMAIN is live and serving HTTPS ✓"
+                    else
+                        echo "[WARN] Step 2.7c: HTTPS returned $HTTPS_CODE (cert may still be propagating)"
+                    fi
+                else
+                    echo "[OK]   Step 2.7c: $DOMAIN is HTTP-reachable (HTTPS pending cert)"
+                fi
+            else
+                echo "[WARN] Step 2.7c: Website not reachable — HTTP $HTTP_CODE"
+                WEB_EXIT=1
+            fi
+        fi
+
+        if [ $WEB_EXIT -ne 0 ]; then
+            echo "[WARN] Step 2.7c: Website check FAILED — manual investigation required"
         fi
     fi
 else
