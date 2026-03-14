@@ -1041,7 +1041,10 @@ def stage_5c_ingress_tls(kubeconfig: str) -> None:
         "--repo", "https://kubernetes.github.io/ingress-nginx",
         "--namespace", "ingress-nginx", "--create-namespace",
         "--set", "controller.service.type=LoadBalancer",
-        "--version", "4.11.3", "--wait", "--timeout", "5m"
+        # LESSON 59: admissionWebhooks.enabled=false removes the pre-install
+        # webhook cert-generator Job that times out on fresh Exoscale clusters.
+        "--set", "controller.admissionWebhooks.enabled=false",
+        "--version", "4.11.3", "--wait", "--timeout", "10m"
     ])
     ok("nginx-ingress-controller deployed")
 
