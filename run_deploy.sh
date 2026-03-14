@@ -161,6 +161,34 @@ else
     PREFLIGHT_PASS=false
 fi
 
+# Check 4b: Python deploy dependencies (L52: pyyaml missing caused silent deploy abort)
+MISSING_DEPS=""
+for pkg in yaml dotenv exoscale_auth boto3; do
+    if ! python3 -c "import $pkg" 2>/dev/null; then
+        MISSING_DEPS="$MISSING_DEPS $pkg"
+    fi
+done
+if [ -z "$MISSING_DEPS" ]; then
+    echo "  [PASS] Python deps: yaml, dotenv, exoscale_auth, boto3 all importable"
+else
+    echo "  [WARN] Python deps missing:$MISSING_DEPS — installing from requirements.txt..."
+    pip install -q -r "$SCRIPT_DIR/requirements.txt" 2>/dev/null || \
+    pip install --target "$(python3 -c 'import site; print(site.getsitepackages()[0])')" \
+        -r "$SCRIPT_DIR/requirements.txt" -q 2>&1 | tail -3
+    # Re-check after install attempt
+    STILL_MISSING=""
+    for pkg in yaml dotenv exoscale_auth boto3; do
+        python3 -c "import $pkg" 2>/dev/null || STILL_MISSING="$STILL_MISSING $pkg"
+    done
+    if [ -z "$STILL_MISSING" ]; then
+        echo "  [PASS] Python deps installed successfully"
+    else
+        echo "  [FAIL] Python deps still missing after install attempt:$STILL_MISSING"
+        echo "         Run: pip install -r requirements.txt"
+        PREFLIGHT_PASS=false
+    fi
+fi
+
 # Check 5: config.yaml
 if [ -f "$SCRIPT_DIR/config.yaml" ]; then
     PROJ=$(grep 'project_name:' "$SCRIPT_DIR/config.yaml" | awk '{print $2}' | tr -d '[:space:]\r')
@@ -593,9 +621,13 @@ except: print('')
                 WEB_EXIT=1
             fi
 
-            # 2. TLS cert: wait up to 5 min for cert-manager to issue the secret
+            # 2. TLS cert: wait up to 5 min; if challenge invalid, auto-retry (L52)
+            # L52: Let's Encrypt secondary validation can hit old LB IP if DNS was stale
+            #      at challenge time → challenge marked invalid → cert never issues.
+            #      Fix: detect invalid challenge, delete cert to force cert-manager retry.
             echo "[2.7c] Checking TLS cert issuance ..."
             CERT_OK=false
+            CERT_RETRIED=false
             for i in $(seq 1 30); do
                 CERT_STATUS=$(KUBECONFIG="$LATEST_KC" kubectl get secret jobtrackerpro-ch-tls \
                     -n "$K8S_NS" -o jsonpath='{.type}' 2>/dev/null || echo "")
@@ -603,6 +635,21 @@ except: print('')
                     echo "[2.7c] TLS cert issued: jobtrackerpro-ch-tls"
                     CERT_OK=true
                     break
+                fi
+                # Check for invalid ACME challenge — auto-retry once (L52)
+                INVALID_CHALLENGE=$(KUBECONFIG="$LATEST_KC" kubectl get challenges -n "$K8S_NS" \
+                    -o jsonpath='{range .items[?(@.status.state=="invalid")]}{.metadata.name}{"\n"}{end}' \
+                    2>/dev/null | head -1)
+                if [ -n "$INVALID_CHALLENGE" ] && [ "$CERT_RETRIED" = "false" ]; then
+                    echo "[2.7c] L52: Invalid ACME challenge detected — deleting cert to force retry..."
+                    KUBECONFIG="$LATEST_KC" kubectl delete certificate jobtrackerpro-ch-tls \
+                        -n "$K8S_NS" 2>/dev/null || true
+                    KUBECONFIG="$LATEST_KC" kubectl annotate ingress docker-jtp-ingress \
+                        -n "$K8S_NS" cert-manager.io/retry="$(date +%s)" --overwrite 2>/dev/null || true
+                    CERT_RETRIED=true
+                    echo "[2.7c] L52: Cert retry triggered — waiting for new challenge..."
+                    sleep 15
+                    continue
                 fi
                 echo "[2.7c] Cert not ready yet (status: ${CERT_STATUS:-missing}) — retry $i/30 ..."
                 sleep 10

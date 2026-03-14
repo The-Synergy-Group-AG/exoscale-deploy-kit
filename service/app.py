@@ -70,23 +70,24 @@ def service_to_dns(name: str) -> str:
     return SERVICE_DNS_OVERRIDES.get(name, name.replace("_", "-"))
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def root():
-    """Gateway root — serve service dashboard."""
-    with open("/app/dashboard.html") as f:
-        return f.read()
-
-
-@app.get("/gateway", response_class=JSONResponse)
-async def gateway_info():
-    """Gateway metadata (JSON) — previously served at /)."""
+    """Gateway root — machine-readable metadata."""
     return {
         "gateway": "docker-jtp-gateway",
         "version": 7,
         "architecture": "1-pod-per-service",
         "status": "running",
         "proxy_timeout": PROXY_TIMEOUT,
+        "dashboard": "/service-dashboard",
     }
+
+
+@app.get("/service-dashboard", response_class=HTMLResponse)
+async def service_dashboard():
+    """Service status dashboard — all 219 services with live health checks."""
+    with open("/app/dashboard.html") as f:
+        return f.read()
 
 
 @app.get("/health")
