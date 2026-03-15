@@ -19,7 +19,7 @@
 project_name: jtp-test1
 service_name: docker-jtp
 # Plan 125 L55/L56/L57: service_version 12->13 (domain data + AI-First home + service_client.py)
-service_version: '16'
+service_version: '17'
 docker_hub_user: iandrewitz
 environment: production
 exoscale_zone: ch-dk-2

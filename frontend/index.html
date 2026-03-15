@@ -29,9 +29,25 @@
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.75rem;padding:0 2rem 2rem}
   .card{background:#1e293b;border:1px solid #334155;border-radius:.75rem;padding:1rem;transition:border-color .2s}
   .card:hover{border-color:#475569}
+  .card{cursor:pointer}
   .card .name{font-size:.875rem;font-weight:600;color:#e2e8f0;word-break:break-all}
   .card .url{font-size:.7rem;color:#64748b;margin-top:.2rem;word-break:break-all}
+  .card .domain-tag{display:inline-block;font-size:.65rem;background:#334155;color:#94a3b8;padding:.1rem .4rem;border-radius:4px;margin-top:.25rem}
   .card .status-row{display:flex;align-items:center;gap:.5rem;margin-top:.75rem}
+  .card .ep-panel{display:none;margin-top:.75rem;border-top:1px solid #334155;padding-top:.5rem}
+  .card.expanded .ep-panel{display:block}
+  .card .ep-panel .ep-item{display:flex;align-items:center;gap:.5rem;padding:.25rem 0;font-size:.75rem}
+  .card .ep-panel .ep-method{font-weight:700;min-width:40px}
+  .card .ep-panel .ep-method.get{color:#22c55e}
+  .card .ep-panel .ep-method.post{color:#f59e0b}
+  .card .ep-panel .ep-method.put{color:#3b82f6}
+  .card .ep-panel .ep-method.delete{color:#ef4444}
+  .card .ep-panel .ep-path{color:#94a3b8}
+  .card .ep-panel .ep-try{background:#0ea5e9;color:#fff;border:none;padding:.15rem .5rem;border-radius:4px;font-size:.65rem;cursor:pointer;margin-left:auto}
+  .card .ep-panel .ep-try:hover{background:#0284c7}
+  .card .ep-panel .ep-result{background:#0f172a;border:1px solid #334155;border-radius:4px;padding:.5rem;margin-top:.35rem;font-size:.7rem;color:#94a3b8;max-height:150px;overflow-y:auto;white-space:pre-wrap;font-family:monospace;display:none}
+  .card .ep-panel .docs-link{display:inline-block;font-size:.7rem;color:#38bdf8;margin-top:.5rem;text-decoration:none}
+  .card .ep-panel .docs-link:hover{text-decoration:underline}
   .dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
   .dot.ok{background:#22c55e;box-shadow:0 0 6px #22c55e80}
   .dot.err{background:#ef4444;box-shadow:0 0 6px #ef444480}
@@ -128,6 +144,10 @@ const BASE = window.location.origin;
 const state = {};
 SERVICES.forEach(s => state[s] = {status:'pending', code:null, ms:null});
 
+// L64: Load catalog for endpoint interaction
+let CATALOG = {};
+fetch(`${BASE}/api/catalog`).then(r=>r.json()).then(d=>{CATALOG=d.services||{};}).catch(()=>{});
+
 function slug(s){ return s; }
 
 async function checkService(name){
@@ -169,17 +189,31 @@ function renderGrid(){
   grid.innerHTML = '';
   SERVICES.filter(s=>s.includes(q)).forEach(name=>{
     const s = state[name];
+    const catName = name.replace(/-/g,'_');
+    const spec = CATALOG[catName]||CATALOG[name]||{};
+    const domain = spec.domain||'';
+    const eps = spec.endpoints||[];
     const card = document.createElement('div');
     card.className = 'card';
     card.id = 'card-'+name;
+    let epHtml = '';
+    eps.forEach((ep,i)=>{
+      const m = (ep.method||'GET').toLowerCase();
+      const p = ep.path||'/';
+      epHtml += `<div class="ep-item"><span class="ep-method ${m}">${m.toUpperCase()}</span><span class="ep-path">${p}</span><button class="ep-try" onclick="event.stopPropagation();tryEndpoint('${name}','${m}','${p}',${i})">Try</button></div><div class="ep-result" id="ep-res-${name}-${i}"></div>`;
+    });
+    if(!eps.length) epHtml = '<div style="font-size:.75rem;color:#64748b">No endpoints in catalog</div>';
     card.innerHTML = `
       <div class="name">${name}</div>
+      ${domain?'<span class="domain-tag">'+domain+'</span>':''}
       <div class="url">/api/${name}/health</div>
       <div class="status-row">
         <div class="dot ${s.status}"></div>
         <span class="status-text">${s.status==='ok'?s.ms+'ms':s.status==='err'?'Unreachable':'Checking…'}</span>
         <span class="status-code ${s.status}">${s.code||''}</span>
-      </div>`;
+      </div>
+      <div class="ep-panel">${epHtml}<a class="docs-link" href="/api/${name}/docs" target="_blank">Open API Docs ↗</a></div>`;
+    card.onclick = ()=>card.classList.toggle('expanded');
     grid.appendChild(card);
   });
 }
@@ -191,6 +225,29 @@ async function checkAll(){
   const batch = 20;
   for(let i=0;i<SERVICES.length;i+=batch){
     await Promise.all(SERVICES.slice(i,i+batch).map(checkService));
+  }
+}
+
+// L64: Try an endpoint and display result
+async function tryEndpoint(svc, method, path, idx){
+  const resEl = document.getElementById('ep-res-'+svc+'-'+idx);
+  if(!resEl) return;
+  resEl.style.display = 'block';
+  resEl.textContent = 'Loading...';
+  const testPath = path.replace(/\{[^}]+\}/g, 'test-id');
+  try {
+    const opts = {method: method.toUpperCase(), signal: AbortSignal.timeout(6000)};
+    if(['post','put','patch'].includes(method)) {
+      opts.headers = {'Content-Type':'application/json'};
+      opts.body = '{}';
+    }
+    const r = await fetch(`${BASE}/api/${svc}${testPath}`, opts);
+    const data = await r.json();
+    resEl.textContent = `${r.status} ${r.statusText}\n${JSON.stringify(data, null, 2)}`;
+    resEl.style.color = r.ok ? '#22c55e' : '#ef4444';
+  } catch(e) {
+    resEl.textContent = 'Error: ' + e.message;
+    resEl.style.color = '#ef4444';
   }
 }
 

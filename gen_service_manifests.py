@@ -184,6 +184,10 @@ spec:
           env:
             - name: SERVICE_NAME
               value: "{service_name}"
+          envFrom:
+            - configMapRef:
+                name: jtp-gateway-config
+                optional: true
           resources:
             requests:
               cpu: "{resources['cpu_request']}"
@@ -227,6 +231,49 @@ spec:
       targetPort: 8000
       protocol: TCP
   type: ClusterIP
+---
+# L66 Tier 3: HPA auto-scaling (FADS Part 5)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {dns_name}-hpa
+  namespace: {namespace}
+  labels:
+    app: {dns_name}
+    plan: "125"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {dns_name}
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
 """
 
 

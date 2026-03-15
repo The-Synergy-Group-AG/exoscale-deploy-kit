@@ -205,7 +205,7 @@ def run_suite_for_service(
 
         cmd = [
             _get_pytest_python(), "-m", "pytest",
-            "--tb=no",       # no tracebacks — keep output compact
+            "--tb=short",    # L63: short tracebacks — show failure reasons
             "-q",            # quiet
             "--no-header",
             "--import-mode=importlib",
@@ -393,6 +393,92 @@ def main():
             )
 
     total_duration = round(time.monotonic() - start_total, 1)
+
+    # ── L67: Chat routing smoke tests ────────────────────────────────────────
+    print()
+    print("─" * 60)
+    print("[L67] Chat Route Smoke Tests (30 curated routes)")
+    print("─" * 60)
+    _CHAT_TESTS = [
+        ("job-search-service", "find me a job"),
+        ("cv-generation-service", "build my resume"),
+        ("interview-prep-service", "interview preparation"),
+        ("application-service", "track my applications"),
+        ("career-search-core-service", "career advice"),
+        ("skill-development-infrastructure", "skill training"),
+        ("networking-service", "professional networking"),
+        ("user-profile-service", "my profile settings"),
+        ("admin-service", "manage users"),
+        ("notification-service", "check notifications"),
+        ("onboarding-service", "getting started onboarding"),
+        ("email-integration-service", "send email"),
+        ("payment-processor-service", "billing payment"),
+        ("subscription-management-service", "subscription plan"),
+        ("credits-service", "check credits balance"),
+        ("advanced-analytics-bi-service", "analytics dashboard"),
+        ("advanced-ai-ml-service", "ai model predict"),
+        ("personalization-ai-adaptor", "recommendations suggest"),
+        ("predictive-analytics-engine", "predictive forecast"),
+        ("monitoring-system-bulk", "system status monitor"),
+        ("access-control-service", "security threat scan"),
+        ("swiss-compliance-service", "compliance regulations"),
+        ("audit-logging-service", "audit logs"),
+        ("document-management-service", "documents export"),
+        ("workflow-engines-service", "workflow automation"),
+        ("webhook-integrations-service", "linkedin integration sync"),
+        ("configuration-management", "configuration settings"),
+        ("backup-recovery-system", "backup restore"),
+        ("biological-analytics-performance-test", "biological harmony"),
+        ("gamification-service", "gamification leaderboard"),
+    ]
+    chat_passed = chat_failed = 0
+    chat_failures = []
+    for expected_svc, msg in _CHAT_TESTS:
+        try:
+            import httpx as _hx
+            r = _hx.post(f"{args.gateway}/chat/route", json={"message": msg}, timeout=5.0)
+            data = r.json()
+            routed = data.get("routed", False)
+            has_data = data.get("data") is not None
+            svc_match = data.get("service") == expected_svc
+            if routed and has_data:
+                chat_passed += 1
+                icon = "✓"
+            else:
+                chat_failed += 1
+                icon = "✗"
+                chat_failures.append({"expected": expected_svc, "msg": msg,
+                                      "routed": routed, "got_svc": data.get("service"),
+                                      "has_data": has_data, "error": data.get("error")})
+            print(f"  [{chat_passed + chat_failed:2d}/30] {icon} {expected_svc:45} {'OK' if routed and has_data else 'FAIL'}")
+        except Exception as exc:
+            chat_failed += 1
+            chat_failures.append({"expected": expected_svc, "msg": msg, "error": str(exc)})
+            print(f"  [{chat_passed + chat_failed:2d}/30] ! {expected_svc:45} ERROR: {exc}")
+
+    print(f"\n  Chat routing: {chat_passed}/30 passed, {chat_failed} failed")
+    if chat_failures:
+        print("  Failures:")
+        for f in chat_failures:
+            err = f.get("error") or f"routed={f.get('routed')} data={f.get('has_data')}"
+            print(f"    {f['expected']}: {err}")
+
+    # Add chat results to report
+    results.append({
+        "service": "_chat_routing",
+        "suite": "chat_smoke",
+        "status": "passed" if chat_failed == 0 else "failed",
+        "passed": chat_passed,
+        "failed": chat_failed,
+        "errors": 0,
+        "duration_s": 0.0,
+        "returncode": 0 if chat_failed == 0 else 1,
+        "failures": chat_failures,
+    })
+    if chat_failed > 0:
+        job_failed_extra = 1
+    else:
+        job_failed_extra = 0
 
     # Aggregate
     total_passed  = sum(r["passed"] for r in results)

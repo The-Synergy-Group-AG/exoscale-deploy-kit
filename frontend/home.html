@@ -127,58 +127,104 @@ function setMode(mode) {
   setMode(saved);
 })();
 
-// ── Intent routing table ──────────────────────────────────────────────────────
-const INTENT_ROUTES = [
-  { patterns: ['job', 'jobs', 'vacancy', 'vacancies', 'position', 'work', 'hire', 'hiring', 'career', 'apply', 'application'],
-    service: 'job-search-service', path: '/jobs', method: 'GET',
-    label: 'Job Listings' },
-  { patterns: ['cv', 'resume', 'curriculum', 'generate cv', 'create cv'],
-    service: 'cv-generation-service', path: '/cv/generate', method: 'POST',
-    label: 'CV Generation' },
-  { patterns: ['interview', 'interviews', 'interview schedule', 'prep'],
-    service: 'interview-prep-service', path: '/interviews', method: 'GET',
-    label: 'Interviews' },
+// ── Intent routing (L64: curated + catalog-driven) ──────────────────────────
+// Curated routes — hand-tuned patterns for best user experience
+const CURATED_ROUTES = [
+  // ── Core job-seeker journey (7) ──────────────────────────────────────────
+  { patterns: ['job', 'jobs', 'vacancy', 'position', 'hire', 'hiring'],
+    service: 'job-search-service', path: '/jobs', method: 'GET', label: 'Job Listings' },
+  { patterns: ['cv', 'resume', 'curriculum', 'generate cv'],
+    service: 'cv-generation-service', path: '/cv/generate', method: 'POST', label: 'CV Generation' },
+  { patterns: ['interview', 'interviews', 'prep', 'interview schedule'],
+    service: 'interview-prep-service', path: '/interviews', method: 'GET', label: 'Interviews' },
+  { patterns: ['application', 'applications', 'track', 'tracking', 'applied'],
+    service: 'application-service', path: '/data', method: 'GET', label: 'Applications' },
+  { patterns: ['career', 'advice', 'growth', 'path', 'guidance'],
+    service: 'career-search-core-service', path: '/career/advice', method: 'GET', label: 'Career Advice' },
+  { patterns: ['skill', 'skills', 'learn', 'training', 'development', 'course'],
+    service: 'skill-development-infrastructure', path: '/jobs', method: 'GET', label: 'Skill Development' },
+  { patterns: ['network', 'networking', 'connections', 'connect', 'contacts'],
+    service: 'networking-service', path: '/data', method: 'GET', label: 'Networking' },
+  // ── User account & platform (5) ─────────────────────────────────────────
+  { patterns: ['profile', 'my profile', 'preferences', 'my account'],
+    service: 'user-profile-service', path: '/users', method: 'GET', label: 'My Profile' },
+  { patterns: ['user', 'users', 'admin', 'manage users'],
+    service: 'admin-service', path: '/users', method: 'GET', label: 'Users' },
   { patterns: ['notification', 'notifications', 'alert', 'message', 'inbox'],
-    service: 'notification-service', path: '/notifications', method: 'GET',
-    label: 'Notifications' },
-  { patterns: ['analytic', 'analytics', 'metric', 'metrics', 'statistic', 'statistics', 'dashboard', 'insight'],
-    service: 'advanced-analytics-bi-service', path: '/analytics/dashboard', method: 'GET',
-    label: 'Analytics Dashboard' },
-  { patterns: ['security', 'threat', 'threats', 'scan', 'vulnerability', 'access'],
-    service: 'access-control-service', path: '/security/status', method: 'GET',
-    label: 'Security Status' },
-  { patterns: ['status', 'health', 'system', 'monitor', 'operational', 'uptime'],
-    service: 'monitoring-service', path: '/status', method: 'GET',
-    label: 'System Status' },
-  { patterns: ['user', 'users', 'profile', 'account', 'me'],
-    service: 'admin-service', path: '/users', method: 'GET',
-    label: 'Users' },
-  { patterns: ['payment', 'payments', 'billing', 'invoice', 'subscription'],
-    service: 'payment-processor-service', path: '/payments', method: 'GET',
-    label: 'Payments' },
-  { patterns: ['document', 'documents', 'file', 'files', 'report', 'reports'],
-    service: 'document-management-service', path: '/documents', method: 'GET',
-    label: 'Documents' },
-  { patterns: ['workflow', 'workflows', 'pipeline', 'pipelines', 'process'],
-    service: 'business-rules-service', path: '/workflows', method: 'GET',
-    label: 'Workflows' },
-  { patterns: ['badge', 'badges', 'achievement', 'achievements', 'gamification', 'points', 'xp', 'leaderboard'],
-    service: 'gamification-service', path: '/badges', method: 'GET',
-    label: 'Achievements' },
-  { patterns: ['compliance', 'regulation', 'regulations', 'audit', 'rav'],
-    service: 'swiss-compliance-service', path: '/regulations', method: 'GET',
-    label: 'Compliance' },
-  { patterns: ['ai', 'recommendation', 'recommendations', 'suggest', 'personaliz'],
-    service: 'personalization-ai-adaptor', path: '/recommendations', method: 'GET',
-    label: 'AI Recommendations' },
+    service: 'notification-service', path: '/notifications', method: 'GET', label: 'Notifications' },
+  { patterns: ['onboarding', 'welcome', 'setup', 'getting started'],
+    service: 'onboarding-service', path: '/users', method: 'GET', label: 'Onboarding' },
+  { patterns: ['email', 'smtp', 'mail', 'recruiter'],
+    service: 'email-integration-service', path: '/notifications', method: 'GET', label: 'Email' },
+  // ── Monetization & billing (3) ──────────────────────────────────────────
+  { patterns: ['payment', 'billing', 'invoice', 'pay'],
+    service: 'payment-processor-service', path: '/auth/status', method: 'GET', label: 'Payments' },
+  { patterns: ['subscription', 'subscriptions', 'plan', 'upgrade', 'downgrade'],
+    service: 'subscription-management-service', path: '/subscriptions', method: 'GET', label: 'Subscriptions' },
+  { patterns: ['credit', 'credits', 'balance', 'redeem'],
+    service: 'credits-service', path: '/payments', method: 'GET', label: 'Credits' },
+  // ── Intelligence & analytics (4) ────────────────────────────────────────
+  { patterns: ['analytic', 'analytics', 'metric', 'dashboard', 'report', 'insight'],
+    service: 'advanced-analytics-bi-service', path: '/analytics/dashboard', method: 'GET', label: 'Analytics' },
+  { patterns: ['ai', 'ml', 'model', 'predict', 'pipeline'],
+    service: 'advanced-ai-ml-service', path: '/ai/process', method: 'POST', label: 'AI Processing' },
+  { patterns: ['recommend', 'recommendation', 'personaliz', 'suggest'],
+    service: 'personalization-ai-adaptor', path: '/models', method: 'GET', label: 'Recommendations' },
+  { patterns: ['predictive', 'forecast', 'prediction'],
+    service: 'predictive-analytics-engine', path: '/analytics/dashboard', method: 'GET', label: 'Predictions' },
+  // ── Operations & infrastructure (7) ─────────────────────────────────────
+  { patterns: ['status', 'health', 'system', 'monitor', 'uptime'],
+    service: 'monitoring-system-bulk', path: '/status', method: 'GET', label: 'System Status' },
+  { patterns: ['security', 'threat', 'scan', 'firewall', 'vulnerability'],
+    service: 'access-control-service', path: '/security/status', method: 'GET', label: 'Security' },
+  { patterns: ['compliance', 'regulation', 'regulations', 'rav', 'gdpr'],
+    service: 'swiss-compliance-service', path: '/regulations', method: 'GET', label: 'Compliance' },
   { patterns: ['log', 'logs', 'audit log', 'audit trail'],
-    service: 'audit-logging-service', path: '/logs', method: 'GET',
-    label: 'Audit Logs' },
+    service: 'audit-logging-service', path: '/compliance/status', method: 'GET', label: 'Audit Logs' },
+  { patterns: ['document', 'documents', 'file', 'export'],
+    service: 'document-management-service', path: '/documents', method: 'GET', label: 'Documents' },
+  { patterns: ['workflow', 'automation', 'process', 'pipeline'],
+    service: 'workflow-engines-service', path: '/workflows', method: 'GET', label: 'Workflows' },
+  { patterns: ['webhook', 'integration', 'linkedin', 'indeed', 'sync'],
+    service: 'webhook-integrations-service', path: '/workflows', method: 'GET', label: 'Integrations' },
+  // ── System & config (4) ─────────────────────────────────────────────────
+  { patterns: ['config', 'configuration', 'settings', 'feature flag'],
+    service: 'configuration-management', path: '/config', method: 'GET', label: 'Configuration' },
+  { patterns: ['backup', 'restore', 'recovery'],
+    service: 'backup-recovery-system', path: '/backup/status', method: 'GET', label: 'Backup' },
+  { patterns: ['biological', 'harmony', 'consciousness'],
+    service: 'biological-analytics-performance-test', path: '/status', method: 'GET', label: 'Bio Harmony' },
+  { patterns: ['gamification', 'achievement', 'badge', 'leaderboard', 'xp'],
+    service: 'gamification-service', path: '/leaderboard', method: 'GET', label: 'Achievements' },
 ];
+
+// L64: Dynamic routes loaded from /api/catalog (covers all 219 services)
+let DYNAMIC_ROUTES = [];
+const _NOISE = new Set(['service','system','engine','api','the','for','and','test','bulk','category']);
+fetch('/api/catalog').then(r=>r.json()).then(catalog=>{
+  const curated = new Set(CURATED_ROUTES.map(r=>r.service));
+  for (const [name, spec] of Object.entries(catalog.services||{})) {
+    const dns = name.replace(/_/g, '-');
+    if (curated.has(dns)) continue;
+    const patterns = name.replace(/-/g,'_').split('_').filter(w=>w.length>2&&!_NOISE.has(w));
+    if (spec.domain && !patterns.includes(spec.domain)) patterns.push(spec.domain);
+    if (!patterns.length) continue;
+    const getEp = (spec.endpoints||[]).find(e=>e.method==='GET');
+    DYNAMIC_ROUTES.push({
+      patterns, service: dns, path: getEp?getEp.path:'/health', method: 'GET',
+      label: dns.replace(/-/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
+    });
+  }
+}).catch(()=>{});
 
 function findRoute(msg) {
   const lower = msg.toLowerCase();
-  for (const route of INTENT_ROUTES) {
+  // Check curated routes first (better patterns)
+  for (const route of CURATED_ROUTES) {
+    if (route.patterns.some(p => lower.includes(p))) return route;
+  }
+  // Then check dynamic routes from catalog
+  for (const route of DYNAMIC_ROUTES) {
     if (route.patterns.some(p => lower.includes(p))) return route;
   }
   return null;

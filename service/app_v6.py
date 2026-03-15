@@ -17,12 +17,20 @@ CRITICAL INVARIANT (L2 from Plan 120 Lessons Learned):
 Plan: 121-Factory-E2E-Restart
 """
 import httpx
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
+
+# L62: Runtime API catalog — loaded from catalog.json baked into Docker image
+_CATALOG_PATH = Path("/app/catalog.json")
+_SERVICE_CATALOG: dict = {}
+if _CATALOG_PATH.exists():
+    _SERVICE_CATALOG = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("gateway")
@@ -97,29 +105,124 @@ async def service_dashboard():
         return f.read()
 
 
-# ── Server-side intent routing (L56) ──────────────────────────────────────────
-_CHAT_ROUTES = [
-    {"patterns": ["job", "jobs", "vacancy", "position", "apply", "application", "career"],
+@app.get("/api/catalog")
+async def api_catalog():
+    """L62: Runtime API catalog — all services, endpoints, and dependencies."""
+    return {
+        "total": len(_SERVICE_CATALOG),
+        "domains": sorted({v.get("domain", "general") for v in _SERVICE_CATALOG.values()}),
+        "services": _SERVICE_CATALOG,
+    }
+
+
+# ── Server-side intent routing (L56 + L64 catalog-driven) ────────────────────
+# Curated routes have priority — hand-tuned patterns for core user-facing services
+_CURATED_ROUTES = [
+    # ── Core job-seeker journey (7 routes) ────────────────────────────────────
+    {"patterns": ["job", "jobs", "vacancy", "position", "hire", "hiring"],
      "service": "job-search-service", "path": "/jobs", "method": "GET"},
-    {"patterns": ["cv", "resume", "curriculum"],
+    {"patterns": ["cv", "resume", "curriculum", "generate cv"],
      "service": "cv-generation-service", "path": "/cv/generate", "method": "POST"},
-    {"patterns": ["interview", "interviews", "prep"],
+    {"patterns": ["interview", "interviews", "prep", "interview schedule"],
      "service": "interview-prep-service", "path": "/interviews", "method": "GET"},
-    {"patterns": ["notification", "notifications", "alert", "message"],
-     "service": "notification-service", "path": "/notifications", "method": "GET"},
-    {"patterns": ["analytic", "analytics", "metric", "dashboard"],
-     "service": "advanced-analytics-bi-service", "path": "/analytics/dashboard", "method": "GET"},
-    {"patterns": ["security", "threat", "scan", "access"],
-     "service": "access-control-service", "path": "/security/status", "method": "GET"},
-    {"patterns": ["status", "health", "system", "monitor", "uptime"],
-     "service": "monitoring-service", "path": "/status", "method": "GET"},
-    {"patterns": ["user", "users", "profile", "account"],
+    {"patterns": ["application", "applications", "track", "tracking", "applied"],
+     "service": "application-service", "path": "/data", "method": "GET"},
+    {"patterns": ["career", "advice", "growth", "path", "guidance"],
+     "service": "career-search-core-service", "path": "/career/advice", "method": "GET"},
+    {"patterns": ["skill", "skills", "learn", "training", "development", "course"],
+     "service": "skill-development-infrastructure", "path": "/jobs", "method": "GET"},
+    {"patterns": ["network", "networking", "connections", "connect", "contacts"],
+     "service": "networking-service", "path": "/data", "method": "GET"},
+    # ── User account & platform (5 routes) ────────────────────────────────────
+    {"patterns": ["profile", "my profile", "preferences", "my account"],
+     "service": "user-profile-service", "path": "/users", "method": "GET"},
+    {"patterns": ["user", "users", "admin", "manage users"],
      "service": "admin-service", "path": "/users", "method": "GET"},
-    {"patterns": ["payment", "billing", "invoice", "subscription"],
-     "service": "payment-processor-service", "path": "/payments", "method": "GET"},
-    {"patterns": ["log", "logs", "audit"],
-     "service": "audit-logging-service", "path": "/logs", "method": "GET"},
+    {"patterns": ["notification", "notifications", "alert", "message", "inbox"],
+     "service": "notification-service", "path": "/notifications", "method": "GET"},
+    {"patterns": ["onboarding", "welcome", "setup", "getting started"],
+     "service": "onboarding-service", "path": "/users", "method": "GET"},
+    {"patterns": ["email", "smtp", "mail", "recruiter"],
+     "service": "email-integration-service", "path": "/notifications", "method": "GET"},
+    # ── Monetization & billing (3 routes) ─────────────────────────────────────
+    {"patterns": ["payment", "billing", "invoice", "pay"],
+     "service": "payment-processor-service", "path": "/auth/status", "method": "GET"},
+    {"patterns": ["subscription", "subscriptions", "plan", "upgrade", "downgrade"],
+     "service": "subscription-management-service", "path": "/subscriptions", "method": "GET"},
+    {"patterns": ["credit", "credits", "balance", "redeem", "points"],
+     "service": "credits-service", "path": "/payments", "method": "GET"},
+    # ── Intelligence & analytics (4 routes) ───────────────────────────────────
+    {"patterns": ["analytic", "analytics", "metric", "dashboard", "report", "insight"],
+     "service": "advanced-analytics-bi-service", "path": "/analytics/dashboard", "method": "GET"},
+    {"patterns": ["ai", "ml", "model", "predict", "pipeline"],
+     "service": "advanced-ai-ml-service", "path": "/ai/process", "method": "POST"},
+    {"patterns": ["recommend", "recommendation", "personaliz", "suggest"],
+     "service": "personalization-ai-adaptor", "path": "/models", "method": "GET"},
+    {"patterns": ["predictive", "forecast", "prediction"],
+     "service": "predictive-analytics-engine", "path": "/analytics/dashboard", "method": "GET"},
+    # ── Operations & infrastructure (7 routes) ────────────────────────────────
+    {"patterns": ["status", "health", "system", "monitor", "uptime"],
+     "service": "monitoring-system-bulk", "path": "/status", "method": "GET"},
+    {"patterns": ["security", "threat", "scan", "firewall", "vulnerability"],
+     "service": "access-control-service", "path": "/security/status", "method": "GET"},
+    {"patterns": ["compliance", "regulation", "regulations", "rav", "gdpr"],
+     "service": "swiss-compliance-service", "path": "/regulations", "method": "GET"},
+    {"patterns": ["log", "logs", "audit log", "audit trail"],
+     "service": "audit-logging-service", "path": "/compliance/status", "method": "GET"},
+    {"patterns": ["document", "documents", "file", "export"],
+     "service": "document-management-service", "path": "/documents", "method": "GET"},
+    {"patterns": ["workflow", "automation", "process", "pipeline"],
+     "service": "workflow-engines-service", "path": "/workflows", "method": "GET"},
+    {"patterns": ["webhook", "integration", "linkedin", "indeed", "sync"],
+     "service": "webhook-integrations-service", "path": "/workflows", "method": "GET"},
+    # ── System & config (4 routes) ────────────────────────────────────────────
+    {"patterns": ["config", "configuration", "settings", "feature flag"],
+     "service": "configuration-management", "path": "/config", "method": "GET"},
+    {"patterns": ["backup", "restore", "recovery"],
+     "service": "backup-recovery-system", "path": "/backup/status", "method": "GET"},
+    {"patterns": ["biological", "harmony", "consciousness"],
+     "service": "biological-analytics-performance-test", "path": "/status", "method": "GET"},
+    {"patterns": ["gamification", "achievement", "badge", "leaderboard", "xp"],
+     "service": "gamification-service", "path": "/leaderboard", "method": "GET"},
 ]
+
+# Noise words excluded from service name pattern extraction
+_NOISE = {"service", "system", "engine", "api", "the", "for", "and", "test", "bulk", "category"}
+
+
+def _build_dynamic_routes() -> list:
+    """L64: Build chat routes from catalog.json for ALL 219 services."""
+    curated_services = {r["service"] for r in _CURATED_ROUTES}
+    routes = []
+    for svc_name, spec in _SERVICE_CATALOG.items():
+        dns_name = svc_name.replace("_", "-")
+        if dns_name in curated_services:
+            continue  # already covered by curated route
+        # Extract keywords from service name
+        patterns = [w for w in svc_name.replace("-", "_").split("_")
+                    if len(w) > 2 and w.lower() not in _NOISE]
+        domain = spec.get("domain", "")
+        if domain and domain not in patterns:
+            patterns.append(domain)
+        if not patterns:
+            continue  # skip services with no usable keywords
+        # Find first GET endpoint as default path
+        endpoints = spec.get("endpoints", [])
+        get_eps = [e for e in endpoints if e.get("method") == "GET"]
+        path = get_eps[0]["path"] if get_eps else "/health"
+        routes.append({
+            "patterns": patterns,
+            "service": dns_name,
+            "path": path,
+            "method": "GET",
+        })
+    return routes
+
+
+# L64: Curated routes first (better patterns), then dynamic for remaining 199 services
+_CHAT_ROUTES = _CURATED_ROUTES + _build_dynamic_routes()
+logger.info("L64: %d chat routes (%d curated + %d dynamic from catalog)",
+            len(_CHAT_ROUTES), len(_CURATED_ROUTES), len(_CHAT_ROUTES) - len(_CURATED_ROUTES))
 
 
 def _find_chat_route(msg: str):
@@ -130,9 +233,56 @@ def _find_chat_route(msg: str):
     return None
 
 
+# ── L67: Chat interaction log (in-memory ring buffer) ────────────────────────
+from collections import deque
+from datetime import datetime as _dt
+
+_CHAT_LOG: deque = deque(maxlen=1000)  # last 1000 interactions
+_CHAT_STATS: dict = {"total": 0, "routed": 0, "unrouted": 0, "errors": 0, "by_service": {}}
+
+
+def _log_chat(msg: str, routed: bool, service: str = None, error: str = None, latency_ms: float = 0):
+    """Record a chat interaction for analytics."""
+    # L67: Structured log to stdout (captured by kubectl logs across all pods)
+    logger.info(f"CHAT|routed={routed}|service={service or 'none'}|latency={latency_ms:.0f}ms|error={error or ''}|msg={msg[:100]}")
+    _CHAT_STATS["total"] += 1
+    if routed:
+        _CHAT_STATS["routed"] += 1
+        if service:
+            _CHAT_STATS["by_service"][service] = _CHAT_STATS["by_service"].get(service, 0) + 1
+    else:
+        _CHAT_STATS["unrouted"] += 1
+    if error:
+        _CHAT_STATS["errors"] += 1
+    _CHAT_LOG.append({
+        "ts": _dt.utcnow().isoformat() + "Z",
+        "message": msg[:200],  # truncate for storage
+        "routed": routed,
+        "service": service,
+        "error": error,
+        "latency_ms": round(latency_ms, 1),
+    })
+
+
+@app.get("/chat/analytics")
+async def chat_analytics():
+    """L67: Chat interaction analytics — review recent interactions."""
+    recent = list(_CHAT_LOG)[-50:]  # last 50
+    top_services = sorted(_CHAT_STATS["by_service"].items(), key=lambda x: -x[1])[:10]
+    unrouted_msgs = [e["message"] for e in _CHAT_LOG if not e["routed"]][-20:]
+    return {
+        "stats": _CHAT_STATS,
+        "top_services": top_services,
+        "unrouted_messages": unrouted_msgs,
+        "recent_interactions": recent,
+    }
+
+
 @app.post("/chat/route")
 async def chat_route(request: Request):
     """Server-side intent router for the AI-First home page (L56)."""
+    import time as _t
+    t0 = _t.time()
     try:
         body = await request.json()
     except Exception:
@@ -140,6 +290,7 @@ async def chat_route(request: Request):
     msg = body.get("message", "")
     route = _find_chat_route(msg)
     if not route:
+        _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000)
         return {
             "routed": False,
             "suggestions": ["jobs", "status", "notifications", "analytics"],
@@ -152,6 +303,8 @@ async def chat_route(request: Request):
             resp = await _http_client.get(url, timeout=PROXY_TIMEOUT)
         else:
             resp = await _http_client.post(url, json={}, timeout=PROXY_TIMEOUT)
+        latency = (_t.time() - t0) * 1000
+        _log_chat(msg, routed=True, service=route["service"], latency_ms=latency)
         return {
             "routed": True,
             "service": route["service"],
@@ -159,6 +312,8 @@ async def chat_route(request: Request):
             "data": resp.json(),
         }
     except Exception as exc:
+        latency = (_t.time() - t0) * 1000
+        _log_chat(msg, routed=True, service=route["service"], error=str(exc), latency_ms=latency)
         logger.warning(f"chat/route error for {route['service']}: {exc}")
         return {
             "routed": True,
