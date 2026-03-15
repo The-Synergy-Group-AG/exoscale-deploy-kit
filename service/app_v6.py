@@ -301,6 +301,64 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str, clie
         return ""
 
 
+async def _ai_general_chat(user_msg: str, client_ip: str = "") -> str:
+    """L68c: Handle general conversation, greetings, follow-ups, and complex queries."""
+    if not AI_CHAT_ENABLED:
+        return ""
+    try:
+        history = _CONV_MEMORY.get(client_ip, [])[-6:]
+        history_block = ""
+        if history:
+            history_block = "\n".join(
+                f"{'User' if h['role'] == 'user' else 'Assistant'}: {h['content'][:150]}"
+                for h in history
+            ) + "\n\n"
+
+        # Build service catalog summary for Claude
+        svc_summary = ", ".join(
+            f"{r['service']} ({' '.join(r['patterns'][:2])})"
+            for r in _CURATED_ROUTES[:15]
+        )
+
+        system = (
+            "You are the AI assistant for JobTrackerPro, a Swiss job search platform with 219 microservices. "
+            "You help users find jobs, manage applications, prepare for interviews, track analytics, and more. "
+            "Be conversational, warm, and helpful. If the user greets you, greet them back and explain what you can do. "
+            "If they ask a follow-up, use conversation history for context. "
+            "If they ask something you can help with, guide them to ask more specifically. "
+            f"Available services include: {svc_summary}. "
+            "Keep responses under 120 words. Use emoji sparingly."
+        )
+        messages = []
+        for h in history:
+            messages.append({"role": h["role"], "content": h["content"][:200]})
+        messages.append({"role": "user", "content": user_msg})
+
+        async with _sync_httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": AI_MODEL,
+                    "max_tokens": 250,
+                    "messages": messages,
+                    "system": system,
+                },
+            )
+            if resp.status_code == 200:
+                return resp.json()["content"][0]["text"]
+            else:
+                logger.warning(f"L68c: Claude API error {resp.status_code}")
+                return "I'd be happy to help! Try asking about jobs, interviews, analytics, or system status."
+    except Exception as exc:
+        logger.warning(f"L68c: AI general chat failed: {exc}")
+        return "I'd be happy to help! Try asking about jobs, interviews, analytics, or system status."
+
+
 # ── L67: Chat interaction log (in-memory ring buffer) ────────────────────────
 
 _CHAT_LOG: deque = deque(maxlen=1000)  # last 1000 interactions
@@ -356,7 +414,28 @@ async def chat_route(request: Request):
     except Exception:
         body = {}
     msg = body.get("message", "")
+    client_ip = request.client.host if request.client else ""
     route = _find_chat_route(msg)
+
+    # L68c: If no keyword match, use Claude for intent routing + general conversation
+    if not route and AI_CHAT_ENABLED:
+        ai_fallback = await _ai_general_chat(msg, client_ip)
+        _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000)
+        # Save conversation memory
+        if client_ip:
+            if client_ip not in _CONV_MEMORY:
+                _CONV_MEMORY[client_ip] = []
+            _CONV_MEMORY[client_ip].append({"role": "user", "content": msg})
+            if ai_fallback:
+                _CONV_MEMORY[client_ip].append({"role": "assistant", "content": ai_fallback[:200]})
+            _CONV_MEMORY[client_ip] = _CONV_MEMORY[client_ip][-10:]
+        return {
+            "routed": True,
+            "service": "ai-assistant",
+            "path": "/chat",
+            "data": None,
+            "ai_response": ai_fallback,
+        }
     if not route:
         _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000)
         return {
