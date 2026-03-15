@@ -233,9 +233,66 @@ def _find_chat_route(msg: str):
     return None
 
 
-# ── L67: Chat interaction log (in-memory ring buffer) ────────────────────────
+# ── L68: AI-powered conversational chat ──────────────────────────────────────
+import httpx as _sync_httpx
 from collections import deque
 from datetime import datetime as _dt
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+AI_CHAT_ENABLED = bool(ANTHROPIC_API_KEY)
+AI_MODEL = "claude-haiku-4-5-20251001"
+
+if AI_CHAT_ENABLED:
+    logger.info("L68: AI chat enabled (Claude Haiku)")
+else:
+    logger.warning("L68: AI chat DISABLED — no ANTHROPIC_API_KEY found. Set via K8s secret.")
+
+
+async def _ai_respond(user_msg: str, service_data: dict, service_name: str) -> str:
+    """Call Claude to generate a conversational response from service data."""
+    if not AI_CHAT_ENABLED:
+        return ""
+    try:
+        # Build context from service data
+        data_json = json.dumps(service_data.get("data", {}), indent=2, default=str)[:2000]
+        system_prompt = (
+            "You are the AI assistant for JobTrackerPro, a Swiss job search platform. "
+            "Respond conversationally based on the service data provided. Be helpful, concise, "
+            "and format key information clearly. If the data contains lists, summarize the top items. "
+            "Keep responses under 150 words. Do not mention internal service names or technical details."
+        )
+        user_prompt = (
+            f"User asked: \"{user_msg}\"\n\n"
+            f"Service '{service_name}' returned this data:\n{data_json}\n\n"
+            "Generate a helpful, natural response for the user."
+        )
+        # Use httpx for async API call
+        async with _sync_httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": AI_MODEL,
+                    "max_tokens": 300,
+                    "messages": [{"role": "user", "content": user_prompt}],
+                    "system": system_prompt,
+                },
+            )
+            if resp.status_code == 200:
+                return resp.json()["content"][0]["text"]
+            else:
+                logger.warning(f"L68: Claude API error {resp.status_code}: {resp.text[:200]}")
+                return ""
+    except Exception as exc:
+        logger.warning(f"L68: AI response failed: {exc}")
+        return ""
+
+
+# ── L67: Chat interaction log (in-memory ring buffer) ────────────────────────
 
 _CHAT_LOG: deque = deque(maxlen=1000)  # last 1000 interactions
 _CHAT_STATS: dict = {"total": 0, "routed": 0, "unrouted": 0, "errors": 0, "by_service": {}}
@@ -303,14 +360,20 @@ async def chat_route(request: Request):
             resp = await _http_client.get(url, timeout=PROXY_TIMEOUT)
         else:
             resp = await _http_client.post(url, json={}, timeout=PROXY_TIMEOUT)
+        service_data = resp.json()
+        # L68: Generate AI conversational response
+        ai_response = await _ai_respond(msg, service_data, route["service"])
         latency = (_t.time() - t0) * 1000
         _log_chat(msg, routed=True, service=route["service"], latency_ms=latency)
-        return {
+        result = {
             "routed": True,
             "service": route["service"],
             "path": route["path"],
-            "data": resp.json(),
+            "data": service_data,
         }
+        if ai_response:
+            result["ai_response"] = ai_response
+        return result
     except Exception as exc:
         latency = (_t.time() - t0) * 1000
         _log_chat(msg, routed=True, service=route["service"], error=str(exc), latency_ms=latency)

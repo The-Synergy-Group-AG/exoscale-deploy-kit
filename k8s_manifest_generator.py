@@ -131,6 +131,13 @@ spec:
         # start.sh SERVICE mode which looks for /app/services/{{SERVICE_NAME}}/.
         # GATEWAY mode (no SERVICE_NAME) is correct for this deployment.
         # (LESSON 24 — Plan 122-DEH 2026-03-03)
+        envFrom:
+        - secretRef:
+            name: ai-api-keys
+            optional: true
+        - configMapRef:
+            name: jtp-gateway-config
+            optional: true
         resources:
           requests:
             cpu: "100m"

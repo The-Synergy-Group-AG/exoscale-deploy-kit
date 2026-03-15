@@ -64,6 +64,7 @@
   .thinking{color:#64748b;font-style:italic;font-size:.8rem}
   .err{color:#f87171}
   pre.json-dump{background:#0f172a;border:1px solid #334155;border-radius:.4rem;padding:.6rem;font-size:.72rem;overflow-x:auto;color:#94a3b8;max-width:480px}
+  .ai-resp{line-height:1.6;color:#e2e8f0}
 </style>
 </head>
 <body>
@@ -339,8 +340,12 @@ async function sendMessage() {
       if (routeResp.ok) {
         const routeData = await routeResp.json();
         if (routeData.routed && routeData.data) {
-          resultHtml = `<div>Routed to <strong>${esc(routeData.service)}</strong> → <code>${esc(routeData.path)}</code></div>` +
-                       renderData(routeData.data, routeData.service);
+          // L68: Show AI conversational response if available
+          if (routeData.ai_response) {
+            resultHtml = `<div class="ai-resp">${esc(routeData.ai_response).replace(/\n/g, '<br>')}</div>`;
+          } else {
+            resultHtml = renderData(routeData.data, routeData.service);
+          }
           routed = true;
         } else if (!routeData.routed) {
           resultHtml = `<span>I'm not sure which service to call for that. Try: ` +

@@ -1813,6 +1813,32 @@ data:
     else:
         log("GATEWAY_URL not yet resolved — jtp-gateway-config ConfigMap will be applied after connectivity test")
 
+    # L68: Inject AI API keys for conversational chat
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if anthropic_key:
+        ai_secret_yaml = f"""apiVersion: v1
+kind: Secret
+metadata:
+  name: ai-api-keys
+  namespace: {ns}
+  labels:
+    app.kubernetes.io/managed-by: exoscale-deploy-kit
+    plan: l68-ai-chat
+type: Opaque
+stringData:
+  ANTHROPIC_API_KEY: "{anthropic_key}"
+"""
+        r_ai = subprocess.run(  # nosec B603
+            ["kubectl", "apply", "-f", "-"],
+            input=ai_secret_yaml, env=env, text=True, capture_output=True,
+        )
+        if r_ai.returncode == 0:
+            ok(f"Secret 'ai-api-keys' applied (ANTHROPIC_API_KEY injected for L68 AI chat)")
+        else:
+            warn(f"ai-api-keys Secret: {r_ai.stderr[:120]}")
+    else:
+        warn("L68: ANTHROPIC_API_KEY not in environment — AI chat will be disabled in gateway")
+
     RESULTS["stages"]["inject_secrets"] = {"status": "success"}
 
 
