@@ -248,7 +248,7 @@ else:
     logger.warning("L68: AI chat DISABLED — no ANTHROPIC_API_KEY found. Set via K8s secret.")
 
 
-async def _ai_respond(user_msg: str, service_data: dict, service_name: str) -> str:
+async def _ai_respond(user_msg: str, service_data: dict, service_name: str, client_ip: str = "") -> str:
     """Call Claude to generate a conversational response from service data."""
     if not AI_CHAT_ENABLED:
         return ""
@@ -259,12 +259,21 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str) -> s
             "You are the AI assistant for JobTrackerPro, a Swiss job search platform. "
             "Respond conversationally based on the service data provided. Be helpful, concise, "
             "and format key information clearly. If the data contains lists, summarize the top items. "
+            "If the user's query filtered the results (check for 'query' key in data), acknowledge what they searched for. "
             "Keep responses under 150 words. Do not mention internal service names or technical details."
         )
+        # L68: Include conversation history for context
+        history = _CONV_MEMORY.get(client_ip, [])[-4:]  # last 2 turns
+        history_text = ""
+        if history:
+            history_text = "Recent conversation:\n" + "\n".join(
+                f"{'User' if h['role']=='user' else 'Assistant'}: {h['content'][:100]}" for h in history
+            ) + "\n\n"
         user_prompt = (
+            f"{history_text}"
             f"User asked: \"{user_msg}\"\n\n"
-            f"Service '{service_name}' returned this data:\n{data_json}\n\n"
-            "Generate a helpful, natural response for the user."
+            f"Service data:\n{data_json}\n\n"
+            "Generate a helpful, natural response."
         )
         # Use httpx for async API call
         async with _sync_httpx.AsyncClient(timeout=10.0) as client:
@@ -296,6 +305,8 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str) -> s
 
 _CHAT_LOG: deque = deque(maxlen=1000)  # last 1000 interactions
 _CHAT_STATS: dict = {"total": 0, "routed": 0, "unrouted": 0, "errors": 0, "by_service": {}}
+# L68: Conversation memory — last 5 turns per "session" (identified by IP for now)
+_CONV_MEMORY: dict = {}  # ip → [{"role": "user/assistant", "content": str}]
 
 
 def _log_chat(msg: str, routed: bool, service: str = None, error: str = None, latency_ms: float = 0):
@@ -353,16 +364,28 @@ async def chat_route(request: Request):
             "suggestions": ["jobs", "status", "notifications", "analytics"],
         }
     svc_dns = service_to_dns(route["service"])
+    # L68: Pass user message as query param so service can filter results
+    _query_params = {"q": msg} if msg else {}
     url = f"http://{svc_dns}:8000{route['path']}"
     try:
         method = route["method"]
         if method == "GET":
-            resp = await _http_client.get(url, timeout=PROXY_TIMEOUT)
+            resp = await _http_client.get(url, params=_query_params, timeout=PROXY_TIMEOUT)
         else:
-            resp = await _http_client.post(url, json={}, timeout=PROXY_TIMEOUT)
+            resp = await _http_client.post(url, json={"message": msg}, timeout=PROXY_TIMEOUT)
         service_data = resp.json()
-        # L68: Generate AI conversational response
-        ai_response = await _ai_respond(msg, service_data, route["service"])
+        # L68: Generate AI conversational response with conversation memory
+        client_ip = request.client.host if request.client else ""
+        ai_response = await _ai_respond(msg, service_data, route["service"], client_ip)
+        # Save to conversation memory
+        if client_ip:
+            if client_ip not in _CONV_MEMORY:
+                _CONV_MEMORY[client_ip] = []
+            _CONV_MEMORY[client_ip].append({"role": "user", "content": msg})
+            if ai_response:
+                _CONV_MEMORY[client_ip].append({"role": "assistant", "content": ai_response[:200]})
+            # Keep last 10 turns
+            _CONV_MEMORY[client_ip] = _CONV_MEMORY[client_ip][-10:]
         latency = (_t.time() - t0) * 1000
         _log_chat(msg, routed=True, service=route["service"], latency_ms=latency)
         result = {
