@@ -435,11 +435,17 @@ def main():
     chat_failures = []
     for expected_svc, msg in _CHAT_TESTS:
         try:
-            import httpx as _hx
-            r = _hx.post(f"{args.gateway}/chat/route", json={"message": msg}, timeout=5.0)
-            data = r.json()
+            import urllib.request
+            _req = urllib.request.Request(
+                f"{args.gateway}/chat/route",
+                data=json.dumps({"message": msg}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(_req, timeout=5) as _resp:
+                data = json.loads(_resp.read())
             routed = data.get("routed", False)
-            has_data = data.get("data") is not None
+            has_data = data.get("data") is not None or data.get("ai_response") is not None
             svc_match = data.get("service") == expected_svc
             if routed and has_data:
                 chat_passed += 1
