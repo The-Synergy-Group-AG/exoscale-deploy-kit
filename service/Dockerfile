@@ -46,6 +46,7 @@ COPY start.sh .
 COPY dashboard.html .
 COPY home.html .
 COPY catalog.json .
+COPY job_scraper/ ./job_scraper/
 
 # Copy all 219 service src directories into services/
 # Each service lands at: /app/services/{service_name}/main.py

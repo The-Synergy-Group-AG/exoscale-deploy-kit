@@ -103,6 +103,11 @@ cp "${SCRIPT_DIR}/frontend/home.html"  "${SERVICE_DIR}/home.html"
 echo "  ✅ home.html = AI-First dual-mode home page (L56)"
 cp "${SCRIPT_DIR}/frontend/catalog.json" "${SERVICE_DIR}/catalog.json"
 echo "  ✅ catalog.json = runtime API catalog (L62)"
+# L69: Copy job scraper module for live job data
+if [ -d "${SCRIPT_DIR}/../shared/extended/job_scraper" ]; then
+  cp -r "${SCRIPT_DIR}/../shared/extended/job_scraper" "${SERVICE_DIR}/job_scraper"
+  echo "  ✅ job_scraper = live Swiss job portal scraper (L69)"
+fi
 echo ""
 
 # ── Step 3: Build Docker image ────────────────────────────────────────────────
