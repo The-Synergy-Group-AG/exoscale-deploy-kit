@@ -495,7 +495,8 @@ def main():
     total_errors  = sum(r["errors"] for r in results)
     total_skipped = sum(1 for r in results if r["status"] == "skipped")
     job_passed    = sum(1 for r in results if r["status"] == "passed")
-    job_failed    = sum(1 for r in results if r["status"] in ("failed", "error", "timeout", "exception"))
+    # L71: Exclude chat_smoke from fatal failure count (depends on API keys + TLS)
+    job_failed    = sum(1 for r in results if r["status"] in ("failed", "error", "timeout", "exception") and r.get("suite") != "chat_smoke")
 
     report = {
         "runner": "run_external_tests.py",
