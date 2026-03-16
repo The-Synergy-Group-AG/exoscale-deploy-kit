@@ -236,7 +236,7 @@ def _find_chat_route(msg: str):
 # ── L68: AI-powered conversational chat ──────────────────────────────────────
 import httpx as _sync_httpx
 from collections import deque
-from datetime import datetime as _dt
+from datetime import datetime, timezone as _dt
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 AI_CHAT_ENABLED = bool(ANTHROPIC_API_KEY)

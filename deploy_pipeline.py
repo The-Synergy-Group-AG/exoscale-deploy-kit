@@ -100,7 +100,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from config_loader import load_config
@@ -349,7 +349,7 @@ def stage_preflight() -> None:
 def stage_docker_build():
     section("STAGE 1: Docker Build")
     t0 = time.time()
-    build_time = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    build_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     cmd = [
         "docker", "build",
