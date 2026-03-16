@@ -168,6 +168,23 @@ def sync_services(
                     if _.is_file():
                         n_files += 1
 
+            # L69: Copy job_scraper module into career domain services
+            _job_scraper_src = SCRIPT_DIR.parent / "shared" / "extended" / "job_scraper"
+            if _job_scraper_src.exists():
+                _cfg_path = src_dir / "config.json"
+                if _cfg_path.exists():
+                    try:
+                        _cfg = json.loads(_cfg_path.read_text(encoding="utf-8"))
+                        if _cfg.get("domain") == "career":
+                            shutil.copytree(
+                                _job_scraper_src,
+                                dest_svc / "job_scraper",
+                                dirs_exist_ok=True,
+                            )
+                            n_files += 2
+                    except Exception:
+                        pass  # non-critical
+
             stats["files_copied"] += n_files
 
         stats["ok"] += 1
