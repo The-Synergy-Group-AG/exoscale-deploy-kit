@@ -442,7 +442,11 @@ def main():
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(_req, timeout=5) as _resp:
+            import ssl
+            _ctx = ssl.create_default_context()
+            _ctx.check_hostname = False
+            _ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen(_req, timeout=5, context=_ctx) as _resp:
                 data = json.loads(_resp.read())
             routed = data.get("routed", False)
             has_data = data.get("data") is not None or data.get("ai_response") is not None
