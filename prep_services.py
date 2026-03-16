@@ -293,7 +293,7 @@ def main() -> int:
     # ── Write manifest ────────────────────────────────────────────────────
     manifest = {
         "generation"   : gen_path.name,
-        "synced_at"    : __import__("datetime").datetime.now(timezone.utc).isoformat() + "Z",
+        "synced_at"    : __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat() + "Z",
         "total_synced" : stats["ok"],
         "total_skipped": len(stats["skipped"]),
         "files_copied" : stats["files_copied"],
