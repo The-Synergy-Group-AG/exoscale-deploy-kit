@@ -381,7 +381,7 @@ def _log_chat(msg: str, routed: bool, service: str = None, error: str = None, la
     if error:
         _CHAT_STATS["errors"] += 1
     _CHAT_LOG.append({
-        "ts": _dt.utcnow().isoformat() + "Z",
+        "ts": _dt.now(_dt.timezone.utc).isoformat() + "Z",
         "message": msg[:200],  # truncate for storage
         "routed": routed,
         "service": service,

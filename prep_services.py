@@ -182,8 +182,8 @@ def sync_services(
                                 dirs_exist_ok=True,
                             )
                             n_files += 2
-                    except Exception:
-                        pass  # non-critical
+                    except Exception as exc:
+                        _warn(f"  job_scraper copy failed for {svc.name}: {exc}")
 
             stats["files_copied"] += n_files
 

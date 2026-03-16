@@ -94,3 +94,30 @@ dns:
       ttl: 300
     - name: www
       ttl: 300
+
+# ── Gateway & HTTP configuration ─────────────────────────────────────────────
+gateway:
+  proxy_timeout_s: 2.5
+  max_connections: 50
+  max_keepalive_connections: 10
+  keepalive_expiry_s: 5.0
+
+# ── Retry & timeout configuration ────────────────────────────────────────────
+timeouts:
+  k8s_probe_timeout_s: 5
+  k8s_probe_period_s: 30
+  k8s_liveness_initial_delay_s: 120
+  k8s_readiness_initial_delay_s: 15
+  hpa_scaledown_stabilization_s: 300
+  hpa_scaleup_stabilization_s: 60
+  node_wait_timeout_s: 720
+  pod_wait_timeout_s: 300
+retries:
+  max_nodepool_delete_attempts: 12
+  sg_attach_max_attempts: 10
+  sg_retry_delay_s: 30
+
+# ── Job scraper configuration ────────────────────────────────────────────────
+job_scraper:
+  cache_ttl_s: 900
+  api_url: 'https://www.jobs.ch/api/v1/public/search'

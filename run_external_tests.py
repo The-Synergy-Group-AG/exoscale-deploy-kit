@@ -30,7 +30,7 @@ from pathlib import Path
 SCRIPT_DIR   = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR.parent.resolve()
 
-DEFAULT_GATEWAY = "https://jobtrackerpro.ch"
+DEFAULT_GATEWAY = os.environ.get("JTP_GATEWAY_URL", "https://jobtrackerpro.ch")
 EXTERNAL_SUITES = ["integration", "e2e", "security", "user_stories"]
 DEFAULT_WORKERS = 20
 DEFAULT_OUTPUT  = str(SCRIPT_DIR / "outputs" / "external_test_results.json")
