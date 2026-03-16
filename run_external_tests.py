@@ -3,7 +3,7 @@
 External CI/CD Test Runner — Lesson 53
 =======================================
 Runs integration, e2e, security, and user_stories test suites for all 219
-services against the live gateway (https://jobtrackerpro.ch).
+services against the live gateway (JTP_GATEWAY_URL).
 
 Patches hardcoded gateway URLs in test modules at collection time via a
 temporary root conftest.py injection — no source files are modified.
