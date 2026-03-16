@@ -236,7 +236,7 @@ def _find_chat_route(msg: str):
 # ── L68: AI-powered conversational chat ──────────────────────────────────────
 import httpx as _sync_httpx
 from collections import deque
-from datetime import datetime, timezone as _dt
+from datetime import datetime as _dt, timezone as _tz
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 AI_CHAT_ENABLED = bool(ANTHROPIC_API_KEY)
@@ -381,7 +381,7 @@ def _log_chat(msg: str, routed: bool, service: str = None, error: str = None, la
     if error:
         _CHAT_STATS["errors"] += 1
     _CHAT_LOG.append({
-        "ts": _dt.utcnow().isoformat() + "Z",
+        "ts": _dt.now(_tz.utc).isoformat() + "Z",
         "message": msg[:200],  # truncate for storage
         "routed": routed,
         "service": service,
@@ -443,39 +443,6 @@ async def chat_route(request: Request):
             "suggestions": ["jobs", "status", "notifications", "analytics"],
         }
     svc_dns = service_to_dns(route["service"])
-    # L69: For career/job services, try live job scraping first
-    if route.get("service") in ("job-search-service", "job-discovery-service") and "/jobs" in route.get("path", ""):
-        try:
-            from job_scraper import JobScraper
-            scraper = JobScraper()
-            live_jobs = await scraper.search(msg, limit=10)
-            if live_jobs:
-                service_data = {
-                    "service": route["service"], "domain": "career",
-                    "endpoint": route["path"], "method": "GET",
-                    "status": "ok",
-                    "data": {"jobs": live_jobs, "total": len(live_jobs),
-                             "query": msg, "source": "live"},
-                    "timestamp": __import__("time").time(),
-                }
-                client_ip = request.client.host if request.client else ""
-                ai_response = await _ai_respond(msg, service_data, route["service"], client_ip)
-                if client_ip:
-                    if client_ip not in _CONV_MEMORY:
-                        _CONV_MEMORY[client_ip] = []
-                    _CONV_MEMORY[client_ip].append({"role": "user", "content": msg})
-                    if ai_response:
-                        _CONV_MEMORY[client_ip].append({"role": "assistant", "content": ai_response[:200]})
-                    _CONV_MEMORY[client_ip] = _CONV_MEMORY[client_ip][-10:]
-                latency = (_t.time() - t0) * 1000
-                _log_chat(msg, routed=True, service=route["service"], latency_ms=latency)
-                result = {"routed": True, "service": route["service"], "path": route["path"], "data": service_data}
-                if ai_response:
-                    result["ai_response"] = ai_response
-                return result
-        except Exception as exc:
-            logger.warning(f"L69: Job scraper failed, falling back to service: {exc}")
-
     # L68: Pass user message as query param so service can filter results
     _query_params = {"q": msg} if msg else {}
     url = f"http://{svc_dns}:8000{route['path']}"
