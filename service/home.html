@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>JobTrackerPro — AI-First Career Platform</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;flex-direction:column}
+  header{background:#1e293b;border-bottom:1px solid #334155;padding:.75rem 2rem;display:flex;align-items:center;gap:1rem;flex-wrap:wrap}
+  header h1{font-size:1.4rem;font-weight:700;color:#38bdf8;flex:1}
+  .mode-toggle{display:flex;gap:.5rem;align-items:center}
+  .mode-btn{background:#1e293b;border:1px solid #334155;color:#94a3b8;padding:.4rem 1rem;border-radius:.5rem;font-size:.8rem;cursor:pointer;font-weight:600;transition:all .15s}
+  .mode-btn.active{background:#0ea5e9;border-color:#0ea5e9;color:#fff}
+  .mode-btn:hover:not(.active){background:#334155;color:#e2e8f0}
+  .badge{background:#7c3aed;color:#fff;font-size:.7rem;padding:.2rem .6rem;border-radius:999px;font-weight:600}
+
+  /* AI panel */
+  #ai-panel{flex:1;display:flex;flex-direction:column;max-width:900px;margin:0 auto;width:100%;padding:1.5rem 1rem}
+  .chat-history{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:.75rem;min-height:0;max-height:calc(100vh - 220px);padding-right:.25rem}
+  .chat-history::-webkit-scrollbar{width:4px}
+  .chat-history::-webkit-scrollbar-track{background:#1e293b}
+  .chat-history::-webkit-scrollbar-thumb{background:#334155;border-radius:2px}
+  .msg{display:flex;flex-direction:column;gap:.25rem}
+  .msg.user .bubble{background:#0ea5e9;color:#fff;align-self:flex-end;border-radius:.75rem .75rem 0 .75rem}
+  .msg.bot .bubble{background:#1e293b;border:1px solid #334155;align-self:flex-start;border-radius:.75rem .75rem .75rem 0}
+  .bubble{padding:.6rem .9rem;max-width:80%;font-size:.875rem;line-height:1.5}
+  .msg-time{font-size:.65rem;color:#475569;padding:0 .25rem}
+  .msg.user .msg-time{align-self:flex-end}
+
+  /* Result cards */
+  .result-cards{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.5rem}
+  .rcard{background:#0f172a;border:1px solid #334155;border-radius:.5rem;padding:.6rem .8rem;font-size:.8rem;min-width:200px;max-width:320px}
+  .rcard .rcard-title{font-weight:600;color:#38bdf8;margin-bottom:.25rem;font-size:.85rem}
+  .rcard .rcard-meta{color:#64748b;font-size:.72rem}
+  .rcard .rcard-val{color:#e2e8f0;margin-top:.2rem}
+  .status-badge{display:inline-block;padding:.1rem .4rem;border-radius:999px;font-size:.65rem;font-weight:700;text-transform:uppercase}
+  .status-badge.ok{background:#14532d;color:#4ade80}
+  .status-badge.warn{background:#422006;color:#fb923c}
+
+  /* Input bar */
+  .input-bar{display:flex;gap:.5rem;padding-top:1rem;border-top:1px solid #1e293b;margin-top:.75rem}
+  .input-bar input{flex:1;background:#1e293b;border:1px solid #334155;color:#e2e8f0;padding:.6rem 1rem;border-radius:.5rem;font-size:.875rem}
+  .input-bar input:focus{outline:none;border-color:#38bdf8}
+  .input-bar button{background:#0ea5e9;color:#fff;border:none;padding:.6rem 1.25rem;border-radius:.5rem;font-size:.875rem;cursor:pointer;font-weight:600;white-space:nowrap}
+  .input-bar button:hover{background:#0284c7}
+  .input-bar button:disabled{background:#334155;color:#64748b;cursor:not-allowed}
+  .suggestions{display:flex;flex-wrap:wrap;gap:.4rem;padding:.5rem 0 0}
+  .sug{background:#1e293b;border:1px solid #334155;color:#94a3b8;padding:.25rem .6rem;border-radius:.4rem;font-size:.75rem;cursor:pointer}
+  .sug:hover{border-color:#38bdf8;color:#38bdf8}
+
+  /* Traditional panel */
+  #traditional-panel{flex:1;display:none}
+  #traditional-panel iframe{width:100%;height:calc(100vh - 80px);border:none;display:block}
+
+  /* Welcome */
+  .welcome{text-align:center;padding:2.5rem 1rem;max-width:600px;margin:0 auto}
+  .welcome h2{font-size:1.5rem;font-weight:700;color:#e2e8f0;margin-bottom:.5rem}
+  .welcome p{color:#94a3b8;font-size:.9rem;line-height:1.6;margin-bottom:1.25rem}
+  .welcome .quick-prompts{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:center}
+  .qp{background:#1e293b;border:1px solid #334155;color:#e2e8f0;padding:.4rem .8rem;border-radius:.5rem;font-size:.8rem;cursor:pointer}
+  .qp:hover{border-color:#38bdf8;color:#38bdf8}
+
+  .thinking{color:#64748b;font-style:italic;font-size:.8rem}
+  .err{color:#f87171}
+  pre.json-dump{background:#0f172a;border:1px solid #334155;border-radius:.4rem;padding:.6rem;font-size:.72rem;overflow-x:auto;color:#94a3b8;max-width:480px}
+  .ai-resp{line-height:1.6;color:#e2e8f0}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ JobTrackerPro</h1>
+  <span class="badge">AI-First</span>
+  <div class="mode-toggle">
+    <button class="mode-btn active" id="btn-ai" onclick="setMode('ai')">AI Assistant</button>
+    <button class="mode-btn" id="btn-classic" onclick="setMode('classic')">Classic View</button>
+  </div>
+</header>
+
+<div id="ai-panel">
+  <div class="chat-history" id="chat-history">
+    <div class="welcome" id="welcome">
+      <h2>Hello, I'm your AI Career Assistant</h2>
+      <p>Ask me about jobs, your CV, interviews, analytics, or any service in the platform. I'll connect you to live data in real time.</p>
+      <div class="quick-prompts">
+        <button class="qp" onclick="sendPrompt('Show me available jobs')">Show me available jobs</button>
+        <button class="qp" onclick="sendPrompt('Check system status')">Check system status</button>
+        <button class="qp" onclick="sendPrompt('My notifications')">My notifications</button>
+        <button class="qp" onclick="sendPrompt('Interview schedule')">Interview schedule</button>
+        <button class="qp" onclick="sendPrompt('Analytics dashboard')">Analytics dashboard</button>
+        <button class="qp" onclick="sendPrompt('Security status')">Security status</button>
+      </div>
+    </div>
+  </div>
+  <div class="input-bar">
+    <input id="msg-input" type="text" placeholder="Ask anything — jobs, CV, interviews, analytics…" onkeydown="if(event.key==='Enter')sendMessage()">
+    <button id="send-btn" onclick="sendMessage()">Send</button>
+  </div>
+  <div class="suggestions" id="suggestions">
+    <span class="sug" onclick="sendPrompt('jobs')">jobs</span>
+    <span class="sug" onclick="sendPrompt('cv')">cv</span>
+    <span class="sug" onclick="sendPrompt('interviews')">interviews</span>
+    <span class="sug" onclick="sendPrompt('notifications')">notifications</span>
+    <span class="sug" onclick="sendPrompt('analytics')">analytics</span>
+    <span class="sug" onclick="sendPrompt('security')">security</span>
+    <span class="sug" onclick="sendPrompt('status')">status</span>
+  </div>
+</div>
+
+<div id="traditional-panel">
+  <iframe src="/service-dashboard" title="Service Dashboard"></iframe>
+</div>
+
+<script>
+// ── Mode management ────────────────────────────────────────────────────────────
+const MODE_KEY = 'jtp_mode';
+
+function setMode(mode) {
+  localStorage.setItem(MODE_KEY, mode);
+  document.getElementById('ai-panel').style.display = mode === 'ai' ? 'flex' : 'none';
+  document.getElementById('traditional-panel').style.display = mode === 'ai' ? 'none' : 'flex';
+  document.getElementById('btn-ai').classList.toggle('active', mode === 'ai');
+  document.getElementById('btn-classic').classList.toggle('active', mode === 'classic');
+}
+
+(function init() {
+  const saved = localStorage.getItem(MODE_KEY) || 'ai';
+  setMode(saved);
+})();
+
+// ── Intent routing (L64: curated + catalog-driven) ──────────────────────────
+// Curated routes — hand-tuned patterns for best user experience
+const CURATED_ROUTES = [
+  // ── Core job-seeker journey (7) ──────────────────────────────────────────
+  { patterns: ['job', 'jobs', 'vacancy', 'position', 'hire', 'hiring'],
+    service: 'job-search-service', path: '/jobs', method: 'GET', label: 'Job Listings' },
+  { patterns: ['cv', 'resume', 'curriculum', 'generate cv'],
+    service: 'cv-generation-service', path: '/cv/generate', method: 'POST', label: 'CV Generation' },
+  { patterns: ['interview', 'interviews', 'prep', 'interview schedule'],
+    service: 'interview-prep-service', path: '/interviews', method: 'GET', label: 'Interviews' },
+  { patterns: ['application', 'applications', 'track', 'tracking', 'applied'],
+    service: 'application-service', path: '/data', method: 'GET', label: 'Applications' },
+  { patterns: ['career', 'advice', 'growth', 'path', 'guidance'],
+    service: 'career-search-core-service', path: '/career/advice', method: 'GET', label: 'Career Advice' },
+  { patterns: ['skill', 'skills', 'learn', 'training', 'development', 'course'],
+    service: 'skill-development-infrastructure', path: '/jobs', method: 'GET', label: 'Skill Development' },
+  { patterns: ['network', 'networking', 'connections', 'connect', 'contacts'],
+    service: 'networking-service', path: '/data', method: 'GET', label: 'Networking' },
+  // ── User account & platform (5) ─────────────────────────────────────────
+  { patterns: ['profile', 'my profile', 'preferences', 'my account'],
+    service: 'user-profile-service', path: '/users', method: 'GET', label: 'My Profile' },
+  { patterns: ['user', 'users', 'admin', 'manage users'],
+    service: 'admin-service', path: '/users', method: 'GET', label: 'Users' },
+  { patterns: ['notification', 'notifications', 'alert', 'message', 'inbox'],
+    service: 'notification-service', path: '/notifications', method: 'GET', label: 'Notifications' },
+  { patterns: ['onboarding', 'welcome', 'setup', 'getting started'],
+    service: 'onboarding-service', path: '/users', method: 'GET', label: 'Onboarding' },
+  { patterns: ['email', 'smtp', 'mail', 'recruiter'],
+    service: 'email-integration-service', path: '/notifications', method: 'GET', label: 'Email' },
+  // ── Monetization & billing (3) ──────────────────────────────────────────
+  { patterns: ['payment', 'billing', 'invoice', 'pay'],
+    service: 'payment-processor-service', path: '/auth/status', method: 'GET', label: 'Payments' },
+  { patterns: ['subscription', 'subscriptions', 'plan', 'upgrade', 'downgrade'],
+    service: 'subscription-management-service', path: '/subscriptions', method: 'GET', label: 'Subscriptions' },
+  { patterns: ['credit', 'credits', 'balance', 'redeem'],
+    service: 'credits-service', path: '/payments', method: 'GET', label: 'Credits' },
+  // ── Intelligence & analytics (4) ────────────────────────────────────────
+  { patterns: ['analytic', 'analytics', 'metric', 'dashboard', 'report', 'insight'],
+    service: 'advanced-analytics-bi-service', path: '/analytics/dashboard', method: 'GET', label: 'Analytics' },
+  { patterns: ['ai', 'ml', 'model', 'predict', 'pipeline'],
+    service: 'advanced-ai-ml-service', path: '/ai/process', method: 'POST', label: 'AI Processing' },
+  { patterns: ['recommend', 'recommendation', 'personaliz', 'suggest'],
+    service: 'personalization-ai-adaptor', path: '/models', method: 'GET', label: 'Recommendations' },
+  { patterns: ['predictive', 'forecast', 'prediction'],
+    service: 'predictive-analytics-engine', path: '/analytics/dashboard', method: 'GET', label: 'Predictions' },
+  // ── Operations & infrastructure (7) ─────────────────────────────────────
+  { patterns: ['status', 'health', 'system', 'monitor', 'uptime'],
+    service: 'monitoring-system-bulk', path: '/status', method: 'GET', label: 'System Status' },
+  { patterns: ['security', 'threat', 'scan', 'firewall', 'vulnerability'],
+    service: 'access-control-service', path: '/security/status', method: 'GET', label: 'Security' },
+  { patterns: ['compliance', 'regulation', 'regulations', 'rav', 'gdpr'],
+    service: 'swiss-compliance-service', path: '/regulations', method: 'GET', label: 'Compliance' },
+  { patterns: ['log', 'logs', 'audit log', 'audit trail'],
+    service: 'audit-logging-service', path: '/compliance/status', method: 'GET', label: 'Audit Logs' },
+  { patterns: ['document', 'documents', 'file', 'export'],
+    service: 'document-management-service', path: '/documents', method: 'GET', label: 'Documents' },
+  { patterns: ['workflow', 'automation', 'process', 'pipeline'],
+    service: 'workflow-engines-service', path: '/workflows', method: 'GET', label: 'Workflows' },
+  { patterns: ['webhook', 'integration', 'linkedin', 'indeed', 'sync'],
+    service: 'webhook-integrations-service', path: '/workflows', method: 'GET', label: 'Integrations' },
+  // ── System & config (4) ─────────────────────────────────────────────────
+  { patterns: ['config', 'configuration', 'settings', 'feature flag'],
+    service: 'configuration-management', path: '/config', method: 'GET', label: 'Configuration' },
+  { patterns: ['backup', 'restore', 'recovery'],
+    service: 'backup-recovery-system', path: '/backup/status', method: 'GET', label: 'Backup' },
+  { patterns: ['biological', 'harmony', 'consciousness'],
+    service: 'biological-analytics-performance-test', path: '/status', method: 'GET', label: 'Bio Harmony' },
+  { patterns: ['gamification', 'achievement', 'badge', 'leaderboard', 'xp'],
+    service: 'gamification-service', path: '/leaderboard', method: 'GET', label: 'Achievements' },
+];
+
+// L64: Dynamic routes loaded from /api/catalog (covers all 219 services)
+let DYNAMIC_ROUTES = [];
+const _NOISE = new Set(['service','system','engine','api','the','for','and','test','bulk','category']);
+fetch('/api/catalog').then(r=>r.json()).then(catalog=>{
+  const curated = new Set(CURATED_ROUTES.map(r=>r.service));
+  for (const [name, spec] of Object.entries(catalog.services||{})) {
+    const dns = name.replace(/_/g, '-');
+    if (curated.has(dns)) continue;
+    const patterns = name.replace(/-/g,'_').split('_').filter(w=>w.length>2&&!_NOISE.has(w));
+    if (spec.domain && !patterns.includes(spec.domain)) patterns.push(spec.domain);
+    if (!patterns.length) continue;
+    const getEp = (spec.endpoints||[]).find(e=>e.method==='GET');
+    DYNAMIC_ROUTES.push({
+      patterns, service: dns, path: getEp?getEp.path:'/health', method: 'GET',
+      label: dns.replace(/-/g,' ').replace(/\b\w/g,c=>c.toUpperCase())
+    });
+  }
+}).catch(()=>{});
+
+function findRoute(msg) {
+  const lower = msg.toLowerCase();
+  // Check curated routes first (better patterns)
+  for (const route of CURATED_ROUTES) {
+    if (route.patterns.some(p => lower.includes(p))) return route;
+  }
+  // Then check dynamic routes from catalog
+  for (const route of DYNAMIC_ROUTES) {
+    if (route.patterns.some(p => lower.includes(p))) return route;
+  }
+  return null;
+}
+
+// ── Response rendering ─────────────────────────────────────────────────────────
+function renderData(data, label) {
+  if (!data || typeof data !== 'object') return `<span class="err">No data returned</span>`;
+  const inner = data.data || data;
+
+  // Job listings
+  if (inner.jobs && Array.isArray(inner.jobs)) {
+    const cards = inner.jobs.slice(0, 5).map(j => `
+      <div class="rcard">
+        <div class="rcard-title">${esc(j.title || j.id || 'Job')}</div>
+        <div class="rcard-meta">${esc(j.company || '')} · ${esc(j.location || '')}</div>
+        <div class="rcard-val">${esc(j.salary_range || '')}${j.match_score ? ` · Match: ${Math.round(j.match_score*100)}%` : ''}</div>
+      </div>`).join('');
+    return `<strong>Found ${inner.total || inner.jobs.length} jobs:</strong><div class="result-cards">${cards}</div>`;
+  }
+  // Interviews
+  if (inner.interviews && Array.isArray(inner.interviews)) {
+    const cards = inner.interviews.map(i => `
+      <div class="rcard">
+        <div class="rcard-title">${esc(i.company || i.id)}</div>
+        <div class="rcard-meta">${esc(i.date || '')} · ${esc(i.type || '')}</div>
+        <div class="rcard-val"><span class="status-badge ok">${esc(i.status || 'scheduled')}</span></div>
+      </div>`).join('');
+    return `<strong>${inner.total || inner.interviews.length} interview(s):</strong><div class="result-cards">${cards}</div>`;
+  }
+  // Notifications
+  if (inner.notifications && Array.isArray(inner.notifications)) {
+    const list = inner.notifications.slice(0, 5).map(n =>
+      `<div class="rcard"><div class="rcard-title">${esc(n.title || n.message || n.id)}</div>` +
+      `<div class="rcard-meta">${esc(n.type || '')} · ${esc(n.created_at || '')}</div></div>`
+    ).join('');
+    return `<strong>${inner.unread_count !== undefined ? inner.unread_count + ' unread' : inner.total + ' notifications'}:</strong><div class="result-cards">${list}</div>`;
+  }
+  // System status / operational
+  if (inner.operational !== undefined) {
+    const ok = inner.operational;
+    return `<div class="rcard" style="max-width:360px">
+      <div class="rcard-title">System Status <span class="status-badge ${ok ? 'ok' : 'warn'}">${ok ? 'OPERATIONAL' : 'DEGRADED'}</span></div>
+      <div class="rcard-val">Uptime: ${inner.uptime_percent || '—'}% · Services monitored: ${inner.services_monitored || '—'}</div>
+      ${inner.active_alerts ? `<div class="rcard-meta">${inner.active_alerts} active alerts</div>` : ''}
+    </div>`;
+  }
+  // Analytics dashboard
+  if (inner.active_users !== undefined || inner.requests_total !== undefined) {
+    const rows = Object.entries(inner).slice(0, 6).map(([k, v]) =>
+      `<div><span style="color:#64748b;font-size:.75rem">${esc(k.replace(/_/g,' '))}:</span> <strong>${esc(String(v))}</strong></div>`
+    ).join('');
+    return `<div class="rcard" style="max-width:380px"><div class="rcard-title">Analytics</div>${rows}</div>`;
+  }
+  // Security
+  if (inner.threat_level !== undefined) {
+    return `<div class="rcard" style="max-width:360px">
+      <div class="rcard-title">Security <span class="status-badge ok">Level: ${esc(inner.threat_level)}</span></div>
+      <div class="rcard-val">Active scans: ${inner.active_scans || 0} · Vulnerabilities: ${inner.vulnerabilities_found || 0}</div>
+    </div>`;
+  }
+  // CV
+  if (inner.cv_id || inner.status === 'complete') {
+    return `<div class="rcard"><div class="rcard-title">CV Generated</div>
+      <div class="rcard-val">ID: ${esc(inner.cv_id || '')} · ${esc(inner.format || 'PDF')} · ${inner.pages || '?'} pages</div></div>`;
+  }
+  // Generic list (any array-containing payload)
+  const listKey = Object.keys(inner).find(k => Array.isArray(inner[k]));
+  if (listKey) {
+    const arr = inner[listKey];
+    return `<strong>${esc(label)}: ${arr.length} item(s)</strong>` +
+      `<pre class="json-dump">${esc(JSON.stringify(inner, null, 2).slice(0, 600))}${inner.length > 600 ? '\n…' : ''}</pre>`;
+  }
+  // Fallback: JSON
+  return `<pre class="json-dump">${esc(JSON.stringify(inner, null, 2).slice(0, 800))}</pre>`;
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Chat UI ───────────────────────────────────────────────────────────────────
+function sendPrompt(text) {
+  document.getElementById('msg-input').value = text;
+  sendMessage();
+}
+
+async function sendMessage() {
+  const input = document.getElementById('msg-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+
+  document.getElementById('welcome')?.remove();
+
+  appendMsg('user', esc(msg));
+  const thinkId = appendMsg('bot', '<span class="thinking">Routing to service…</span>');
+  setSendDisabled(true);
+
+  try {
+    // Try server-side routing first; fall back to client-side
+    let routed = false;
+    let resultHtml = '';
+
+    try {
+      const routeResp = await fetch('/chat/route', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({message: msg}),
+        signal: AbortSignal.timeout(5000)
+      });
+      if (routeResp.ok) {
+        const routeData = await routeResp.json();
+        if (routeData.routed && routeData.data) {
+          // L68: Show AI conversational response if available
+          if (routeData.ai_response) {
+            resultHtml = `<div class="ai-resp">${esc(routeData.ai_response).replace(/\n/g, '<br>')}</div>`;
+          } else {
+            resultHtml = renderData(routeData.data, routeData.service);
+          }
+          routed = true;
+        } else if (!routeData.routed) {
+          resultHtml = `<span>I'm not sure which service to call for that. Try: ` +
+            (routeData.suggestions || ['jobs','status','notifications']).map(s => `<span class="sug" onclick="sendPrompt('${esc(s)}')">${esc(s)}</span>`).join(' ') + `</span>`;
+          routed = true;
+        }
+      }
+    } catch (e) { /* fall through to client-side */ }
+
+    if (!routed) {
+      const route = findRoute(msg);
+      if (!route) {
+        resultHtml = `<span>I can help with: jobs, CV, interviews, notifications, analytics, security, system status. What would you like?</span>`;
+      } else {
+        updateMsg(thinkId, `<span class="thinking">Calling ${esc(route.label)}…</span>`);
+        const url = `/api/${route.service}${route.path}`;
+        const opts = route.method === 'GET'
+          ? {signal: AbortSignal.timeout(6000)}
+          : {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}', signal: AbortSignal.timeout(6000)};
+        const resp = await fetch(url, opts);
+        if (!resp.ok) {
+          resultHtml = `<span class="err">Service returned ${resp.status}. Service may be starting up.</span>`;
+        } else {
+          const data = await resp.json();
+          resultHtml = `<div>From <strong>${esc(route.label)}</strong> (<code>${esc(route.path)}</code>):</div>` +
+                       renderData(data, route.label);
+        }
+      }
+    }
+
+    updateMsg(thinkId, resultHtml);
+  } catch (err) {
+    updateMsg(thinkId, `<span class="err">Error: ${esc(err.message)}</span>`);
+  } finally {
+    setSendDisabled(false);
+    input.focus();
+    scrollChat();
+  }
+}
+
+let msgCounter = 0;
+function appendMsg(role, html) {
+  const id = 'msg-' + (++msgCounter);
+  const now = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.id = id;
+  div.innerHTML = `<div class="bubble">${html}</div><span class="msg-time">${now}</span>`;
+  document.getElementById('chat-history').appendChild(div);
+  scrollChat();
+  return id;
+}
+
+function updateMsg(id, html) {
+  const el = document.getElementById(id);
+  if (el) el.querySelector('.bubble').innerHTML = html;
+  scrollChat();
+}
+
+function scrollChat() {
+  const h = document.getElementById('chat-history');
+  h.scrollTop = h.scrollHeight;
+}
+
+function setSendDisabled(v) {
+  document.getElementById('send-btn').disabled = v;
+}
+</script>
+</body>
+</html>
