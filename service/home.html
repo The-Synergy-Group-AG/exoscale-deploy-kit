@@ -335,45 +335,31 @@ async function sendMessage() {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
         body: JSON.stringify({message: msg}),
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(15000)
       });
       if (routeResp.ok) {
         const routeData = await routeResp.json();
-        if (routeData.routed && routeData.data) {
-          // L68: Show AI conversational response if available
-          if (routeData.ai_response) {
-            resultHtml = `<div class="ai-resp">${esc(routeData.ai_response).replace(/\n/g, '<br>')}</div>`;
-          } else {
-            resultHtml = renderData(routeData.data, routeData.service);
-          }
+        // L72: Prioritize AI response — it's always more useful than raw service data
+        if (routeData.ai_response) {
+          resultHtml = `<div class="ai-resp">${esc(routeData.ai_response).replace(/\n/g, '<br>')}</div>`;
+          routed = true;
+        } else if (routeData.routed && routeData.data) {
+          resultHtml = renderData(routeData.data, routeData.service);
           routed = true;
         } else if (!routeData.routed) {
           resultHtml = `<span>I'm not sure which service to call for that. Try: ` +
-            (routeData.suggestions || ['jobs','status','notifications']).map(s => `<span class="sug" onclick="sendPrompt('${esc(s)}')">${esc(s)}</span>`).join(' ') + `</span>`;
+            (routeData.suggestions || ['Find jobs in Zurich','Help with my CV','Interview prep','Career advice']).map(s => `<span class="sug" onclick="sendPrompt('${esc(s)}')">${esc(s)}</span>`).join(' ') + `</span>`;
           routed = true;
         }
       }
-    } catch (e) { /* fall through to client-side */ }
+    } catch (e) {
+      // L72: Server-side timeout — show helpful message, don't fall through to raw demo data
+      resultHtml = `<div class="ai-resp">The AI assistant is taking a moment to find the best results for you. Please try again — your search will return real Swiss job listings from jobs.ch.</div>`;
+      routed = true;
+    }
 
     if (!routed) {
-      const route = findRoute(msg);
-      if (!route) {
-        resultHtml = `<span>I can help with: jobs, CV, interviews, notifications, analytics, security, system status. What would you like?</span>`;
-      } else {
-        updateMsg(thinkId, `<span class="thinking">Calling ${esc(route.label)}…</span>`);
-        const url = `/api/${route.service}${route.path}`;
-        const opts = route.method === 'GET'
-          ? {signal: AbortSignal.timeout(6000)}
-          : {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}', signal: AbortSignal.timeout(6000)};
-        const resp = await fetch(url, opts);
-        if (!resp.ok) {
-          resultHtml = `<span class="err">Service returned ${resp.status}. Service may be starting up.</span>`;
-        } else {
-          const data = await resp.json();
-          resultHtml = `<div>From <strong>${esc(route.label)}</strong> (<code>${esc(route.path)}</code>):</div>` +
-                       renderData(data, route.label);
-        }
-      }
+      resultHtml = `<span>I can help with: jobs, CV, interviews, career advice, Swiss market, and more. What would you like?</span>`;
     }
 
     updateMsg(thinkId, resultHtml);
