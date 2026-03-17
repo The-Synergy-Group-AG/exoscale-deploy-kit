@@ -88,11 +88,20 @@ def get_services_dir() -> Path:
     return services_dir
 
 
+# L72: AI backend services have no standard test harness — exclude from external tests
+_AI_BACKEND_SERVICES = {
+    "gpt4_orchestrator", "claude_integration", "embeddings_engine",
+    "vector_store", "job_matcher", "cv_processor",
+    "career_navigator", "skill_bridge", "memory_system",
+    "learning_system", "pattern_recognition", "decision_making",
+}
+
+
 def list_services(services_dir: Path) -> list[str]:
-    """Return sorted list of service directory names."""
+    """Return sorted list of service directory names (excluding AI backends)."""
     return sorted(
         d.name for d in services_dir.iterdir()
-        if d.is_dir() and not d.name.startswith(".")
+        if d.is_dir() and not d.name.startswith(".") and d.name not in _AI_BACKEND_SERVICES
     )
 
 
