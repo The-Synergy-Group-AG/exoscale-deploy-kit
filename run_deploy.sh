@@ -706,6 +706,22 @@ except: print('')
         else
             echo "[INFO] Step 2.7d: Skipped — website not reachable"
         fi
+
+        # ── Step 2.7e: Benefit Acceptance Testing (Plan 128) ─────────────
+        # Non-fatal: reports benefit delivery quality but does NOT affect exit code
+        if [ "$WEB_EXIT" -eq 0 ]; then
+            BAT_RUNNER="$SCRIPT_DIR/../engines/validation_engine/inputs/run_benefit_acceptance_tests.py"
+            if [ -f "$BAT_RUNNER" ]; then
+                echo ""
+                echo "────────────────────────────────────────────────────────────"
+                echo "[Plan 128] Benefit Acceptance Testing (BAT)"
+                echo "────────────────────────────────────────────────────────────"
+                python3 -X utf8 "$BAT_RUNNER" --gateway "https://${DOMAIN}" || true
+                echo "[INFO] Step 2.7e: BAT complete (non-fatal — results in validation_engine/outputs/bat/)"
+            else
+                echo "[INFO] Step 2.7e: BAT runner not found — skipping"
+            fi
+        fi
     fi
 else
     if [ "$DEPLOY_EXIT" -ne 0 ]; then
