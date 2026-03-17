@@ -974,7 +974,6 @@ spec:
   tls:
   - hosts:
     - {domain}
-    - www.{domain}
     secretName: {tls_secret}
   rules:
   - host: {domain}
@@ -1199,6 +1198,35 @@ def stage_5c_ingress_tls(kubeconfig: str) -> None:
             warn(f"Namespace create note: {_ns_r.stderr.strip() or _ns_r.stdout.strip()}")
     except Exception as _ns_e:
         warn(f"Namespace pre-create error (non-fatal): {_ns_e}")
+
+    # L72: Restore backed-up TLS certificate (avoids Let's Encrypt rate limit)
+    _cert_backup = KIT_DIR / "tls_cert_backup.json"
+    if _cert_backup.exists():
+        try:
+            _cert_json = json.loads(_cert_backup.read_text())
+            # Strip resourceVersion/uid/creationTimestamp so K8s accepts it as new
+            _meta = _cert_json.get("metadata", {})
+            for _strip_key in ("resourceVersion", "uid", "creationTimestamp",
+                               "managedFields", "annotations"):
+                _meta.pop(_strip_key, None)
+            _cert_json["metadata"] = {
+                "name": _meta.get("name", ""),
+                "namespace": namespace,
+                "labels": _meta.get("labels", {}),
+            }
+            _cert_yaml = json.dumps(_cert_json)
+            r_restore = subprocess.run(
+                ["kubectl", "--insecure-skip-tls-verify", "apply", "-f", "-"],
+                input=_cert_yaml, env=env, text=True, capture_output=True,
+            )
+            if r_restore.returncode == 0:
+                ok(f"L72: TLS certificate restored from backup (skipping Let's Encrypt)")
+            else:
+                warn(f"L72: Cert restore failed: {r_restore.stderr[:120]}")
+        except Exception as _exc:
+            warn(f"L72: Cert restore error (non-fatal): {_exc}")
+    else:
+        log("L72: No TLS cert backup found — cert-manager will request new cert")
 
     _run(["kubectl", "--insecure-skip-tls-verify", "apply", "-f", ingress_file])
     ok(f"ClusterIssuer + Ingress applied (manifest: {ingress_file})")

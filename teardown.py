@@ -555,6 +555,21 @@ def teardown(args: argparse.Namespace) -> None:
         log(f"Using kubeconfig: {kubeconfig}")
         r = run_kubectl(["kubectl", "get", "namespaces"], kubeconfig)
         if k8s_ns in r.stdout:
+            # L72: Backup TLS certificate before destroying namespace
+            _tls_secret = cfg.get("ingress", {}).get("domain", "").replace(".", "-") + "-tls"
+            if _tls_secret != "-tls":
+                _cert_backup = Path(__file__).parent / "tls_cert_backup.json"
+                _r_cert = run_kubectl([
+                    "kubectl", "-n", k8s_ns, "get", "secret", _tls_secret,
+                    "-o", "json"
+                ], kubeconfig)
+                if _r_cert.returncode == 0 and '"tls.crt"' in _r_cert.stdout:
+                    import json as _json
+                    _cert_backup.write_text(_r_cert.stdout)
+                    ok(f"L72: TLS certificate backed up to {_cert_backup}")
+                else:
+                    log(f"L72: No valid TLS cert to backup ({_tls_secret})")
+
             log(f"Deleting namespace: {k8s_ns}")
             r2 = run_kubectl(
                 ["kubectl", "delete", "namespace", k8s_ns, "--timeout=60s"], kubeconfig
