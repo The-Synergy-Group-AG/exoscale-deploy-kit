@@ -1721,10 +1721,7 @@ spec:
 #  Apps consume: secret/db-credentials and secret/sos-credentials
 # =============================================================================
 def stage_inject_secrets(kubeconfig: str, db_info: dict | None, sos_info: dict | None) -> None:
-    if not db_info and not sos_info:
-        log("No service credentials to inject -- skipping")
-        return
-
+    # L72: Always run — AI keys must be injected even when DB/SOS are disabled
     section("STAGE 5d: Inject Service Credentials (K8s Secrets)")
     env = {**os.environ, "KUBECONFIG": kubeconfig}
     ns  = cfg["k8s_namespace"]
@@ -1813,9 +1810,36 @@ data:
     else:
         log("GATEWAY_URL not yet resolved — jtp-gateway-config ConfigMap will be applied after connectivity test")
 
-    # L68: Inject AI API keys for conversational chat
-    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if anthropic_key:
+    # L72: Inject ALL AI API keys for gateway + 12 AI backend services
+    # Keys are read from environment (populated from .env file).
+    # All pods have envFrom: secretRef: ai-api-keys (optional: true),
+    # so every key in this secret is available to every pod automatically.
+    _ai_keys = {
+        "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
+        "PINECONE_API_KEY": os.getenv("PINECONE_API_KEY", ""),
+        "PINECONE_ENVIRONMENT": os.getenv("PINECONE_ENVIRONMENT", ""),
+        "PINECONE_INDEX_NAME": os.getenv("PINECONE_INDEX_NAME", ""),
+        "COHERE_API_KEY": os.getenv("COHERE_API_KEY", ""),
+        "GROK_API_KEY": os.getenv("GROK_API_KEY", ""),
+        "HUGGINGFACE_TOKEN": os.getenv("HUGGINGFACE_TOKEN", ""),
+        "GOOGLE_API_KEY": os.getenv("GOOGLE_API_KEY", ""),
+        "DEEPGRAM_API_KEY": os.getenv("DEEPGRAM_API_KEY", ""),
+        "ELEVENLABS_API_KEY": os.getenv("ELEVENLABS_API_KEY", ""),
+        "PERPLEXITY_API_KEY": os.getenv("PERPLEXITY_API_KEY", ""),
+        "FIRECRAWL_API_KEY": os.getenv("FIRECRAWL_API_KEY", ""),
+        "HELICONE_API_KEY": os.getenv("HELICONE_API_KEY", ""),
+        "SENDGRID_API_KEY": os.getenv("SENDGRID_API_KEY", ""),
+        "STRIPE_API_KEY": os.getenv("STRIPE_API_KEY", ""),
+        "HEYGEN_API_KEY": os.getenv("HEYGEN_API_KEY", ""),
+        "DID_API_KEY": os.getenv("DID_API_KEY", ""),
+        "TAVUS_API_KEY": os.getenv("TAVUS_API_KEY", ""),
+        "GITHUB_TOKEN": os.getenv("GITHUB_TOKEN", ""),
+    }
+    # Only include keys that have actual values
+    _populated = {k: v for k, v in _ai_keys.items() if v}
+    if _populated:
+        _string_data = "\n".join(f'  {k}: "{v}"' for k, v in _populated.items())
         ai_secret_yaml = f"""apiVersion: v1
 kind: Secret
 metadata:
@@ -1823,21 +1847,21 @@ metadata:
   namespace: {ns}
   labels:
     app.kubernetes.io/managed-by: exoscale-deploy-kit
-    plan: l68-ai-chat
+    plan: l72-full-ai-stack
 type: Opaque
 stringData:
-  ANTHROPIC_API_KEY: "{anthropic_key}"
+{_string_data}
 """
         r_ai = subprocess.run(  # nosec B603
             ["kubectl", "apply", "-f", "-"],
             input=ai_secret_yaml, env=env, text=True, capture_output=True,
         )
         if r_ai.returncode == 0:
-            ok(f"Secret 'ai-api-keys' applied (ANTHROPIC_API_KEY injected for L68 AI chat)")
+            ok(f"Secret 'ai-api-keys' applied ({len(_populated)} keys injected for L72 AI stack)")
         else:
             warn(f"ai-api-keys Secret: {r_ai.stderr[:120]}")
     else:
-        warn("L68: ANTHROPIC_API_KEY not in environment — AI chat will be disabled in gateway")
+        warn("L72: No AI API keys found in environment — AI services will run in demo mode")
 
     RESULTS["stages"]["inject_secrets"] = {"status": "success"}
 

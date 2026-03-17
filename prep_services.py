@@ -273,6 +273,47 @@ def main() -> int:
     if stats["skipped"]:
         _warn(f"Skipped (no src/): {stats['skipped']}")
 
+    # ── L72: Sync 12 AI backend services from shared/ ────────────────────
+    _AI_BACKEND_SOURCES = [
+        ("gpt4_orchestrator",   "shared/ai/gpt4_orchestrator"),
+        ("claude_integration",  "shared/ai/claude_integration"),
+        ("embeddings_engine",   "shared/ai/embeddings_engine"),
+        ("vector_store",        "shared/ai/vector_store"),
+        ("job_matcher",         "shared/extended/job_matcher"),
+        ("cv_processor",        "shared/extended/cv_processor"),
+        ("career_navigator",    "shared/extended/career_navigator"),
+        ("skill_bridge",        "shared/extended/skill_bridge"),
+        ("memory_system",       "shared/consciousness/memory_system"),
+        ("learning_system",     "shared/consciousness/learning_system"),
+        ("pattern_recognition", "shared/consciousness/pattern_recognition"),
+        ("decision_making",     "shared/consciousness/decision_making"),
+    ]
+    if not args.dry_run:
+        _ai_synced = 0
+        for ai_name, ai_rel_path in _AI_BACKEND_SOURCES:
+            ai_src = SCRIPT_DIR.parent / ai_rel_path
+            ai_dest = DEST / ai_name
+            if not ai_src.exists():
+                _warn(f"  L72: AI backend source not found: {ai_src}")
+                continue
+            if ai_dest.exists():
+                shutil.rmtree(ai_dest)
+            ai_dest.mkdir(parents=True)
+            # Copy all files from AI service directory (main.py etc. at root)
+            _n = 0
+            for f in ai_src.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, ai_dest / f.name)
+                    _n += 1
+                elif f.is_dir() and f.name != "__pycache__":
+                    shutil.copytree(f, ai_dest / f.name, dirs_exist_ok=True)
+                    _n += 1
+            _ai_synced += 1
+            stats["files_copied"] += _n
+            stats["services"].append(ai_name)
+            stats["ok"] += 1
+        _info(f"L72: {_ai_synced}/{len(_AI_BACKEND_SOURCES)} AI backend services synced")
+
     if args.dry_run:
         _ok("Dry run complete — no files written")
         return 0

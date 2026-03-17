@@ -339,17 +339,16 @@ async function sendMessage() {
       });
       if (routeResp.ok) {
         const routeData = await routeResp.json();
-        if (routeData.routed && routeData.data) {
-          // L68: Show AI conversational response if available
-          if (routeData.ai_response) {
-            resultHtml = `<div class="ai-resp">${esc(routeData.ai_response).replace(/\n/g, '<br>')}</div>`;
-          } else {
-            resultHtml = renderData(routeData.data, routeData.service);
-          }
+        // L72: Prioritize AI response — it's always more useful than raw service data
+        if (routeData.ai_response) {
+          resultHtml = `<div class="ai-resp">${esc(routeData.ai_response).replace(/\n/g, '<br>')}</div>`;
+          routed = true;
+        } else if (routeData.routed && routeData.data) {
+          resultHtml = renderData(routeData.data, routeData.service);
           routed = true;
         } else if (!routeData.routed) {
           resultHtml = `<span>I'm not sure which service to call for that. Try: ` +
-            (routeData.suggestions || ['jobs','status','notifications']).map(s => `<span class="sug" onclick="sendPrompt('${esc(s)}')">${esc(s)}</span>`).join(' ') + `</span>`;
+            (routeData.suggestions || ['Find jobs in Zurich','Help with my CV','Interview prep','Career advice']).map(s => `<span class="sug" onclick="sendPrompt('${esc(s)}')">${esc(s)}</span>`).join(' ') + `</span>`;
           routed = true;
         }
       }

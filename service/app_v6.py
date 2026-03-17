@@ -248,34 +248,104 @@ else:
     logger.warning("L68: AI chat DISABLED — no ANTHROPIC_API_KEY found. Set via K8s secret.")
 
 
+def _is_demo_data(service_data: dict) -> bool:
+    """L72: Detect if service returned fallback/demo data instead of real AI results."""
+    # Top-level mode flag from L72 generator
+    if service_data.get("mode") == "demo":
+        return True
+    # Check source — "ai" or "live" means real data
+    if service_data.get("source") in ("ai", "live"):
+        return False
+    data = service_data.get("data", {})
+    if isinstance(data, dict):
+        # Telltale mock data markers from _DOMAIN_ENDPOINT_DATA
+        data_str = json.dumps(data, default=str)[:3000]
+        _mock_markers = ["job-001", "badge-001", "TechCorp AG", "item-001", "sample data"]
+        if sum(1 for m in _mock_markers if m in data_str) >= 2:
+            return True
+    return False
+
+
+# L72: Intent-specific system prompts for domain expertise
+_INTENT_PROMPTS = {
+    "career": (
+        "You are a Swiss career expert. Provide specific, actionable advice about "
+        "job searching in Switzerland: platforms (jobs.ch, LinkedIn, Jobup), Swiss CV format, "
+        "salary expectations by role, work permit requirements, and regional market differences."
+    ),
+    "document": (
+        "You are a Swiss CV/resume specialist. Advise on the Swiss CV format: include photo, "
+        "personal details, Europass compatibility, cover letter conventions, and how Swiss employers "
+        "evaluate applications differently from US/UK markets."
+    ),
+    "gamification": (
+        "You are a motivational career coach. Help users stay motivated in their job search "
+        "through goal-setting, progress tracking, celebrating milestones, and building positive habits."
+    ),
+    "biological": (
+        "You are a wellness-aware career advisor. Help users manage the emotional and physical "
+        "aspects of job searching: stress management, interview anxiety, rejection resilience, "
+        "and maintaining work-life balance during the search."
+    ),
+    "analytics": (
+        "You are a career analytics advisor. Help users understand their job search metrics, "
+        "application-to-interview ratios, response rates, and how to optimize their strategy."
+    ),
+    "compliance": (
+        "You are a Swiss employment law expert. Advise on RAV requirements, unemployment benefits, "
+        "work permits (B/C/L), notice periods, and Swiss labour regulations."
+    ),
+}
+
+
 async def _ai_respond(user_msg: str, service_data: dict, service_name: str, client_ip: str = "") -> str:
-    """Call Claude to generate a conversational response from service data."""
+    """L72: Call Claude to generate a genuinely helpful response.
+
+    If service data is real (from AI backends), Claude incorporates it.
+    If service data is demo/fallback, Claude uses its own Swiss career expertise.
+    """
     if not AI_CHAT_ENABLED:
         return ""
     try:
-        # Build context from service data
-        data_json = json.dumps(service_data.get("data", {}), indent=2, default=str)[:2000]
-        system_prompt = (
-            "You are the AI assistant for JobTrackerPro, a Swiss job search platform. "
-            "Respond conversationally based on the service data provided. Be helpful, concise, "
-            "and format key information clearly. If the data contains lists, summarize the top items. "
-            "If the user's query filtered the results (check for 'query' key in data), acknowledge what they searched for. "
-            "Keep responses under 150 words. Do not mention internal service names or technical details."
+        demo_mode = _is_demo_data(service_data)
+        domain = service_data.get("domain", "general")
+
+        # Build system prompt: domain expertise + context awareness
+        base_prompt = (
+            "You are the AI career assistant for JobTrackerPro, a comprehensive Swiss job search platform. "
+            "You have deep knowledge of the Swiss job market, career development, and professional networking. "
+            "Be helpful, specific, and actionable. Format key information clearly with markdown. "
+            "Keep responses under 200 words. Never mention internal service names or technical details."
         )
-        # L68: Include conversation history for context
-        history = _CONV_MEMORY.get(client_ip, [])[-4:]  # last 2 turns
+        domain_prompt = _INTENT_PROMPTS.get(domain, "")
+        if domain_prompt:
+            base_prompt += f"\n\nDomain expertise: {domain_prompt}"
+
+        # Build user message with context
+        history = _CONV_MEMORY.get(client_ip, [])[-4:]
         history_text = ""
         if history:
             history_text = "Recent conversation:\n" + "\n".join(
-                f"{'User' if h['role']=='user' else 'Assistant'}: {h['content'][:100]}" for h in history
+                f"{'User' if h['role']=='user' else 'Assistant'}: {h['content'][:150]}" for h in history
             ) + "\n\n"
-        user_prompt = (
-            f"{history_text}"
-            f"User asked: \"{user_msg}\"\n\n"
-            f"Service data:\n{data_json}\n\n"
-            "Generate a helpful, natural response."
-        )
-        # Use httpx for async API call
+
+        if demo_mode:
+            user_prompt = (
+                f"{history_text}"
+                f"User asked: \"{user_msg}\"\n\n"
+                "Note: The backend service returned placeholder data. "
+                "Respond using your own knowledge and expertise about the Swiss job market. "
+                "Provide genuinely helpful, specific advice."
+            )
+        else:
+            data_json = json.dumps(service_data.get("data", {}), indent=2, default=str)[:2000]
+            user_prompt = (
+                f"{history_text}"
+                f"User asked: \"{user_msg}\"\n\n"
+                f"Live service data from {service_name}:\n{data_json}\n\n"
+                "Incorporate this data into a helpful, conversational response."
+            )
+
         async with _sync_httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
                 "https://api.anthropic.com/v1/messages",
@@ -286,18 +356,18 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str, clie
                 },
                 json={
                     "model": AI_MODEL,
-                    "max_tokens": 300,
+                    "max_tokens": 400,
                     "messages": [{"role": "user", "content": user_prompt}],
-                    "system": system_prompt,
+                    "system": base_prompt,
                 },
             )
             if resp.status_code == 200:
                 return resp.json()["content"][0]["text"]
             else:
-                logger.warning(f"L68: Claude API error {resp.status_code}: {resp.text[:200]}")
+                logger.warning(f"L72: Claude API error {resp.status_code}: {resp.text[:200]}")
                 return ""
     except Exception as exc:
-        logger.warning(f"L68: AI response failed: {exc}")
+        logger.warning(f"L72: AI response failed: {exc}")
         return ""
 
 
@@ -480,12 +550,21 @@ async def chat_route(request: Request):
         latency = (_t.time() - t0) * 1000
         _log_chat(msg, routed=True, service=route["service"], error=str(exc), latency_ms=latency)
         logger.warning(f"chat/route error for {route['service']}: {exc}")
+        # L72: AI fallback when service is unreachable — user still gets a helpful response
+        ai_fallback = await _ai_general_chat(msg, client_ip)
+        if client_ip:
+            if client_ip not in _CONV_MEMORY:
+                _CONV_MEMORY[client_ip] = []
+            _CONV_MEMORY[client_ip].append({"role": "user", "content": msg})
+            if ai_fallback:
+                _CONV_MEMORY[client_ip].append({"role": "assistant", "content": ai_fallback[:200]})
+            _CONV_MEMORY[client_ip] = _CONV_MEMORY[client_ip][-10:]
         return {
             "routed": True,
             "service": route["service"],
             "path": route["path"],
             "data": None,
-            "error": "service_unavailable",
+            "ai_response": ai_fallback,
         }
 
 

@@ -43,9 +43,11 @@ print(f"[start.sh] Stub main.py generated for {svc}")
 PYEOF
     fi
 
+    # L72: AI backend services use native ports (SERVICE_PORT env var)
+    SVC_PORT="${SERVICE_PORT:-8000}"
     exec uvicorn main:app \
         --host 0.0.0.0 \
-        --port 8000 \
+        --port "$SVC_PORT" \
         --workers 1 \
         --log-level info \
         --no-access-log
