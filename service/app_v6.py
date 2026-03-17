@@ -242,6 +242,70 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 AI_CHAT_ENABLED = bool(ANTHROPIC_API_KEY)
 AI_MODEL = "claude-haiku-4-5-20251001"
 
+# ── L72: Job search query extraction ─────────────────────────────────────────
+_JOB_STOP_WORDS = {
+    "find", "show", "search", "get", "list", "me", "my", "i", "want", "need",
+    "looking", "for", "the", "a", "an", "in", "at", "on", "to", "of", "and",
+    "or", "with", "some", "any", "available", "open", "please", "can", "you",
+    "jobs", "job", "positions", "position", "roles", "role", "opportunities",
+    "vacancies", "openings", "work", "career", "careers",
+}
+_SWISS_LOCATIONS = {
+    "zurich", "zürich", "geneva", "genève", "geneve", "basel", "bern", "berne",
+    "lausanne", "winterthur", "lucerne", "luzern", "st gallen", "lugano",
+    "biel", "thun", "aarau", "zug", "fribourg", "schaffhausen", "chur",
+    "switzerland", "swiss",
+}
+
+
+def _extract_job_search_terms(msg: str) -> str:
+    """Extract meaningful job search terms from a natural language message.
+
+    "zurich ba jobs in banking" → "business analyst banking" with location=zurich
+    "find python developer jobs in Basel" → "python developer" with location=basel
+    """
+    words = msg.lower().split()
+    location_parts = []
+    search_parts = []
+
+    for word in words:
+        cleaned = word.strip(".,!?;:")
+        if cleaned in _SWISS_LOCATIONS:
+            location_parts.append(cleaned)
+        elif cleaned not in _JOB_STOP_WORDS and len(cleaned) > 1:
+            search_parts.append(cleaned)
+
+    # Expand common abbreviations
+    expanded = []
+    for part in search_parts:
+        if part == "ba":
+            expanded.append("business analyst")
+        elif part == "pm":
+            expanded.append("project manager")
+        elif part == "qa":
+            expanded.append("quality assurance")
+        elif part == "hr":
+            expanded.append("human resources")
+        elif part == "it":
+            expanded.append("IT")
+        elif part == "ml":
+            expanded.append("machine learning")
+        elif part == "ai":
+            expanded.append("artificial intelligence")
+        elif part == "devops":
+            expanded.append("devops")
+        elif part == "sre":
+            expanded.append("site reliability engineer")
+        else:
+            expanded.append(part)
+
+    query = " ".join(expanded)
+    if location_parts:
+        # jobs.ch handles location separately, but including it helps relevance
+        query = query + " " + " ".join(location_parts) if query else " ".join(location_parts)
+
+    return query.strip()
+
 if AI_CHAT_ENABLED:
     logger.info("L68: AI chat enabled (Claude Haiku)")
 else:
@@ -624,8 +688,11 @@ async def chat_route(request: Request):
             "suggestions": ["jobs", "status", "notifications", "analytics"],
         }
     svc_dns = service_to_dns(route["service"])
-    # L68: Pass user message as query param so service can filter results
-    _query_params = {"q": msg} if msg else {}
+    # L72: Extract meaningful search terms for job queries instead of raw message
+    _search_query = msg
+    if route.get("service") in ("job-search-service", "career-search-core-service", "job-discovery-service"):
+        _search_query = _extract_job_search_terms(msg)
+    _query_params = {"q": _search_query} if _search_query else {}
     url = f"http://{svc_dns}:8000{route['path']}"
     try:
         method = route["method"]
