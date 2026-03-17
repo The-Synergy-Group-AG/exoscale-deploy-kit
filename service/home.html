@@ -71,9 +71,11 @@
 <header>
   <h1>⚡ JobTrackerPro</h1>
   <span class="badge">AI-First</span>
+  <span class="badge" id="user-badge" style="background:#059669;display:none" title="Click for profile" onclick="sendPrompt('my profile')"></span>
   <div class="mode-toggle">
     <button class="mode-btn active" id="btn-ai" onclick="setMode('ai')">AI Assistant</button>
     <button class="mode-btn" id="btn-classic" onclick="setMode('classic')">Classic View</button>
+    <button class="mode-btn" id="btn-apps" onclick="sendPrompt('my applications')">My Apps</button>
   </div>
 </header>
 
@@ -81,19 +83,21 @@
   <div class="chat-history" id="chat-history">
     <div class="welcome" id="welcome">
       <h2>Hello, I'm your AI Career Assistant</h2>
-      <p>Ask me about jobs, your CV, interviews, analytics, or any service in the platform. I'll connect you to live data in real time.</p>
+      <p>I search real Swiss jobs, review your CV, and coach you through your job search. What can I help with?</p>
       <div class="quick-prompts">
-        <button class="qp" onclick="sendPrompt('Show me available jobs')">Show me available jobs</button>
-        <button class="qp" onclick="sendPrompt('Check system status')">Check system status</button>
-        <button class="qp" onclick="sendPrompt('My notifications')">My notifications</button>
-        <button class="qp" onclick="sendPrompt('Interview schedule')">Interview schedule</button>
-        <button class="qp" onclick="sendPrompt('Analytics dashboard')">Analytics dashboard</button>
-        <button class="qp" onclick="sendPrompt('Security status')">Security status</button>
+        <button class="qp" onclick="sendPrompt('Find Python jobs in Zurich')">Find jobs in Zurich</button>
+        <button class="qp" onclick="sendPrompt('Help me improve my CV')">CV review</button>
+        <button class="qp" onclick="sendPrompt('Prepare me for interviews')">Interview prep</button>
+        <button class="qp" onclick="sendPrompt('Swiss salary expectations for engineers')">Swiss salaries</button>
+        <button class="qp" onclick="sendPrompt('my applications')">My applications</button>
+        <button class="qp" onclick="document.getElementById('cv-upload').click()">Upload my CV</button>
       </div>
     </div>
   </div>
   <div class="input-bar">
-    <input id="msg-input" type="text" placeholder="Ask anything — jobs, CV, interviews, analytics…" onkeydown="if(event.key==='Enter')sendMessage()">
+    <input id="cv-upload" type="file" accept=".pdf,.docx,.doc,.txt" style="display:none" onchange="uploadCV(this)">
+    <button onclick="document.getElementById('cv-upload').click()" title="Upload CV (PDF/DOCX)" style="background:#7c3aed;padding:.6rem .8rem;border:none;border-radius:.5rem;color:#fff;cursor:pointer;font-size:.875rem">📄</button>
+    <input id="msg-input" type="text" placeholder="Ask anything — jobs, CV, interviews, Swiss market…" onkeydown="if(event.key==='Enter')sendMessage()">
     <button id="send-btn" onclick="sendMessage()">Send</button>
   </div>
   <div class="suggestions" id="suggestions">
@@ -123,9 +127,75 @@ function setMode(mode) {
   document.getElementById('btn-classic').classList.toggle('active', mode === 'classic');
 }
 
+// ── Plan 131: JWT Token Management ────────────────────────────────────────────
+const TOKEN_KEY = 'jtp_token';
+const USER_KEY = 'jtp_user_id';
+
+async function ensureToken() {
+  let token = localStorage.getItem(TOKEN_KEY);
+  if (token) return token;
+  try {
+    const resp = await fetch('/api/auth/token', {method: 'POST'});
+    if (resp.ok) {
+      const data = await resp.json();
+      localStorage.setItem(TOKEN_KEY, data.token);
+      localStorage.setItem(USER_KEY, data.user_id);
+      const badge = document.getElementById('user-badge');
+      if (badge) { badge.textContent = data.user_id.slice(-6); badge.style.display = 'inline-block'; }
+      return data.token;
+    }
+  } catch (e) { console.warn('Token fetch failed:', e); }
+  return null;
+}
+
+function authHeaders() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  return token ? {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'} : {'Content-Type': 'application/json'};
+}
+
+// ── Plan 131: CV Upload ──────────────────────────────────────────────────────
+async function uploadCV(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+  const token = await ensureToken();
+  const thinkId = addMsg('user', 'Uploading CV: ' + file.name + '...');
+  const botId = addMsg('bot', '<span class="thinking">Analyzing your CV with AI...</span>');
+
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const headers = token ? {'Authorization': 'Bearer ' + token} : {};
+    const resp = await fetch('/api/cv/upload', {method: 'POST', headers, body: formData, signal: AbortSignal.timeout(30000)});
+    if (resp.ok) {
+      const data = await resp.json();
+      let html = '';
+      if (data.ai_advice) {
+        html = '<div class="ai-resp">' + esc(data.ai_advice).replace(/\n/g, '<br>') + '</div>';
+      } else if (data.analysis && data.analysis.analysis) {
+        html = '<div class="ai-resp"><strong>CV Analysis:</strong><br>' + esc(data.analysis.analysis).replace(/\n/g, '<br>') + '</div>';
+      } else {
+        html = '<div class="ai-resp">CV received (' + data.text_length + ' chars). Ask me questions about optimizing it for Swiss employers.</div>';
+      }
+      updateMsg(botId, html);
+    } else {
+      const err = await resp.json().catch(() => ({}));
+      updateMsg(botId, '<span class="err">Upload failed: ' + esc(err.error || resp.status) + '</span>');
+    }
+  } catch (e) {
+    updateMsg(botId, '<span class="err">Upload error: ' + esc(e.message || 'timeout') + '</span>');
+  }
+}
+
 (function init() {
   const saved = localStorage.getItem(MODE_KEY) || 'ai';
   setMode(saved);
+  ensureToken();
+  const uid = localStorage.getItem(USER_KEY);
+  if (uid) {
+    const badge = document.getElementById('user-badge');
+    if (badge) { badge.textContent = uid.slice(-6); badge.style.display = 'inline-block'; }
+  }
 })();
 
 // ── Intent routing (L64: curated + catalog-driven) ──────────────────────────
