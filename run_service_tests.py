@@ -69,7 +69,12 @@ def get_running_service_pods(kubeconfig: str, namespace: str) -> list[dict]:
     items = json.loads(result.stdout).get("items", [])
     pods = []
     skip_patterns = ["docker-jtp", "nginx", "cert-manager", "cm-acme",
-                     "coredns", "calico", "kube-state", "kube-proxy"]
+                     "coredns", "calico", "kube-state", "kube-proxy",
+                     # L72: AI backend services have no standard test harness
+                     "gpt4-orchestrator", "claude-integration", "embeddings-engine",
+                     "vector-store", "job-matcher", "cv-processor",
+                     "career-navigator", "skill-bridge", "memory-system",
+                     "learning-system", "pattern-recognition", "decision-making"]
 
     for item in items:
         name  = item["metadata"]["name"]

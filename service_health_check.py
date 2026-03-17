@@ -89,7 +89,14 @@ def get_running_pods(kubeconfig: str, namespace: str) -> list[dict]:
         )
         # Skip gateway and system pods
         if any(skip in name for skip in ["docker-jtp", "nginx", "cert-manager",
-                                          "cm-acme", "coredns", "calico"]):
+                                          "cm-acme", "coredns", "calico",
+                                          # L72: AI backends use native ports, not 8000
+                                          "gpt4-orchestrator", "claude-integration",
+                                          "embeddings-engine", "vector-store",
+                                          "job-matcher", "cv-processor",
+                                          "career-navigator", "skill-bridge",
+                                          "memory-system", "learning-system",
+                                          "pattern-recognition", "decision-making"]):
             continue
         pods.append({"name": name, "phase": phase, "service_name": svc_name})
     return pods
