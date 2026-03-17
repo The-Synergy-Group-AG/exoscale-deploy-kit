@@ -555,6 +555,31 @@ def teardown(args: argparse.Namespace) -> None:
         log(f"Using kubeconfig: {kubeconfig}")
         r = run_kubectl(["kubectl", "get", "namespaces"], kubeconfig)
         if k8s_ns in r.stdout:
+            # L72: Backup chat logs before destroying namespace
+            _log_backup = Path(__file__).parent / "chat_logs_backup.jsonl"
+            try:
+                import urllib.request
+                _domain = cfg.get("ingress", {}).get("domain", "")
+                if _domain:
+                    _export_url = f"https://{_domain}/chat/logs/export"
+                    import ssl
+                    _ctx = ssl.create_default_context()
+                    _ctx.check_hostname = False
+                    _ctx.verify_mode = ssl.CERT_NONE
+                    _req = urllib.request.Request(_export_url)
+                    _resp = urllib.request.urlopen(_req, timeout=15, context=_ctx)
+                    _data = _resp.read()
+                    if _data and len(_data) > 10:
+                        _log_backup.write_bytes(_data)
+                        _lines = _data.decode("utf-8", errors="replace").count("\n")
+                        ok(f"L72: Chat logs backed up ({_lines} entries) → {_log_backup}")
+                    else:
+                        log("L72: No chat log data to backup")
+                else:
+                    log("L72: No domain configured — skipping chat log backup")
+            except Exception as _exc:
+                log(f"L72: Chat log backup skipped ({_exc})")
+
             # L72: Backup TLS certificate before destroying namespace
             _tls_secret = cfg.get("ingress", {}).get("domain", "").replace(".", "-") + "-tls"
             if _tls_secret != "-tls":

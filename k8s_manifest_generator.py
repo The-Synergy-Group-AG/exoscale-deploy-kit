@@ -159,6 +159,13 @@ spec:
           initialDelaySeconds: 30
           periodSeconds: 30
           failureThreshold: 3
+        volumeMounts:
+        - name: chat-logs
+          mountPath: /app/logs
+      volumes:
+      - name: chat-logs
+        emptyDir:
+          sizeLimit: 500Mi
 """)
 
     # ── 02: Service ────────────────────────────────────────────────────────

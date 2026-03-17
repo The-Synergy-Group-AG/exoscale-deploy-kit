@@ -2041,6 +2041,33 @@ if __name__ == "__main__":
         stage_connectivity_test(kubeconfig)
         gf_stage_end('6b Connectivity Test', 'success')
 
+        # L72: Restore chat logs from backup (deep persistence across deploys)
+        _chat_backup = KIT_DIR / "chat_logs_backup.jsonl"
+        if _chat_backup.exists():
+            try:
+                _domain = cfg.get("ingress", {}).get("domain", "")
+                if _domain:
+                    import urllib.request, ssl
+                    _ctx = ssl.create_default_context()
+                    _ctx.check_hostname = False
+                    _ctx.verify_mode = ssl.CERT_NONE
+                    _data = _chat_backup.read_bytes()
+                    _req = urllib.request.Request(
+                        f"https://{_domain}/chat/logs/import",
+                        data=_data,
+                        headers={"Content-Type": "application/jsonl"},
+                        method="POST",
+                    )
+                    _resp = urllib.request.urlopen(_req, timeout=15, context=_ctx)
+                    _result = json.loads(_resp.read())
+                    ok(f"L72: Chat logs restored — {_result.get('imported', 0)} entries imported")
+                else:
+                    log("L72: No domain — skipping chat log restore")
+            except Exception as _exc:
+                warn(f"L72: Chat log restore failed (non-fatal): {_exc}")
+        else:
+            log("L72: No chat log backup found — starting fresh")
+
         gf_stage_start('7 Final Report')
         stage_report()
         gf_stage_end('7 Final Report', 'success', f'Image={IMAGE}')

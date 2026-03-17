@@ -429,17 +429,61 @@ async def _ai_general_chat(user_msg: str, client_ip: str = "") -> str:
         return "I'd be happy to help! Try asking about jobs, interviews, analytics, or system status."
 
 
-# ── L67: Chat interaction log (in-memory ring buffer) ────────────────────────
+# ── L72: Persistent chat interaction log ─────────────────────────────────────
+# Chat logs are written to a JSONL file for deep persistence across restarts.
+# On startup, existing logs are loaded to rebuild stats and memory.
+# /chat/logs/export returns raw JSONL for backup/analysis.
+# /chat/logs/import accepts JSONL upload for restore after redeploy.
 
-_CHAT_LOG: deque = deque(maxlen=1000)  # last 1000 interactions
+_CHAT_LOG_DIR = Path(os.getenv("CHAT_LOG_DIR", "/app/logs"))
+_CHAT_LOG_FILE = _CHAT_LOG_DIR / "chat_interactions.jsonl"
+_CHAT_LOG: deque = deque(maxlen=10000)  # last 10k interactions (in-memory cache)
 _CHAT_STATS: dict = {"total": 0, "routed": 0, "unrouted": 0, "errors": 0, "by_service": {}}
-# L68: Conversation memory — last 5 turns per "session" (identified by IP for now)
 _CONV_MEMORY: dict = {}  # ip → [{"role": "user/assistant", "content": str}]
 
 
-def _log_chat(msg: str, routed: bool, service: str = None, error: str = None, latency_ms: float = 0):
-    """Record a chat interaction for analytics."""
-    # L67: Structured log to stdout (captured by kubectl logs across all pods)
+def _init_chat_log():
+    """Load existing chat log from persistent file on startup."""
+    _CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    if not _CHAT_LOG_FILE.exists():
+        logger.info("L72: No existing chat log — starting fresh")
+        return
+    loaded = 0
+    try:
+        with open(_CHAT_LOG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    _CHAT_LOG.append(entry)
+                    # Rebuild stats
+                    _CHAT_STATS["total"] += 1
+                    if entry.get("routed"):
+                        _CHAT_STATS["routed"] += 1
+                        svc = entry.get("service")
+                        if svc:
+                            _CHAT_STATS["by_service"][svc] = _CHAT_STATS["by_service"].get(svc, 0) + 1
+                    else:
+                        _CHAT_STATS["unrouted"] += 1
+                    if entry.get("error"):
+                        _CHAT_STATS["errors"] += 1
+                    loaded += 1
+                except json.JSONDecodeError:
+                    continue
+        logger.info(f"L72: Loaded {loaded} chat interactions from persistent log")
+    except Exception as exc:
+        logger.warning(f"L72: Failed to load chat log: {exc}")
+
+
+# Load on module init
+_init_chat_log()
+
+
+def _log_chat(msg: str, routed: bool, service: str = None, error: str = None,
+              latency_ms: float = 0, ai_response: str = None, client_ip: str = ""):
+    """Record a chat interaction — persisted to JSONL file + in-memory cache."""
     logger.info(f"CHAT|routed={routed}|service={service or 'none'}|latency={latency_ms:.0f}ms|error={error or ''}|msg={msg[:100]}")
     _CHAT_STATS["total"] += 1
     if routed:
@@ -450,20 +494,32 @@ def _log_chat(msg: str, routed: bool, service: str = None, error: str = None, la
         _CHAT_STATS["unrouted"] += 1
     if error:
         _CHAT_STATS["errors"] += 1
-    _CHAT_LOG.append({
+
+    entry = {
         "ts": _dt.now(_tz.utc).isoformat() + "Z",
-        "message": msg[:200],  # truncate for storage
+        "pod": os.getenv("HOSTNAME", "unknown"),
+        "client_ip": client_ip[:20] if client_ip else "",
+        "message": msg[:500],
         "routed": routed,
         "service": service,
         "error": error,
         "latency_ms": round(latency_ms, 1),
-    })
+        "ai_response": (ai_response[:1000] if ai_response else None),
+    }
+    _CHAT_LOG.append(entry)
+
+    # Append to persistent JSONL file
+    try:
+        with open(_CHAT_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+    except Exception as exc:
+        logger.warning(f"L72: Failed to persist chat log: {exc}")
 
 
 @app.get("/chat/analytics")
 async def chat_analytics():
-    """L67: Chat interaction analytics — review recent interactions."""
-    recent = list(_CHAT_LOG)[-50:]  # last 50
+    """L72: Chat interaction analytics with persistent history."""
+    recent = list(_CHAT_LOG)[-50:]
     top_services = sorted(_CHAT_STATS["by_service"].items(), key=lambda x: -x[1])[:10]
     unrouted_msgs = [e["message"] for e in _CHAT_LOG if not e["routed"]][-20:]
     return {
@@ -471,7 +527,57 @@ async def chat_analytics():
         "top_services": top_services,
         "unrouted_messages": unrouted_msgs,
         "recent_interactions": recent,
+        "log_file": str(_CHAT_LOG_FILE),
+        "log_entries": len(_CHAT_LOG),
     }
+
+
+@app.get("/chat/logs/export")
+async def chat_logs_export():
+    """L72: Export full chat interaction log as JSONL for backup/analysis."""
+    from fastapi.responses import FileResponse
+    if _CHAT_LOG_FILE.exists():
+        return FileResponse(
+            _CHAT_LOG_FILE,
+            media_type="application/jsonl",
+            filename=f"chat_interactions_{_dt.now(_tz.utc).strftime('%Y%m%d_%H%M%S')}.jsonl",
+        )
+    return {"error": "No chat log file found", "path": str(_CHAT_LOG_FILE)}
+
+
+@app.post("/chat/logs/import")
+async def chat_logs_import(request: Request):
+    """L72: Import chat log JSONL (for restoring across deployments)."""
+    try:
+        body = await request.body()
+        lines = body.decode("utf-8").strip().split("\n")
+        imported = 0
+        _CHAT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_CHAT_LOG_FILE, "a", encoding="utf-8") as f:
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    _CHAT_LOG.append(entry)
+                    _CHAT_STATS["total"] += 1
+                    if entry.get("routed"):
+                        _CHAT_STATS["routed"] += 1
+                        svc = entry.get("service")
+                        if svc:
+                            _CHAT_STATS["by_service"][svc] = _CHAT_STATS["by_service"].get(svc, 0) + 1
+                    else:
+                        _CHAT_STATS["unrouted"] += 1
+                    if entry.get("error"):
+                        _CHAT_STATS["errors"] += 1
+                    f.write(line + "\n")
+                    imported += 1
+                except json.JSONDecodeError:
+                    continue
+        return {"imported": imported, "total_entries": len(_CHAT_LOG)}
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @app.post("/chat/route")
@@ -490,7 +596,8 @@ async def chat_route(request: Request):
     # L68c: If no keyword match, use Claude for intent routing + general conversation
     if not route and AI_CHAT_ENABLED:
         ai_fallback = await _ai_general_chat(msg, client_ip)
-        _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000)
+        _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000,
+                  ai_response=ai_fallback, client_ip=client_ip)
         # Save conversation memory
         if client_ip:
             if client_ip not in _CONV_MEMORY:
@@ -507,7 +614,7 @@ async def chat_route(request: Request):
             "ai_response": ai_fallback,
         }
     if not route:
-        _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000)
+        _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000, client_ip=client_ip)
         return {
             "routed": False,
             "suggestions": ["jobs", "status", "notifications", "analytics"],
@@ -536,7 +643,8 @@ async def chat_route(request: Request):
             # Keep last 10 turns
             _CONV_MEMORY[client_ip] = _CONV_MEMORY[client_ip][-10:]
         latency = (_t.time() - t0) * 1000
-        _log_chat(msg, routed=True, service=route["service"], latency_ms=latency)
+        _log_chat(msg, routed=True, service=route["service"], latency_ms=latency,
+                  ai_response=ai_response, client_ip=client_ip)
         result = {
             "routed": True,
             "service": route["service"],
@@ -548,7 +656,8 @@ async def chat_route(request: Request):
         return result
     except Exception as exc:
         latency = (_t.time() - t0) * 1000
-        _log_chat(msg, routed=True, service=route["service"], error=str(exc), latency_ms=latency)
+        _log_chat(msg, routed=True, service=route["service"], error=str(exc),
+                  latency_ms=latency, client_ip=client_ip)
         logger.warning(f"chat/route error for {route['service']}: {exc}")
         # L72: AI fallback when service is unreachable — user still gets a helpful response
         ai_fallback = await _ai_general_chat(msg, client_ip)
