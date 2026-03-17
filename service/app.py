@@ -312,10 +312,12 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str, clie
 
         # Build system prompt: domain expertise + context awareness
         base_prompt = (
-            "You are the AI career assistant for JobTrackerPro, a comprehensive Swiss job search platform. "
+            "You are the AI career assistant for JobTrackerPro, a comprehensive Swiss job search platform "
+            "that searches real jobs from jobs.ch, provides CV optimization, interview coaching, and career guidance. "
             "You have deep knowledge of the Swiss job market, career development, and professional networking. "
             "Be helpful, specific, and actionable. Format key information clearly with markdown. "
-            "Keep responses under 200 words. Never mention internal service names or technical details."
+            "Keep responses under 200 words. Never mention internal service names or technical details. "
+            "NEVER say you don't have access to jobs or real-time data — the platform DOES have live job search."
         )
         domain_prompt = _INTENT_PROMPTS.get(domain, "")
         if domain_prompt:
@@ -333,9 +335,11 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str, clie
             user_prompt = (
                 f"{history_text}"
                 f"User asked: \"{user_msg}\"\n\n"
-                "Note: The backend service returned placeholder data. "
-                "Respond using your own knowledge and expertise about the Swiss job market. "
-                "Provide genuinely helpful, specific advice."
+                "The platform has live job search capabilities but the query was too broad "
+                "to return specific results. Help the user refine their search — suggest "
+                "they specify a role, location, or skill. Also provide helpful Swiss job "
+                "market advice based on your knowledge. NEVER say you don't have access "
+                "to jobs — the platform DOES search jobs.ch for specific queries."
             )
         else:
             data_json = json.dumps(service_data.get("data", {}), indent=2, default=str)[:2000]
