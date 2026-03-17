@@ -767,6 +767,325 @@ async def chat_route(request: Request):
         }
 
 
+# ── Plan 131: Core Product Features — JWT + Upload + Profile + Applications ────
+
+import hashlib as _hashlib
+import hmac as _hmac
+import base64 as _b64
+import uuid as _uuid
+
+_JWT_SECRET = os.getenv(
+    "JWT_SECRET", "ffc86ecae403d31816cfed50b92dd0815b61de5fd2807e93154d3b2ce6d58d0a"
+)
+
+
+def _jwt_encode(payload: dict) -> str:
+    """Minimal JWT encoder (HS256) — no external dependency."""
+    header = _b64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).rstrip(b"=")
+    body = _b64.urlsafe_b64encode(json.dumps(payload, default=str).encode()).rstrip(b"=")
+    msg = header + b"." + body
+    sig = _hmac.new(_JWT_SECRET.encode(), msg, _hashlib.sha256).digest()
+    sig_b64 = _b64.urlsafe_b64encode(sig).rstrip(b"=")
+    return (msg + b"." + sig_b64).decode()
+
+
+def _jwt_decode(token: str) -> dict | None:
+    """Minimal JWT decoder — returns payload or None if invalid."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        msg = (parts[0] + "." + parts[1]).encode()
+        sig = _b64.urlsafe_b64decode(parts[2] + "==")
+        expected = _hmac.new(_JWT_SECRET.encode(), msg, _hashlib.sha256).digest()
+        if not _hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(_b64.urlsafe_b64decode(parts[1] + "=="))
+        return payload
+    except Exception:
+        return None
+
+
+def _get_user_id(request: Request) -> str:
+    """Extract user_id from JWT Bearer token, or generate new one."""
+    auth = request.headers.get("authorization", "")
+    if auth.startswith("Bearer "):
+        payload = _jwt_decode(auth[7:])
+        if payload and "user_id" in payload:
+            return payload["user_id"]
+    return ""
+
+
+@app.post("/api/auth/token")
+async def create_token():
+    """Plan 131: Generate a JWT token for a new user (frictionless — no registration)."""
+    user_id = f"user-{_uuid.uuid4().hex[:12]}"
+    token = _jwt_encode({"user_id": user_id, "iat": _dt.now(_tz.utc).isoformat()})
+    return {"token": token, "user_id": user_id}
+
+
+@app.post("/api/cv/upload")
+async def upload_cv(request: Request):
+    """Plan 131: Upload CV file, extract text, analyze via cv_processor:8020."""
+    user_id = _get_user_id(request) or "anon"
+
+    # Read raw body (multipart or plain text)
+    content_type = request.headers.get("content-type", "")
+    body = await request.body()
+
+    cv_text = ""
+    filename = "uploaded_cv"
+
+    if "multipart" in content_type:
+        # Parse multipart form data
+        from fastapi import UploadFile  # noqa: F811
+        import io
+
+        # Simple multipart extraction — find the file content
+        # For proper multipart, python-multipart handles this via FastAPI
+        try:
+            form = await request.form()
+            file_field = form.get("file") or form.get("cv")
+            if file_field and hasattr(file_field, "read"):
+                file_bytes = await file_field.read()
+                filename = getattr(file_field, "filename", "cv") or "cv"
+
+                if filename.lower().endswith(".pdf"):
+                    try:
+                        import PyPDF2  # type: ignore[import-untyped]
+
+                        reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+                        cv_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+                    except ImportError:
+                        cv_text = file_bytes.decode("utf-8", errors="replace")
+                elif filename.lower().endswith(".docx"):
+                    try:
+                        import docx  # type: ignore[import-untyped]
+
+                        doc = docx.Document(io.BytesIO(file_bytes))
+                        cv_text = "\n".join(p.text for p in doc.paragraphs)
+                    except ImportError:
+                        cv_text = file_bytes.decode("utf-8", errors="replace")
+                else:
+                    cv_text = file_bytes.decode("utf-8", errors="replace")
+            else:
+                return JSONResponse({"error": "No file field found. Use 'file' or 'cv'."}, 400)
+        except Exception as exc:
+            logger.warning(f"Plan 131: Form parse error: {exc}")
+            cv_text = body.decode("utf-8", errors="replace")
+    elif "text" in content_type or "json" in content_type:
+        # Accept plain text or JSON with cv_text field
+        try:
+            data = json.loads(body)
+            cv_text = data.get("cv_text", data.get("text", ""))
+        except json.JSONDecodeError:
+            cv_text = body.decode("utf-8", errors="replace")
+    else:
+        cv_text = body.decode("utf-8", errors="replace")
+
+    if not cv_text or len(cv_text.strip()) < 20:
+        return JSONResponse({"error": "CV text too short or empty. Upload a PDF/DOCX or paste text."}, 400)
+
+    # Call cv_processor:8020 for AI analysis
+    try:
+        async with _sync_httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                "http://cv-processor:8020/analyze",
+                json={"user_id": user_id, "data": cv_text[:5000], "context": ["cv_upload", filename]},
+            )
+            if resp.status_code == 200:
+                analysis = resp.json()
+            else:
+                analysis = {"analysis": "CV received but AI analysis unavailable.", "source": "fallback"}
+    except Exception as exc:
+        logger.warning(f"Plan 131: cv_processor call failed: {exc}")
+        analysis = {"analysis": "CV received but AI backend unavailable.", "source": "fallback"}
+
+    # Also get Claude to provide Swiss CV advice
+    ai_advice = ""
+    if AI_CHAT_ENABLED:
+        try:
+            ai_advice = await _ai_respond(
+                f"Review this CV for Swiss job market:\n{cv_text[:2000]}",
+                {"data": analysis, "domain": "document"},
+                "cv-processor",
+                request.client.host if request.client else "",
+            )
+        except Exception:
+            pass
+
+    return {
+        "status": "uploaded",
+        "user_id": user_id,
+        "filename": filename,
+        "text_length": len(cv_text),
+        "analysis": analysis,
+        "ai_advice": ai_advice,
+    }
+
+
+@app.get("/api/profile")
+async def get_profile(request: Request):
+    """Plan 131: Get user profile from user-profile-service."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "No auth token. Call POST /api/auth/token first."}, 401)
+
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"http://user-profile-service:8000/users/{user_id}")
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as exc:
+        logger.warning(f"Plan 131: profile fetch failed: {exc}")
+
+    return {"user_id": user_id, "profile": None, "message": "No profile yet. Use PUT /api/profile to create one."}
+
+
+@app.put("/api/profile")
+async def update_profile(request: Request):
+    """Plan 131: Create/update user profile."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "No auth token. Call POST /api/auth/token first."}, 401)
+
+    body = await request.json()
+    body["user_id"] = user_id
+
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.put(f"http://user-profile-service:8000/users/{user_id}", json=body)
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as exc:
+        logger.warning(f"Plan 131: profile update failed: {exc}")
+
+    # Store in memory system as fallback
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                "http://memory-system:8009/analyze",
+                json={"user_id": user_id, "data": json.dumps(body), "context": ["profile"]},
+            )
+    except Exception:
+        pass
+
+    return {"status": "updated", "user_id": user_id, "profile": body}
+
+
+@app.get("/api/applications")
+async def get_applications(request: Request):
+    """Plan 131: List user's job applications."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "No auth token."}, 401)
+
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"http://application-service:8000/data", params={"q": user_id})
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as exc:
+        logger.warning(f"Plan 131: applications fetch failed: {exc}")
+
+    return {"user_id": user_id, "applications": [], "message": "No applications tracked yet."}
+
+
+@app.post("/api/applications")
+async def create_application(request: Request):
+    """Plan 131: Track a new job application."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "No auth token."}, 401)
+
+    body = await request.json()
+    body["user_id"] = user_id
+    body["status"] = body.get("status", "applied")
+    body["applied_at"] = _dt.now(_tz.utc).isoformat()
+    body["id"] = f"app-{_uuid.uuid4().hex[:8]}"
+
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post("http://application-service:8000/process", json=body)
+            if resp.status_code in (200, 201):
+                return {"status": "tracked", "application": body}
+    except Exception as exc:
+        logger.warning(f"Plan 131: application create failed: {exc}")
+
+    # Store via memory system as fallback
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                "http://memory-system:8009/analyze",
+                json={"user_id": user_id, "data": json.dumps(body), "context": ["application"]},
+            )
+    except Exception:
+        pass
+
+    return {"status": "tracked", "application": body}
+
+
+@app.put("/api/applications/{app_id}")
+async def update_application(app_id: str, request: Request):
+    """Plan 131: Update application status."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "No auth token."}, 401)
+
+    body = await request.json()
+    body["user_id"] = user_id
+    body["updated_at"] = _dt.now(_tz.utc).isoformat()
+
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.put(f"http://application-service:8000/data/{app_id}", json=body)
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as exc:
+        logger.warning(f"Plan 131: application update failed: {exc}")
+
+    return {"status": "updated", "id": app_id, "updates": body}
+
+
+@app.post("/api/apply")
+async def direct_apply(request: Request):
+    """Plan 131: Direct apply to a job — creates tracked application."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "No auth token."}, 401)
+
+    body = await request.json()
+    application = {
+        "id": f"app-{_uuid.uuid4().hex[:8]}",
+        "user_id": user_id,
+        "company": body.get("company", "Unknown"),
+        "role": body.get("title", body.get("role", "Unknown")),
+        "url": body.get("url", ""),
+        "source": body.get("source", "jobs.ch"),
+        "status": "applied",
+        "applied_at": _dt.now(_tz.utc).isoformat(),
+    }
+
+    # Track in application service
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            await client.post("http://application-service:8000/process", json=application)
+    except Exception:
+        pass
+
+    # Also store in memory for AI context
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                "http://memory-system:8009/analyze",
+                json={"user_id": user_id, "data": json.dumps(application), "context": ["applied"]},
+            )
+    except Exception:
+        pass
+
+    return {"status": "applied", "application": application, "message": f"Application tracked for {application['role']} at {application['company']}"}
+
+
 @app.get("/health")
 async def health():
     """Gateway health check."""
