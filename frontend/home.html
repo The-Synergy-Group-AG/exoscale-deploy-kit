@@ -404,10 +404,17 @@ async function sendMessage() {
       const chatHeaders = {'Content-Type':'application/json'};
       const tk = localStorage.getItem(TOKEN_KEY);
       if (tk) chatHeaders['Authorization'] = 'Bearer ' + tk;
+      // Send conversation history so server has full context (no reliance on server-side memory)
+      const historyMsgs = [];
+      document.querySelectorAll('.msg').forEach(m => {
+        const role = m.classList.contains('user') ? 'user' : 'assistant';
+        const text = m.querySelector('.bubble')?.textContent?.trim() || '';
+        if (text && text.length > 2 && !text.startsWith('Thinking')) historyMsgs.push({role, content: text.substring(0, 200)});
+      });
       const routeResp = await fetch('/chat/route', {
         method: 'POST',
         headers: chatHeaders,
-        body: JSON.stringify({message: msg}),
+        body: JSON.stringify({message: msg, history: historyMsgs.slice(-10)}),
         signal: AbortSignal.timeout(15000)
       });
       if (routeResp.ok) {

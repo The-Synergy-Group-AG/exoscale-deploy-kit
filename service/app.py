@@ -744,9 +744,13 @@ async def chat_route(request: Request):
         body = {}
     msg = body.get("message", "")
     client_ip = request.client.host if request.client else ""
-    # Use JWT user_id for conversation memory (consistent across pods with sticky sessions)
+    # Use JWT user_id for conversation memory
     user_id = _get_user_id(request)
     mem_key = user_id or client_ip
+    # Frontend sends conversation history — always use it (avoids multi-pod memory loss)
+    frontend_history = body.get("history", [])
+    if frontend_history and isinstance(frontend_history, list):
+        _CONV_MEMORY[mem_key] = frontend_history[-10:]
     route = _find_chat_route(msg)
 
     # Plan 131 Phase 3: Fetch user context for personalized AI responses
@@ -787,11 +791,11 @@ async def chat_route(request: Request):
 
     # L68c: If no keyword match, use Claude for intent routing + general conversation
     if not route and AI_CHAT_ENABLED:
-        ai_fallback = await _ai_general_chat(msg, client_ip, user_context=user_context)
+        ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context)
         _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000,
                   ai_response=ai_fallback, client_ip=client_ip)
         # Save conversation memory
-        if client_ip:
+        if mem_key:
             if mem_key not in _CONV_MEMORY:
                 _CONV_MEMORY[mem_key] = []
             _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
@@ -814,8 +818,17 @@ async def chat_route(request: Request):
     svc_dns = service_to_dns(route["service"])
     # L72: Extract meaningful search terms for job queries instead of raw message
     _search_query = msg
+    # If message is short/vague, augment with conversation context
+    _short_msg = len(msg.split()) < 6
+    _has_pronoun = any(w in msg.lower() for w in ("them", "those", "it", "that", "these", "yes", "please"))
+    if (_short_msg or _has_pronoun) and mem_key in _CONV_MEMORY:
+        # Pull context from recent conversation
+        recent = _CONV_MEMORY.get(mem_key, [])[-6:]
+        context_msgs = [h["content"] for h in recent if h["role"] == "user" and len(h["content"]) > 10]
+        if context_msgs:
+            _search_query = " ".join(context_msgs[-3:]) + " " + msg
     if route.get("service") in ("job-search-service", "career-search-core-service", "job-discovery-service"):
-        _search_query = _extract_job_search_terms(msg)
+        _search_query = _extract_job_search_terms(_search_query)
     _query_params = {"q": _search_query} if _search_query else {}
     url = f"http://{svc_dns}:8000{route['path']}"
     try:
@@ -827,10 +840,10 @@ async def chat_route(request: Request):
         service_data = resp.json()
         # L68: Generate AI conversational response with conversation memory
         client_ip = request.client.host if request.client else ""
-        ai_response = await _ai_respond(msg, service_data, route["service"], client_ip,
+        ai_response = await _ai_respond(msg, service_data, route["service"], mem_key,
                                          user_context=user_context)
         # Save to conversation memory
-        if client_ip:
+        if mem_key:
             if mem_key not in _CONV_MEMORY:
                 _CONV_MEMORY[mem_key] = []
             _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
@@ -856,8 +869,8 @@ async def chat_route(request: Request):
                   latency_ms=latency, client_ip=client_ip)
         logger.warning(f"chat/route error for {route['service']}: {exc}")
         # L72: AI fallback when service is unreachable — user still gets a helpful response
-        ai_fallback = await _ai_general_chat(msg, client_ip, user_context=user_context)
-        if client_ip:
+        ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        if mem_key:
             if mem_key not in _CONV_MEMORY:
                 _CONV_MEMORY[mem_key] = []
             _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
