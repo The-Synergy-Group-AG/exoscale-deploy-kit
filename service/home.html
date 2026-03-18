@@ -196,6 +196,10 @@ async function uploadCV(input) {
     const badge = document.getElementById('user-badge');
     if (badge) { badge.textContent = uid.slice(-6); badge.style.display = 'inline-block'; }
   }
+  // Restore previous conversation from localStorage
+  _loadConversation();
+  // Sync to Pinecone every 5 minutes (background, non-blocking)
+  setInterval(_syncToPinecone, 300000);
 })();
 
 // ── Intent routing (L64: curated + catalog-driven) ──────────────────────────
@@ -452,6 +456,57 @@ async function sendMessage() {
   }
 }
 
+// ── Strategic Conversation Persistence (AI-First: no account required) ────────
+const CONV_KEY = 'jtp_conversation';
+
+function _saveConversation() {
+  // Persist all messages to localStorage — survives page refresh
+  const msgs = [];
+  document.querySelectorAll('.msg').forEach(m => {
+    const role = m.classList.contains('user') ? 'user' : 'bot';
+    const html = m.querySelector('.bubble')?.innerHTML || '';
+    const time = m.querySelector('.msg-time')?.textContent || '';
+    if (html && !html.includes('class="thinking"')) msgs.push({role, html, time});
+  });
+  // Keep last 50 messages to avoid localStorage bloat
+  localStorage.setItem(CONV_KEY, JSON.stringify(msgs.slice(-50)));
+}
+
+function _loadConversation() {
+  // Restore conversation from localStorage on page load
+  try {
+    const saved = JSON.parse(localStorage.getItem(CONV_KEY) || '[]');
+    if (saved.length === 0) return;
+    // Remove welcome message
+    const welcome = document.getElementById('welcome');
+    if (welcome) welcome.style.display = 'none';
+    const container = document.getElementById('chat-history');
+    saved.forEach(m => {
+      const div = document.createElement('div');
+      div.className = `msg ${m.role}`;
+      div.id = 'msg-' + (++msgCounter);
+      div.innerHTML = `<div class="bubble">${m.html}</div><span class="msg-time">${m.time}</span>`;
+      container.appendChild(div);
+    });
+    scrollChat();
+  } catch (e) { /* ignore corrupt localStorage */ }
+}
+
+// Periodically persist to Pinecone via memory_system (background, non-blocking)
+async function _syncToPinecone() {
+  const tk = localStorage.getItem(TOKEN_KEY);
+  if (!tk) return;
+  const conv = localStorage.getItem(CONV_KEY);
+  if (!conv || conv === '[]') return;
+  try {
+    const headers = {'Content-Type':'application/json', 'Authorization':'Bearer ' + tk};
+    await fetch('/api/profile', {method: 'PUT', headers, body: JSON.stringify({
+      conversation_snapshot: conv.substring(0, 5000),
+      last_synced: new Date().toISOString()
+    })});
+  } catch (e) { /* non-fatal */ }
+}
+
 let msgCounter = 0;
 function appendMsg(role, html) {
   const id = 'msg-' + (++msgCounter);
@@ -462,6 +517,7 @@ function appendMsg(role, html) {
   div.innerHTML = `<div class="bubble">${html}</div><span class="msg-time">${now}</span>`;
   document.getElementById('chat-history').appendChild(div);
   scrollChat();
+  _saveConversation();
   return id;
 }
 
@@ -469,6 +525,7 @@ function updateMsg(id, html) {
   const el = document.getElementById(id);
   if (el) el.querySelector('.bubble').innerHTML = html;
   scrollChat();
+  _saveConversation();
 }
 
 function scrollChat() {
