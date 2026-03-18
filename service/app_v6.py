@@ -43,6 +43,28 @@ PROXY_TIMEOUT = float(os.getenv("PROXY_TIMEOUT", "2.5"))
 # Optional service DNS overrides (for edge cases where name conversion fails)
 SERVICE_DNS_OVERRIDES: dict[str, str] = {}
 
+# L72: AI backend services use native ports (not 8000). Map service DNS → port.
+# These 12 services were deployed with their own K8s Service objects on native ports.
+_AI_BACKEND_PORTS: dict[str, int] = {
+    "memory-system": 8009,
+    "learning-system": 8010,
+    "pattern-recognition": 8011,
+    "decision-making": 8012,
+    "career-navigator": 8017,
+    "skill-bridge": 8018,
+    "job-matcher": 8019,
+    "cv-processor": 8020,
+    "gpt4-orchestrator": 8032,
+    "claude-integration": 8033,
+    "embeddings-engine": 8034,
+    "vector-store": 8035,
+}
+
+
+def _get_service_port(service_dns: str) -> int:
+    """Return the correct port for a service. AI backends use native ports, all others use 8000."""
+    return _AI_BACKEND_PORTS.get(service_dns, 8000)
+
 # Persistent HTTP client — shared across all requests (connection pooling + DNS cache)
 _http_client: httpx.AsyncClient | None = None
 
@@ -311,6 +333,125 @@ if AI_CHAT_ENABLED:
 else:
     logger.warning("L68: AI chat DISABLED — no ANTHROPIC_API_KEY found. Set via K8s secret.")
 
+# ── Plan 133: AI-First Intent Classification (multilingual, replaces keywords) ──
+_INTENT_CACHE: dict = {}  # msg_lower → {"intent": ..., "language": ..., "confidence": ...}
+_AI_CALL_STATS = {
+    "anthropic_ok": 0, "anthropic_fail": 0, "openai_ok": 0, "openai_fail": 0,
+    "last_error": "", "last_success": "",
+}
+
+_INTENT_CLASSIFIER_PROMPT = (
+    "You are an intent classifier for JobTrackerPro, a Swiss job search platform.\n"
+    "Classify the user's message into exactly ONE intent and detect the language.\n"
+    "Return ONLY valid JSON on a single line: "
+    '{\"intent\": \"...\", \"language\": \"...\", \"confidence\": 0.0-1.0}\n\n'
+    "CRITICAL RULES:\n"
+    "1. If the user NEGATES an action (don't, not, stop, cancel, keine, pas, non), classify as general-chat.\n"
+    "2. Questions ABOUT a feature (should I enhance?) are general-chat, not the feature itself.\n"
+    "3. cover-letter and cv-enhance are DIFFERENT intents — motivation letter / Bewerbungsschreiben / lettre de motivation = cover-letter.\n"
+    "4. Job searching in ANY language = job-search (cercare lavoro, Stellen suchen, chercher emploi).\n\n"
+    "Intents (choose exactly one):\n"
+    "- job-search: User wants to find/search/browse jobs or vacancies\n"
+    "- cv-enhance: User wants to improve/enhance/rewrite/optimize/view their CV versions\n"
+    "- cover-letter: User wants to write/generate/draft a cover letter, motivation letter, Bewerbungsschreiben, lettre de motivation\n"
+    "- cv-match: User wants to match their CV/profile to job listings\n"
+    "- interview-prep: User wants interview preparation, coaching, or practice\n"
+    "- career-advice: User wants career guidance, salary info, market advice\n"
+    "- applications: User wants to track/view/manage their job applications\n"
+    "- profile: User wants to view/edit their profile or account settings\n"
+    "- general-chat: Greetings, follow-ups, questions about features, negations, or anything else\n\n"
+    "Languages: en (English), de (German), fr (French), it (Italian)\n\n"
+    "Examples:\n"
+    '- "enhance my cv" → {"intent":"cv-enhance","language":"en","confidence":0.95}\n'
+    '- "Lebenslauf verbessern" → {"intent":"cv-enhance","language":"de","confidence":0.95}\n'
+    '- "améliorer mon CV" → {"intent":"cv-enhance","language":"fr","confidence":0.95}\n'
+    '- "migliorare il mio CV" → {"intent":"cv-enhance","language":"it","confidence":0.95}\n'
+    '- "show me the enhanced versions" → {"intent":"cv-enhance","language":"en","confidence":0.9}\n'
+    '- "lettre de motivation pour UBS" → {"intent":"cover-letter","language":"fr","confidence":0.95}\n'
+    '- "lettre de motivation" → {"intent":"cover-letter","language":"fr","confidence":0.95}\n'
+    '- "Bewerbungsschreiben schreiben" → {"intent":"cover-letter","language":"de","confidence":0.95}\n'
+    '- "Motivationsschreiben" → {"intent":"cover-letter","language":"de","confidence":0.95}\n'
+    '- "write a cover letter for Google" → {"intent":"cover-letter","language":"en","confidence":0.95}\n'
+    '- "Stellen in Zürich" → {"intent":"job-search","language":"de","confidence":0.9}\n'
+    '- "cercare lavoro a Zurigo" → {"intent":"job-search","language":"it","confidence":0.9}\n'
+    '- "chercher emploi à Genève" → {"intent":"job-search","language":"fr","confidence":0.9}\n'
+    '- "find Python jobs in Basel" → {"intent":"job-search","language":"en","confidence":0.95}\n'
+    '- "Business Analyst jobs in Zurich banking" → {"intent":"job-search","language":"en","confidence":0.95}\n'
+    '- "match my cv to jobs" → {"intent":"cv-match","language":"en","confidence":0.9}\n'
+    '- "prepare me for interviews" → {"intent":"interview-prep","language":"en","confidence":0.9}\n'
+    '- "Swiss salary for engineers" → {"intent":"career-advice","language":"en","confidence":0.85}\n'
+    '- "my applications" → {"intent":"applications","language":"en","confidence":0.9}\n'
+    '- "hello" → {"intent":"general-chat","language":"en","confidence":0.95}\n'
+    '- "yes find them" → {"intent":"general-chat","language":"en","confidence":0.7}\n'
+    '- "don\'t enhance my cv" → {"intent":"general-chat","language":"en","confidence":0.9}\n'
+    '- "should I enhance my cv?" → {"intent":"general-chat","language":"en","confidence":0.8}\n'
+    '- "I don\'t want to change my CV" → {"intent":"general-chat","language":"en","confidence":0.85}\n'
+    '- "stop" → {"intent":"general-chat","language":"en","confidence":0.95}\n'
+)
+
+
+async def _classify_intent(msg: str) -> dict:
+    """Plan 133: AI-First multilingual intent classification.
+
+    Uses Claude Haiku for fast (~200ms) intent classification.
+    Supports EN, DE, FR, IT. Caches results for repeat phrases.
+    Falls back to general-chat on any failure.
+    """
+    _default = {"intent": "general-chat", "language": "en", "confidence": 0.0}
+    if not AI_CHAT_ENABLED:
+        return _default
+
+    # Fast-path cache (grows organically from classified results)
+    _cache_key = msg.lower().strip()
+    if _cache_key in _INTENT_CACHE:
+        return _INTENT_CACHE[_cache_key]
+
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": AI_MODEL,
+                    "max_tokens": 60,
+                    "messages": [{"role": "user", "content": msg}],
+                    "system": _INTENT_CLASSIFIER_PROMPT,
+                },
+            )
+            if resp.status_code == 200:
+                raw = resp.json()["content"][0]["text"].strip()
+                # Parse JSON — handle cases where model wraps in markdown
+                if raw.startswith("```"):
+                    raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                if raw.startswith("{"):
+                    parsed = json.loads(raw)
+                    result = {
+                        "intent": parsed.get("intent", "general-chat"),
+                        "language": parsed.get("language", "en"),
+                        "confidence": float(parsed.get("confidence", 0.5)),
+                    }
+                    # Cache for future fast-path
+                    _INTENT_CACHE[_cache_key] = result
+                    _AI_CALL_STATS["anthropic_ok"] += 1
+                    _AI_CALL_STATS["last_success"] = _dt.now(_tz.utc).isoformat()
+                    return result
+                else:
+                    logger.warning(f"Plan 133: Intent classifier returned non-JSON: {raw[:100]}")
+            else:
+                _AI_CALL_STATS["anthropic_fail"] += 1
+                _AI_CALL_STATS["last_error"] = f"HTTP {resp.status_code}: {resp.text[:100]}"
+                logger.warning(f"Plan 133: Intent classifier API error: {resp.status_code}")
+    except Exception as exc:
+        _AI_CALL_STATS["anthropic_fail"] += 1
+        _AI_CALL_STATS["last_error"] = str(exc)[:100]
+        logger.warning(f"Plan 133: Intent classification failed: {exc}")
+
+    return _default
+
 
 def _is_demo_data(service_data: dict) -> bool:
     """L72: Detect if service returned fallback/demo data instead of real AI results."""
@@ -338,9 +479,14 @@ _INTENT_PROMPTS = {
         "salary expectations by role, work permit requirements, and regional market differences."
     ),
     "document": (
-        "You are a Swiss CV/resume specialist. Advise on the Swiss CV format: include photo, "
-        "personal details, Europass compatibility, cover letter conventions, and how Swiss employers "
-        "evaluate applications differently from US/UK markets."
+        "You are a Swiss CV/resume specialist with 744 features of Swiss CV blueprint knowledge. "
+        "You know the 30-component CV model, 7 Swiss layout templates, 4 color palettes, "
+        "the AIDA cover letter framework, and the Bridge Model (Qualification + Motivation + Personality). "
+        "Advise on Swiss CV format: professional photo, formal tone, Europass compatibility, "
+        "ATS optimization, and how Swiss employers evaluate applications differently. "
+        "When asked to enhance a CV, explain the 3 available versions: "
+        "Conservative Swiss (2-page Europass), Modern Professional (ATS-optimized), Executive Summary (1-page impact). "
+        "Guide users to upload their CV first, then request enhancement."
     ),
     "gamification": (
         "You are a motivational career coach. Help users stay motivated in their job search "
@@ -453,6 +599,8 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str, clie
             "PLATFORM CAPABILITIES:\n"
             "- LIVE job search from jobs.ch (user specifies role + location)\n"
             "- CV upload (PDF/DOCX) with AI analysis and Swiss format review\n"
+            "- CV ENHANCEMENT: Generate 3 CV versions (Conservative Swiss, Modern Professional, Executive Summary)\n"
+            "- COVER LETTER: AIDA framework cover letter generation customized per job\n"
             "- User profiles with saved preferences\n"
             "- Application tracking pipeline (applied/interview/offer/rejected)\n"
             "- Direct apply from search results\n"
@@ -538,15 +686,22 @@ async def _ai_general_chat(user_msg: str, client_ip: str = "", user_context: str
 
         system = (
             "You are the AI assistant for JobTrackerPro, a Swiss job search platform. "
-            "Be conversational, warm, and helpful. Keep responses under 120 words.\n\n"
-            "PLATFORM CAPABILITIES:\n"
-            "- Search real Swiss jobs from jobs.ch (specify role + location)\n"
-            "- Upload CV (PDF/DOCX) for AI analysis and Swiss format review\n"
-            "- User profiles with saved preferences\n"
-            "- Application tracking (applied/interview/offer/rejected)\n"
-            "- Direct apply from job search results\n"
-            "- Interview prep coaching\n"
-            "- Swiss market expertise (RAV, permits, salaries)\n"
+            "Be conversational, warm, and helpful. Keep responses under 150 words.\n\n"
+            "PLATFORM DELIVERS 12 CAREER BENEFITS:\n"
+            "1. Smart Job Discovery — live Swiss jobs from jobs.ch (specify role + location)\n"
+            "2. CV & Document Mastery — upload CV, generate 3 enhanced versions, Swiss format review\n"
+            "3. Application Command — track applications (applied/interview/offer/rejected)\n"
+            "4. Interview Excellence — prep coaching, practice questions, salary negotiation\n"
+            "5. Career Intelligence — market insights, salary data, career path guidance\n"
+            "6. Swiss Market Mastery — RAV requirements, work permits, employment law\n"
+            "7. AI Career Assistant — conversational coaching in EN/DE/FR/IT\n"
+            "8. Emotional Resilience — motivation, stress management during job search\n"
+            "9. Professional Network — networking strategies, LinkedIn optimization\n"
+            "10. Progress Analytics — application metrics, response rates, optimization\n"
+            "11. Gamification & Growth — achievements, milestones, learning paths\n"
+            "12. Trust & Security — Swiss privacy compliance, data protection\n\n"
+            "QUICK ACTIONS: Upload CV, Enhance CV (3 versions), Cover Letter (AIDA), Interview Prep\n"
+            "When relevant, mention which benefit category helps the user's need.\n"
         )
         if user_context:
             system += f"\n\nUSER CONTEXT:\n{user_context}\n"
@@ -751,7 +906,15 @@ async def chat_route(request: Request):
     frontend_history = body.get("history", [])
     if frontend_history and isinstance(frontend_history, list):
         _CONV_MEMORY[mem_key] = frontend_history[-10:]
-    route = _find_chat_route(msg)
+    # Plan 133: AI-First intent classification (multilingual, replaces keyword matching)
+    intent_result = await _classify_intent(msg)
+    intent = intent_result.get("intent", "general-chat")
+    detected_lang = intent_result.get("language", "en")
+    logger.info(f"Plan 133: Intent={intent} lang={detected_lang} conf={intent_result.get('confidence', 0):.2f} msg={msg[:60]}")
+
+    # Legacy keyword fallback ONLY for service proxy (job-search routed via proxy if jobs.ch direct fails)
+    # Do NOT run keyword matcher for general-chat — it catches false positives like "don't enhance my cv" → "cv"
+    route = _find_chat_route(msg) if intent == "job-search" else None
 
     # Plan 131 Phase 3: Fetch user context for personalized AI responses
     user_context = await _fetch_user_context(request)
@@ -760,11 +923,118 @@ async def chat_route(request: Request):
         cv_summary = _USER_CV_CONTEXT[user_id][:500]
         user_context = f"Uploaded CV: {cv_summary}\n{user_context}" if user_context else f"Uploaded CV: {cv_summary}"
 
-    # Plan 131 Phase 4: "Match my CV" intent — semantic job-CV matching
-    _cv_match_keywords = {"match my cv", "jobs matching my cv", "match cv", "jobs for my cv",
-                          "jobs for my profile", "match my profile", "matching jobs"}
-    if any(kw in msg.lower() for kw in _cv_match_keywords):
-        user_id = _get_user_id(request)
+    # ── Helper: fetch CV text from Pinecone if not in this pod's memory ──
+    async def _ensure_cv_context() -> str:
+        """Strategic multi-pod CV context resolution — local cache → Pinecone → empty."""
+        cv = _USER_CV_CONTEXT.get(user_id, "") if user_id else ""
+        if not cv and user_id:
+            try:
+                async with _sync_httpx.AsyncClient(timeout=5.0) as c:
+                    r = await c.get(f"http://cv-processor:8020/history/{user_id}")
+                    if r.status_code == 200:
+                        hist = r.json().get("history", [])
+                        if hist and isinstance(hist, list):
+                            latest = hist[-1] if isinstance(hist[-1], dict) else {}
+                            cv = latest.get("data", "")
+                            if cv:
+                                _USER_CV_CONTEXT[user_id] = cv
+                                logger.info(f"Plan 133: Restored CV from Pinecone for {user_id} ({len(cv)} chars)")
+            except Exception as e:
+                logger.warning(f"Plan 133: Pinecone CV fetch failed for {user_id}: {e}")
+        return cv
+
+    # ── Intent: job-search — real jobs.ch listings, ALL 4 Swiss languages ──
+    if intent == "job-search":
+        search_terms = _extract_job_search_terms(msg)
+        if search_terms:
+            try:
+                from job_scraper.scraper import JobScraper
+                _scraper = JobScraper()
+                # Extract location separately for jobs.ch location param
+                _loc = ""
+                _query_parts = search_terms.split()
+                for _sw in ("zurich", "zürich", "bern", "basel", "geneva", "genève",
+                            "lausanne", "lucerne", "luzern", "lugano", "winterthur",
+                            "zug", "thun", "fribourg", "schaffhausen", "chur", "st gallen"):
+                    if _sw in [p.lower() for p in _query_parts]:
+                        _loc = _sw
+                        _query_parts = [p for p in _query_parts if p.lower() != _sw]
+                        break
+                _core_query = " ".join(w for w in _query_parts
+                                       if w.lower() not in ("sector", "industry", "field", "area", "bereich")).strip()
+
+                # ── Strategic 4-language Swiss job search ──
+                # Switzerland has 4 official languages. Job titles are posted in
+                # the local language of the canton. A search MUST cover all 4.
+                _ROLE_TRANSLATIONS = {
+                    "project manager":    {"de": "Projektleiter", "fr": "Chef de projet", "it": "Responsabile di progetto"},
+                    "project management": {"de": "Projektleitung", "fr": "Gestion de projet", "it": "Gestione progetti"},
+                    "business analyst":   {"de": "Business Analyst", "fr": "Analyste d'affaires", "it": "Analista aziendale"},
+                    "software engineer":  {"de": "Software Entwickler", "fr": "Ingénieur logiciel", "it": "Ingegnere software"},
+                    "product manager":    {"de": "Produktmanager", "fr": "Chef de produit", "it": "Product Manager"},
+                    "data analyst":       {"de": "Datenanalyst", "fr": "Analyste de données", "it": "Analista dati"},
+                    "it manager":         {"de": "IT-Leiter", "fr": "Responsable IT", "it": "Responsabile IT"},
+                    "program manager":    {"de": "Programmleiter", "fr": "Directeur de programme", "it": "Responsabile programma"},
+                    "consultant":         {"de": "Berater", "fr": "Consultant", "it": "Consulente"},
+                    "team lead":          {"de": "Teamleiter", "fr": "Chef d'équipe", "it": "Capo squadra"},
+                }
+
+                # Build list of queries: original + all language variants
+                _queries = [_core_query]
+                _core_lower = _core_query.lower()
+                for _en_role, _translations in _ROLE_TRANSLATIONS.items():
+                    if _en_role in _core_lower:
+                        for _lang, _translated in _translations.items():
+                            _q = _core_lower.replace(_en_role, _translated)
+                            if _q not in [q.lower() for q in _queries]:
+                                _queries.append(_q)
+                        break  # Only match first role found
+
+                # Execute all queries concurrently
+                import asyncio as _aio
+                _search_tasks = [_scraper.search(q, location=_loc, limit=15) for q in _queries]
+                _all_results = await _aio.gather(*_search_tasks, return_exceptions=True)
+
+                # Merge and deduplicate
+                jobs = []
+                _seen = set()
+                for _result in _all_results:
+                    if isinstance(_result, Exception):
+                        continue
+                    for j in _result:
+                        _k = (j.get("title", "").lower(), j.get("company", "").lower())
+                        if _k not in _seen:
+                            jobs.append(j)
+                            _seen.add(_k)
+
+                _lang_count = sum(1 for r in _all_results if not isinstance(r, Exception) and r)
+                logger.info(f"Plan 134: 4-lang search '{_core_query}' → {len(jobs)} jobs from {_lang_count}/{len(_queries)} queries")
+                if jobs:
+                    jobs_data = {"jobs": jobs, "total": len(jobs), "query": search_terms, "source": "jobs.ch"}
+                    ai_resp = await _ai_respond(msg, {"data": jobs_data, "source": "live"},
+                                                 "job-search-service", mem_key, user_context=user_context)
+                    _log_chat(msg, routed=True, service="job-search-service",
+                              latency_ms=(_t.time() - t0) * 1000, ai_response=ai_resp, client_ip=client_ip)
+                    if mem_key:
+                        if mem_key not in _CONV_MEMORY:
+                            _CONV_MEMORY[mem_key] = []
+                        _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+                        if ai_resp:
+                            _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+                        _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+                    return {
+                        "routed": True, "service": "job-search-service", "path": "/jobs",
+                        "intent": intent, "language": detected_lang,
+                        "data": jobs_data, "ai_response": ai_resp,
+                    }
+            except ImportError:
+                logger.warning("Plan 134: job_scraper module not available, falling back to proxy")
+            except Exception as exc:
+                logger.warning(f"Plan 134: jobs.ch search failed: {exc}")
+        # Fall through to proxy route if jobs.ch failed
+
+    # ── Intent: cv-match ──
+    if intent == "cv-match":
         cv_skills = ""
         if user_id:
             try:
@@ -775,26 +1045,164 @@ async def chat_route(request: Request):
                         if hist and isinstance(hist, list) and hist:
                             latest = hist[-1] if isinstance(hist[-1], dict) else {}
                             cv_skills = latest.get("data", "")[:500]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Plan 133: CV match fetch failed: {e}")
         if not cv_skills and user_context:
-            # Extract skills from user context as fallback
             for line in user_context.split("\n"):
                 if "Skills:" in line or "Target:" in line:
                     cv_skills += line + " "
         if cv_skills:
-            # Use CV skills as job search query
             search_terms = _extract_job_search_terms(cv_skills)
             route = {"service": "job-search-service", "path": "/jobs", "method": "GET",
                      "patterns": ["match"]}
             msg = f"Find jobs matching: {search_terms}"
 
-    # L68c: If no keyword match, use Claude for intent routing + general conversation
-    if not route and AI_CHAT_ENABLED:
+    # ── Intent: cv-enhance ──
+    if intent == "cv-enhance":
+        cv_text = await _ensure_cv_context()
+        if not cv_text:
+            # No CV uploaded — guide user
+            ai_resp = (
+                "I'd love to enhance your CV! To generate 3 optimized versions "
+                "(Conservative Swiss, Modern Professional, Executive Summary), "
+                "please **upload your CV first** using the 📄 button above. "
+                "Once uploaded, just say 'enhance my CV' and I'll create all 3 versions."
+            )
+            if mem_key:
+                if mem_key not in _CONV_MEMORY:
+                    _CONV_MEMORY[mem_key] = []
+                _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp})
+                _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+            return {
+                "routed": True, "service": "cv-enhancement",
+                "path": "/enhance", "data": None, "ai_response": ai_resp,
+            }
+
+        # CV exists — call cv_processor:8020/enhance
+        try:
+            # Extract target info from message or context
+            target_role = ""
+            target_company = ""
+            for line in user_context.split("\n"):
+                if "Target:" in line:
+                    target_role = line.split("Target:")[-1].strip()
+            async with _sync_httpx.AsyncClient(timeout=90.0) as c:
+                resp = await c.post(
+                    "http://cv-processor:8020/enhance",
+                    json={
+                        "user_id": user_id,
+                        "cv_text": cv_text[:5000],
+                        "target_role": target_role,
+                    },
+                )
+                if resp.status_code == 200:
+                    enhance_data = resp.json()
+                    versions = enhance_data.get("versions", {})
+                    # Build response with all 3 versions — show full content
+                    parts = ["Here are **3 enhanced versions** of your CV:\n"]
+                    for i, (key, ver) in enumerate(versions.items(), 1):
+                        letter = chr(64 + i)  # A, B, C
+                        parts.append(f"---\n### Option {letter}: {ver.get('name', key)}")
+                        parts.append(f"*{ver.get('description', '')}*\n")
+                        cv_text_full = ver.get("cv_text", "")
+                        parts.append(f"{cv_text_full}\n")
+                    parts.append(
+                        "---\n**Next steps:** Tell me which version you prefer, or ask me to "
+                        "**write a cover letter** for a specific job application."
+                    )
+                    ai_resp = "\n".join(parts)
+                else:
+                    ai_resp = "CV enhancement is processing but took longer than expected. Please try again in a moment."
+        except Exception as exc:
+            logger.warning(f"Plan 132: CV enhance failed: {exc}")
+            ai_resp = "CV enhancement service is temporarily unavailable. Please try again shortly."
+
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:500]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {
+            "routed": True, "service": "cv-enhancement",
+            "path": "/enhance", "data": None,
+            "ai_response": ai_resp,
+        }
+
+    # ── Intent: cover-letter ──
+    if intent == "cover-letter":
+        cv_text = await _ensure_cv_context()
+        if not cv_text:
+            ai_resp = (
+                "I can generate a professional AIDA cover letter for you! "
+                "Please **upload your CV first** using the 📄 button, then say "
+                "'Write a cover letter for [Company Name] - [Job Title]'."
+            )
+        else:
+            # Extract company and job from message
+            _msg_lower = msg.lower()
+            company = ""
+            job_title = ""
+            # Try to parse "cover letter for [Company] - [Role]"
+            for sep in [" for ", " at ", " to "]:
+                if sep in _msg_lower:
+                    after = msg[_msg_lower.index(sep) + len(sep):]
+                    if " - " in after:
+                        company, job_title = after.split(" - ", 1)
+                    elif " as " in after.lower():
+                        parts = after.lower().split(" as ", 1)
+                        company = parts[0]
+                        job_title = parts[1] if len(parts) > 1 else ""
+                    else:
+                        company = after.strip()
+                    break
+            company = company.strip() or "the target company"
+            job_title = job_title.strip() or "the advertised position"
+
+            try:
+                async with _sync_httpx.AsyncClient(timeout=60.0) as c:
+                    resp = await c.post(
+                        "http://cv-processor:8020/cover-letter",
+                        json={
+                            "user_id": user_id,
+                            "cv_text": cv_text[:3000],
+                            "job_title": job_title,
+                            "company_name": company,
+                        },
+                    )
+                    if resp.status_code == 200:
+                        cl_data = resp.json()
+                        ai_resp = (
+                            f"Here's your **AIDA cover letter** for {company}:\n\n"
+                            f"{cl_data.get('cover_letter', 'Generation in progress...')}\n\n"
+                            "---\n*Generated using the AIDA framework (Attention → Interest → Desire → Action). "
+                            "Feel free to ask me to adjust the tone or emphasis.*"
+                        )
+                    else:
+                        ai_resp = "Cover letter generation is processing. Please try again in a moment."
+            except Exception as exc:
+                logger.warning(f"Plan 132: Cover letter failed: {exc}")
+                ai_resp = "Cover letter service is temporarily unavailable. Please try again shortly."
+
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:500]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {
+            "routed": True, "service": "cv-enhancement",
+            "path": "/cover-letter", "data": None, "ai_response": ai_resp,
+        }
+
+    # Plan 133: AI-classified intents that don't have a dedicated handler → general chat
+    # Also handles: interview-prep, career-advice, applications, profile, general-chat
+    if not route:
+        # For classified intents without dedicated service proxy, use AI general chat
         ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context)
         _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000,
                   ai_response=ai_fallback, client_ip=client_ip)
-        # Save conversation memory
         if mem_key:
             if mem_key not in _CONV_MEMORY:
                 _CONV_MEMORY[mem_key] = []
@@ -806,14 +1214,10 @@ async def chat_route(request: Request):
             "routed": True,
             "service": "ai-assistant",
             "path": "/chat",
+            "intent": intent,
+            "language": detected_lang,
             "data": None,
             "ai_response": ai_fallback,
-        }
-    if not route:
-        _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000, client_ip=client_ip)
-        return {
-            "routed": False,
-            "suggestions": ["jobs", "status", "notifications", "analytics"],
         }
     svc_dns = service_to_dns(route["service"])
     # L72: Extract meaningful search terms for job queries instead of raw message
@@ -830,7 +1234,7 @@ async def chat_route(request: Request):
     if route.get("service") in ("job-search-service", "career-search-core-service", "job-discovery-service"):
         _search_query = _extract_job_search_terms(_search_query)
     _query_params = {"q": _search_query} if _search_query else {}
-    url = f"http://{svc_dns}:8000{route['path']}"
+    url = f"http://{svc_dns}:{_get_service_port(svc_dns)}{route['path']}"
     try:
         method = route["method"]
         if method == "GET":
@@ -1092,7 +1496,7 @@ async def upload_cv(request: Request):
 
     # Store CV context for conversation personalization
     if user_id and cv_text:
-        _USER_CV_CONTEXT[user_id] = cv_text[:2000]
+        _USER_CV_CONTEXT[user_id] = cv_text[:8000]
         # Also store in conversation memory so Claude remembers
         mem_key = user_id
         if mem_key not in _CONV_MEMORY:
@@ -1115,6 +1519,118 @@ async def upload_cv(request: Request):
         "analysis": analysis,
         "ai_advice": ai_advice,
     }
+
+
+@app.post("/api/cv/enhance")
+async def enhance_cv_api(request: Request):
+    """Plan 132: Generate 3 enhanced CV versions from uploaded CV."""
+    user_id = _get_user_id(request) or "anon"
+    cv_text = _USER_CV_CONTEXT.get(user_id, "")
+
+    # Strategic: fetch from Pinecone if not in this pod's memory
+    if not cv_text and user_id != "anon":
+        try:
+            async with _sync_httpx.AsyncClient(timeout=5.0) as c:
+                r = await c.get(f"http://cv-processor:8020/history/{user_id}")
+                if r.status_code == 200:
+                    hist = r.json().get("history", [])
+                    if hist and isinstance(hist, list):
+                        latest = hist[-1] if isinstance(hist[-1], dict) else {}
+                        cv_text = latest.get("data", "")
+                        if cv_text:
+                            _USER_CV_CONTEXT[user_id] = cv_text
+        except Exception:
+            pass
+
+    # Also accept cv_text in request body
+    try:
+        body = await request.json()
+        if body.get("cv_text"):
+            cv_text = body["cv_text"]
+        target_role = body.get("target_role", "")
+        target_company = body.get("target_company", "")
+        target_industry = body.get("target_industry", "")
+    except Exception:
+        target_role = target_company = target_industry = ""
+
+    if not cv_text or len(cv_text.strip()) < 20:
+        return JSONResponse({"error": "No CV found. Upload your CV first via /api/cv/upload."}, 400)
+
+    try:
+        async with _sync_httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(
+                "http://cv-processor:8020/enhance",
+                json={
+                    "user_id": user_id,
+                    "cv_text": cv_text[:5000],
+                    "target_role": target_role,
+                    "target_company": target_company,
+                    "target_industry": target_industry,
+                },
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            return JSONResponse({"error": "CV enhancement failed", "detail": resp.text[:200]}, resp.status_code)
+    except Exception as exc:
+        logger.warning(f"Plan 132: CV enhance API failed: {exc}")
+        return JSONResponse({"error": f"Enhancement service unavailable: {exc}"}, 503)
+
+
+@app.post("/api/cv/cover-letter")
+async def cover_letter_api(request: Request):
+    """Plan 132: Generate AIDA cover letter from CV + job details."""
+    user_id = _get_user_id(request) or "anon"
+    cv_text = _USER_CV_CONTEXT.get(user_id, "")
+
+    # Strategic: fetch from Pinecone if not in this pod's memory
+    if not cv_text and user_id != "anon":
+        try:
+            async with _sync_httpx.AsyncClient(timeout=5.0) as c:
+                r = await c.get(f"http://cv-processor:8020/history/{user_id}")
+                if r.status_code == 200:
+                    hist = r.json().get("history", [])
+                    if hist and isinstance(hist, list):
+                        latest = hist[-1] if isinstance(hist[-1], dict) else {}
+                        cv_text = latest.get("data", "")
+                        if cv_text:
+                            _USER_CV_CONTEXT[user_id] = cv_text
+        except Exception:
+            pass
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "JSON body required with job_title and company_name"}, 400)
+
+    if body.get("cv_text"):
+        cv_text = body["cv_text"]
+    if not cv_text or len(cv_text.strip()) < 20:
+        return JSONResponse({"error": "No CV found. Upload your CV first via /api/cv/upload."}, 400)
+
+    job_title = body.get("job_title", "")
+    company_name = body.get("company_name", "")
+    if not job_title or not company_name:
+        return JSONResponse({"error": "job_title and company_name are required"}, 400)
+
+    try:
+        async with _sync_httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "http://cv-processor:8020/cover-letter",
+                json={
+                    "user_id": user_id,
+                    "cv_text": cv_text[:3000],
+                    "job_title": job_title,
+                    "company_name": company_name,
+                    "job_description": body.get("job_description", ""),
+                    "company_values": body.get("company_values", ""),
+                },
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            return JSONResponse({"error": "Cover letter generation failed", "detail": resp.text[:200]}, resp.status_code)
+    except Exception as exc:
+        logger.warning(f"Plan 132: Cover letter API failed: {exc}")
+        return JSONResponse({"error": f"Cover letter service unavailable: {exc}"}, 503)
 
 
 @app.get("/api/profile")
@@ -1281,12 +1797,24 @@ async def direct_apply(request: Request):
 
 @app.get("/health")
 async def health():
-    """Gateway health check."""
+    """Gateway health check — includes AI engine status (Plan 133)."""
+    _ai_ok = _AI_CALL_STATS["anthropic_ok"]
+    _ai_fail = _AI_CALL_STATS["anthropic_fail"]
+    _ai_status = "operational" if _ai_ok > 0 and _ai_fail < _ai_ok else (
+        "degraded" if _ai_fail > 0 else "unknown"
+    )
     return {
         "status": "healthy",
         "version": 7,
         "architecture": "1-pod-per-service",
         "proxy_timeout": PROXY_TIMEOUT,
+        "ai_chat": AI_CHAT_ENABLED,
+        "ai_status": _ai_status,
+        "ai_stats": {
+            "anthropic_ok": _ai_ok, "anthropic_fail": _ai_fail,
+            "last_error": _AI_CALL_STATS["last_error"][:200] if _AI_CALL_STATS["last_error"] else "",
+        },
+        "intent_cache_size": len(_INTENT_CACHE),
     }
 
 
@@ -1316,7 +1844,7 @@ async def proxy(service_name: str, path: str, request: Request):
     preventing asyncio.CancelledError and connection slot leaks.
     """
     svc_dns = service_to_dns(service_name)
-    url = f"http://{svc_dns}:8000/{path}"
+    url = f"http://{svc_dns}:{_get_service_port(svc_dns)}/{path}"
     if request.query_params:
         url += "?" + str(request.query_params)
 

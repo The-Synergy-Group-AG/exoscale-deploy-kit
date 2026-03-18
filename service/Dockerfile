@@ -51,6 +51,9 @@ COPY catalog.json .
 # Each service lands at: /app/services/{service_name}/main.py
 COPY services/ ./services/
 
+# Plan 134: Job scraper module for live jobs.ch integration
+COPY job_scraper/ ./job_scraper/
+
 ARG BUILD_TIME_ARG
 ENV BUILD_TIME=$BUILD_TIME_ARG
 

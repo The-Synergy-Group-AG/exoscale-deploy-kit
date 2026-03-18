@@ -972,6 +972,9 @@ metadata:
     nginx.ingress.kubernetes.io/affinity: "cookie"
     nginx.ingress.kubernetes.io/session-cookie-name: "jtp-session"
     nginx.ingress.kubernetes.io/session-cookie-max-age: "3600"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "180"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "180"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
     cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: nginx
@@ -1896,6 +1899,81 @@ stringData:
         warn("L72: No AI API keys found in environment — AI services will run in demo mode")
 
     RESULTS["stages"]["inject_secrets"] = {"status": "success"}
+
+    # ── Plan 133: Validate AI API keys are functional ──
+    _validate_ai_keys()
+
+
+def _validate_ai_keys():
+    """Plan 133: Validate AI API keys are functional — warn operator of quota issues."""
+    section("AI API Key Validation (Plan 133)")
+    import requests as _req
+    _results = {}
+    # Test Anthropic
+    _ak = os.getenv("ANTHROPIC_API_KEY", "")
+    if _ak:
+        try:
+            _r = _req.post("https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": _ak, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": "claude-haiku-4-5-20251001", "max_tokens": 5,
+                      "messages": [{"role": "user", "content": "ping"}]},
+                timeout=15)
+            if _r.status_code == 200:
+                _results["anthropic"] = "VALID"
+                ok("  Anthropic API key: ✅ VALID")
+            else:
+                _results["anthropic"] = f"ERROR {_r.status_code}"
+                warn(f"  Anthropic API key: ❌ HTTP {_r.status_code} — {_r.text[:100]}")
+        except Exception as _e:
+            _results["anthropic"] = f"UNREACHABLE: {_e}"
+            warn(f"  Anthropic API key: ❌ UNREACHABLE — {_e}")
+    else:
+        warn("  Anthropic API key: ⚠️ NOT SET — AI chat will be disabled")
+
+    # Test OpenAI
+    _ok = os.getenv("OPENAI_API_KEY", "")
+    if _ok:
+        try:
+            _r = _req.get("https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {_ok}"}, timeout=15)
+            if _r.status_code == 200:
+                _results["openai"] = "VALID"
+                ok("  OpenAI API key: ✅ VALID")
+            elif _r.status_code == 429:
+                _results["openai"] = "QUOTA EXCEEDED"
+                warn("  ⚠️  OpenAI API key: QUOTA EXCEEDED — cv_processor will use Anthropic fallback")
+                warn("  ⚠️  Top up at: https://platform.openai.com/account/billing")
+            else:
+                _results["openai"] = f"ERROR {_r.status_code}"
+                warn(f"  OpenAI API key: ❌ HTTP {_r.status_code}")
+        except Exception as _e:
+            _results["openai"] = f"UNREACHABLE: {_e}"
+            warn(f"  OpenAI API key: ❌ UNREACHABLE — {_e}")
+
+    # Test Pinecone
+    _pk = os.getenv("PINECONE_API_KEY", "")
+    if _pk:
+        try:
+            _r = _req.get("https://api.pinecone.io/indexes",
+                headers={"Api-Key": _pk}, timeout=15)
+            if _r.status_code == 200:
+                _results["pinecone"] = "VALID"
+                ok("  Pinecone API key: ✅ VALID")
+            else:
+                _results["pinecone"] = f"ERROR {_r.status_code}"
+                warn(f"  Pinecone API key: ❌ HTTP {_r.status_code}")
+        except Exception as _e:
+            _results["pinecone"] = f"UNREACHABLE: {_e}"
+            warn(f"  Pinecone API key: ❌ UNREACHABLE — {_e}")
+
+    RESULTS["ai_key_validation"] = _results
+    _valid = sum(1 for v in _results.values() if "VALID" in v)
+    _total = len(_results)
+    if _valid == _total:
+        ok(f"  All {_valid}/{_total} AI API keys validated ✅")
+    else:
+        warn(f"  {_valid}/{_total} AI API keys valid — check warnings above")
 
 
 # =============================================================================

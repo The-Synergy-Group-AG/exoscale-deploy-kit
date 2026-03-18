@@ -24,7 +24,7 @@
   .msg{display:flex;flex-direction:column;gap:.25rem}
   .msg.user .bubble{background:#0ea5e9;color:#fff;align-self:flex-end;border-radius:.75rem .75rem 0 .75rem}
   .msg.bot .bubble{background:#1e293b;border:1px solid #334155;align-self:flex-start;border-radius:.75rem .75rem .75rem 0}
-  .bubble{padding:.6rem .9rem;max-width:80%;font-size:.875rem;line-height:1.5}
+  .bubble{padding:.6rem .9rem;max-width:80%;font-size:.875rem;line-height:1.5;max-height:70vh;overflow-y:auto}
   .msg-time{font-size:.65rem;color:#475569;padding:0 .25rem}
   .msg.user .msg-time{align-self:flex-end}
 
@@ -65,6 +65,9 @@
   .err{color:#f87171}
   pre.json-dump{background:#0f172a;border:1px solid #334155;border-radius:.4rem;padding:.6rem;font-size:.72rem;overflow-x:auto;color:#94a3b8;max-width:480px}
   .ai-resp{line-height:1.6;color:#e2e8f0}
+  .ai-resp pre{white-space:pre-wrap;word-break:break-word;margin:.4rem 0}
+  .ai-resp strong{color:#e2e8f0}
+  .ai-resp hr{opacity:.5}
 </style>
 </head>
 <body>
@@ -83,14 +86,16 @@
   <div class="chat-history" id="chat-history">
     <div class="welcome" id="welcome">
       <h2>Hello, I'm your AI Career Assistant</h2>
-      <p>I search real Swiss jobs, review your CV, and coach you through your job search. What can I help with?</p>
+      <p>Your Swiss job search platform — I deliver 12 career benefits including live job search, CV enhancement, interview coaching, and Swiss market expertise. What can I help with?</p>
       <div class="quick-prompts">
-        <button class="qp" onclick="sendPrompt('Find Python jobs in Zurich')">Find jobs in Zurich</button>
-        <button class="qp" onclick="sendPrompt('Help me improve my CV')">CV review</button>
-        <button class="qp" onclick="sendPrompt('Prepare me for interviews')">Interview prep</button>
-        <button class="qp" onclick="sendPrompt('Swiss salary expectations for engineers')">Swiss salaries</button>
-        <button class="qp" onclick="sendPrompt('my applications')">My applications</button>
-        <button class="qp" onclick="document.getElementById('cv-upload').click()">Upload my CV</button>
+        <button class="qp" onclick="sendPrompt('Find Business Analyst jobs in Zurich')">Job Discovery</button>
+        <button class="qp" onclick="document.getElementById('cv-upload').click()">Upload CV</button>
+        <button class="qp" onclick="sendPrompt('Enhance my CV')">CV Enhancement</button>
+        <button class="qp" onclick="sendPrompt('Write a cover letter')">Cover Letter</button>
+        <button class="qp" onclick="sendPrompt('Prepare me for interviews')">Interview Prep</button>
+        <button class="qp" onclick="sendPrompt('Swiss salary expectations for engineers')">Swiss Market</button>
+        <button class="qp" onclick="sendPrompt('Help me stay motivated in my job search')">Career Coach</button>
+        <button class="qp" onclick="sendPrompt('my applications')">Applications</button>
       </div>
     </div>
   </div>
@@ -102,11 +107,11 @@
   </div>
   <div class="suggestions" id="suggestions">
     <span class="sug" onclick="sendPrompt('jobs')">jobs</span>
-    <span class="sug" onclick="sendPrompt('cv')">cv</span>
+    <span class="sug" onclick="sendPrompt('enhance my cv')">enhance cv</span>
+    <span class="sug" onclick="sendPrompt('cover letter')">cover letter</span>
     <span class="sug" onclick="sendPrompt('interviews')">interviews</span>
-    <span class="sug" onclick="sendPrompt('notifications')">notifications</span>
+    <span class="sug" onclick="sendPrompt('match my cv')">match cv to jobs</span>
     <span class="sug" onclick="sendPrompt('analytics')">analytics</span>
-    <span class="sug" onclick="sendPrompt('security')">security</span>
     <span class="sug" onclick="sendPrompt('status')">status</span>
   </div>
 </div>
@@ -381,6 +386,43 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+function renderMarkdown(text) {
+  // Plan 133: Enhanced markdown rendering — headers, bold, italic, code, lists, tables, bullets
+  let html = esc(text);
+  // Code blocks (``` ... ```)
+  html = html.replace(/```([^`]*?)```/gs, '<pre class="json-dump" style="max-width:100%">$1</pre>');
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code style="background:#1e293b;padding:.1rem .3rem;border-radius:.2rem;font-size:.8rem">$1</code>');
+  // Headers (h2, h3, h4)
+  html = html.replace(/^#### (.+)$/gm, '<strong style="color:#94a3b8;font-size:.85rem;display:block;margin-top:.4rem">$1</strong>');
+  html = html.replace(/^### (.+)$/gm, '<strong style="color:#38bdf8;font-size:.95rem;display:block;margin-top:.5rem">$1</strong>');
+  html = html.replace(/^## (.+)$/gm, '<strong style="color:#38bdf8;font-size:1rem;display:block;margin-top:.6rem">$1</strong>');
+  html = html.replace(/^# (.+)$/gm, '<strong style="color:#38bdf8;font-size:1.1rem;display:block;margin-top:.7rem">$1</strong>');
+  // Bold and italic
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em style="color:#94a3b8">$1</em>');
+  // Bullet lists (- item or * item)
+  html = html.replace(/^[\-\*] (.+)$/gm, '<span style="display:block;padding-left:1rem">• $1</span>');
+  // Numbered lists (1. item)
+  html = html.replace(/^\d+\. (.+)$/gm, function(m, p1) { return '<span style="display:block;padding-left:1rem">' + m.charAt(0) + '. ' + p1 + '</span>'; });
+  // Table rows — render pipes as spaced columns
+  html = html.replace(/^\|(.+)\|$/gm, function(match, content) {
+    const cells = content.split('|').map(c => c.trim());
+    return '<span style="display:block;font-family:monospace;font-size:.8rem;color:#94a3b8">' + cells.join('  │  ') + '</span>';
+  });
+  // Remove table separator rows (|---|---|)
+  html = html.replace(/<span[^>]*>[\s│\-:]+<\/span>/g, '');
+  // Checkmarks
+  html = html.replace(/✅/g, '<span style="color:#4ade80">✅</span>');
+  html = html.replace(/❌/g, '<span style="color:#f87171">❌</span>');
+  html = html.replace(/⚠️/g, '<span style="color:#fb923c">⚠️</span>');
+  // Horizontal rules
+  html = html.replace(/^---$/gm, '<hr style="border:none;border-top:1px solid #334155;margin:.5rem 0">');
+  // Line breaks
+  html = html.replace(/\n/g, '<br>');
+  return html;
+}
+
 // ── Chat UI ───────────────────────────────────────────────────────────────────
 function sendPrompt(text) {
   document.getElementById('msg-input').value = text;
@@ -396,11 +438,17 @@ async function sendMessage() {
   document.getElementById('welcome')?.remove();
 
   appendMsg('user', esc(msg));
-  const thinkId = appendMsg('bot', '<span class="thinking">Routing to service…</span>');
+  // Plan 133: Universal 120s timeout — AI intent classifier handles routing server-side
+  // Animated progress indicator while waiting
+  const thinkId = appendMsg('bot', '<span class="thinking">Processing</span>');
+  let _thinkDots = 0;
+  const _thinkInterval = setInterval(() => {
+    const el = document.querySelector(`#${thinkId} .thinking`);
+    if (el) { _thinkDots++; el.textContent = 'Processing' + '.'.repeat(_thinkDots % 4); }
+  }, 600);
   setSendDisabled(true);
 
   try {
-    // Try server-side routing first; fall back to client-side
     let routed = false;
     let resultHtml = '';
 
@@ -408,24 +456,23 @@ async function sendMessage() {
       const chatHeaders = {'Content-Type':'application/json'};
       const tk = localStorage.getItem(TOKEN_KEY);
       if (tk) chatHeaders['Authorization'] = 'Bearer ' + tk;
-      // Send conversation history so server has full context (no reliance on server-side memory)
       const historyMsgs = [];
       document.querySelectorAll('.msg').forEach(m => {
         const role = m.classList.contains('user') ? 'user' : 'assistant';
         const text = m.querySelector('.bubble')?.textContent?.trim() || '';
-        if (text && text.length > 2 && !text.startsWith('Thinking')) historyMsgs.push({role, content: text.substring(0, 200)});
+        if (text && text.length > 2 && !text.startsWith('Processing')) historyMsgs.push({role, content: text.substring(0, 200)});
       });
       const routeResp = await fetch('/chat/route', {
         method: 'POST',
         headers: chatHeaders,
         body: JSON.stringify({message: msg, history: historyMsgs.slice(-10)}),
-        signal: AbortSignal.timeout(15000)
+        signal: AbortSignal.timeout(120000)
       });
       if (routeResp.ok) {
         const routeData = await routeResp.json();
         // L72: Prioritize AI response — it's always more useful than raw service data
         if (routeData.ai_response) {
-          resultHtml = `<div class="ai-resp">${esc(routeData.ai_response).replace(/\n/g, '<br>')}</div>`;
+          resultHtml = `<div class="ai-resp">${renderMarkdown(routeData.ai_response)}</div>`;
           routed = true;
         } else if (routeData.routed && routeData.data) {
           resultHtml = renderData(routeData.data, routeData.service);
@@ -437,8 +484,7 @@ async function sendMessage() {
         }
       }
     } catch (e) {
-      // L72: Server-side timeout — show helpful message, don't fall through to raw demo data
-      resultHtml = `<div class="ai-resp">The AI assistant is taking a moment to find the best results for you. Please try again — your search will return real Swiss job listings from jobs.ch.</div>`;
+      resultHtml = `<div class="ai-resp">The request took longer than expected. For CV enhancement or cover letters, this can take up to 2 minutes. Please try again.</div>`;
       routed = true;
     }
 
@@ -450,6 +496,7 @@ async function sendMessage() {
   } catch (err) {
     updateMsg(thinkId, `<span class="err">Error: ${esc(err.message)}</span>`);
   } finally {
+    clearInterval(_thinkInterval);
     setSendDisabled(false);
     input.focus();
     scrollChat();
