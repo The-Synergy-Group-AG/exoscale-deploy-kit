@@ -983,9 +983,9 @@ async def upload_cv(request: Request):
     if not cv_text or len(cv_text.strip()) < 20:
         return JSONResponse({"error": "CV text too short or empty. Upload a PDF/DOCX or paste text."}, 400)
 
-    # Call cv_processor:8020 for AI analysis
+    # Call cv_processor:8020 for AI analysis (GPT-4 + Pinecone)
     try:
-        async with _sync_httpx.AsyncClient(timeout=15.0) as client:
+        async with _sync_httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(
                 "http://cv-processor:8020/analyze",
                 json={"user_id": user_id, "data": cv_text[:5000], "context": ["cv_upload", filename]},

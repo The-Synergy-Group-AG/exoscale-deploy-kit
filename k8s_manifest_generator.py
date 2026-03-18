@@ -281,6 +281,31 @@ spec:
       protocol: UDP
     - port: 8000
       protocol: TCP
+    # L72: AI backend services use ports 8009-8035
+    - port: 8009
+      protocol: TCP
+    - port: 8010
+      protocol: TCP
+    - port: 8011
+      protocol: TCP
+    - port: 8012
+      protocol: TCP
+    - port: 8017
+      protocol: TCP
+    - port: 8018
+      protocol: TCP
+    - port: 8019
+      protocol: TCP
+    - port: 8020
+      protocol: TCP
+    - port: 8032
+      protocol: TCP
+    - port: 8033
+      protocol: TCP
+    - port: 8034
+      protocol: TCP
+    - port: 8035
+      protocol: TCP
 """)
 
     # ── 05: Resource Quota ─────────────────────────────────────────────────
