@@ -6,6 +6,15 @@ pydantic==2.10.3
 python-json-logger==2.0.7
 httpx==0.28.1
 
+# L72: AI backend services (12 services need OpenAI + Pinecone)
+openai>=1.0.0
+pinecone>=5.0.0
+
+# Plan 131: CV file parsing
+PyPDF2>=3.0.0
+python-docx>=1.0.0
+python-multipart>=0.0.6
+
 # Test support for in-pod test execution (Plan 125 Phase 1)
 pytest==8.3.4
 pytest-json-report==1.5.0
