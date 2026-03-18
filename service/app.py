@@ -747,6 +747,35 @@ async def chat_route(request: Request):
     # Plan 131 Phase 3: Fetch user context for personalized AI responses
     user_context = await _fetch_user_context(request)
 
+    # Plan 131 Phase 4: "Match my CV" intent — semantic job-CV matching
+    _cv_match_keywords = {"match my cv", "jobs matching my cv", "match cv", "jobs for my cv",
+                          "jobs for my profile", "match my profile", "matching jobs"}
+    if any(kw in msg.lower() for kw in _cv_match_keywords):
+        user_id = _get_user_id(request)
+        cv_skills = ""
+        if user_id:
+            try:
+                async with _sync_httpx.AsyncClient(timeout=5.0) as c:
+                    r = await c.get(f"http://cv-processor:8020/history/{user_id}")
+                    if r.status_code == 200:
+                        hist = r.json().get("history", [])
+                        if hist and isinstance(hist, list) and hist:
+                            latest = hist[-1] if isinstance(hist[-1], dict) else {}
+                            cv_skills = latest.get("data", "")[:500]
+            except Exception:
+                pass
+        if not cv_skills and user_context:
+            # Extract skills from user context as fallback
+            for line in user_context.split("\n"):
+                if "Skills:" in line or "Target:" in line:
+                    cv_skills += line + " "
+        if cv_skills:
+            # Use CV skills as job search query
+            search_terms = _extract_job_search_terms(cv_skills)
+            route = {"service": "job-search-service", "path": "/jobs", "method": "GET",
+                     "patterns": ["match"]}
+            msg = f"Find jobs matching: {search_terms}"
+
     # L68c: If no keyword match, use Claude for intent routing + general conversation
     if not route and AI_CHAT_ENABLED:
         ai_fallback = await _ai_general_chat(msg, client_ip, user_context=user_context)
