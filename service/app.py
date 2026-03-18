@@ -362,7 +362,76 @@ _INTENT_PROMPTS = {
 }
 
 
-async def _ai_respond(user_msg: str, service_data: dict, service_name: str, client_ip: str = "") -> str:
+async def _fetch_user_context(request: Request) -> str:
+    """Plan 131 Phase 3: Fetch user context from backend services for personalization."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return ""
+
+    context_parts = []
+    try:
+        async with _sync_httpx.AsyncClient(timeout=3.0) as c:
+            # Fetch CV history (most recent analysis)
+            try:
+                r = await c.get(f"http://cv-processor:8020/history/{user_id}")
+                if r.status_code == 200:
+                    data = r.json()
+                    history = data.get("history", [])
+                    if history:
+                        latest = history[-1] if isinstance(history, list) else history
+                        analysis = latest.get("analysis", "")[:300] if isinstance(latest, dict) else str(latest)[:300]
+                        if analysis:
+                            context_parts.append(f"CV analysis: {analysis}")
+            except Exception:
+                pass
+
+            # Fetch profile
+            try:
+                r = await c.get(f"http://user-profile-service:8000/users/{user_id}")
+                if r.status_code == 200:
+                    data = r.json()
+                    profile = data.get("data", data)
+                    if isinstance(profile, dict):
+                        name = profile.get("name", profile.get("username", ""))
+                        role = profile.get("target_role", "")
+                        loc = profile.get("location", "")
+                        skills = profile.get("skills", [])
+                        if name or role or loc:
+                            parts = []
+                            if name:
+                                parts.append(f"Name: {name}")
+                            if role:
+                                parts.append(f"Target: {role}")
+                            if loc:
+                                parts.append(f"Location: {loc}")
+                            if skills:
+                                parts.append(f"Skills: {', '.join(skills[:5])}")
+                            context_parts.append("Profile: " + ", ".join(parts))
+            except Exception:
+                pass
+
+            # Fetch applications
+            try:
+                r = await c.get("http://application-service:8000/data", params={"q": user_id})
+                if r.status_code == 200:
+                    data = r.json()
+                    apps = data.get("data", {})
+                    if isinstance(apps, dict) and apps.get("applications"):
+                        app_list = apps["applications"]
+                        context_parts.append(
+                            f"Applications: {len(app_list)} tracked "
+                            f"({', '.join(a.get('company','?') + ':' + a.get('status','?') for a in app_list[:3])})"
+                        )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return "\n".join(context_parts)
+
+
+async def _ai_respond(user_msg: str, service_data: dict, service_name: str, client_ip: str = "",
+                      user_context: str = "") -> str:
     """L72: Call Claude to generate a genuinely helpful response.
 
     If service data is real (from AI backends), Claude incorporates it.
@@ -381,20 +450,17 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str, clie
             "Be helpful, specific, and actionable. Format key information clearly with markdown. "
             "Keep responses under 200 words. Never mention internal service names or technical details. "
             "NEVER say you don't have access to jobs — the platform searches jobs.ch for specific queries.\n\n"
-            "CURRENT CAPABILITIES (be honest about these):\n"
-            "- LIVE job search from jobs.ch (user must specify role + location)\n"
-            "- CV advice and Swiss format guidance (text-based, no file upload yet)\n"
+            "PLATFORM CAPABILITIES:\n"
+            "- LIVE job search from jobs.ch (user specifies role + location)\n"
+            "- CV upload (PDF/DOCX) with AI analysis and Swiss format review\n"
+            "- User profiles with saved preferences\n"
+            "- Application tracking pipeline (applied/interview/offer/rejected)\n"
+            "- Direct apply from search results\n"
             "- Interview preparation coaching\n"
             "- Swiss market expertise (RAV, permits, salary ranges)\n"
-            "- Career path guidance\n"
-            "NOT YET AVAILABLE (do NOT promise these):\n"
-            "- File upload (CV upload, document upload)\n"
-            "- User accounts or profiles\n"
-            "- Application tracking with real data\n"
-            "- Direct job applications\n"
-            "If a user asks about features not yet available, acknowledge it honestly and "
-            "explain what IS available that can help them right now."
         )
+        if user_context:
+            base_prompt += f"\n\nUSER CONTEXT (personalize your response):\n{user_context}\n"
         domain_prompt = _INTENT_PROMPTS.get(domain, "")
         if domain_prompt:
             base_prompt += f"\n\nDomain expertise: {domain_prompt}"
@@ -451,7 +517,7 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str, clie
         return ""
 
 
-async def _ai_general_chat(user_msg: str, client_ip: str = "") -> str:
+async def _ai_general_chat(user_msg: str, client_ip: str = "", user_context: str = "") -> str:
     """L68c: Handle general conversation, greetings, follow-ups, and complex queries."""
     if not AI_CHAT_ENABLED:
         return ""
@@ -473,19 +539,17 @@ async def _ai_general_chat(user_msg: str, client_ip: str = "") -> str:
         system = (
             "You are the AI assistant for JobTrackerPro, a Swiss job search platform. "
             "Be conversational, warm, and helpful. Keep responses under 120 words.\n\n"
-            "WHAT YOU CAN DO RIGHT NOW:\n"
-            "- Search real jobs from jobs.ch (ask user for role + location)\n"
-            "- Give CV advice for Swiss format (text guidance, no file upload)\n"
+            "PLATFORM CAPABILITIES:\n"
+            "- Search real Swiss jobs from jobs.ch (specify role + location)\n"
+            "- Upload CV (PDF/DOCX) for AI analysis and Swiss format review\n"
+            "- User profiles with saved preferences\n"
+            "- Application tracking (applied/interview/offer/rejected)\n"
+            "- Direct apply from job search results\n"
             "- Interview prep coaching\n"
             "- Swiss market expertise (RAV, permits, salaries)\n"
-            "- Career path guidance\n\n"
-            "WHAT IS NOT YET AVAILABLE (be honest):\n"
-            "- File upload (CV, documents)\n"
-            "- User accounts or saved profiles\n"
-            "- Application tracking with real data\n"
-            "- Direct job applications\n\n"
-            "If asked about unavailable features, say it's coming soon and offer what you CAN do."
         )
+        if user_context:
+            system += f"\n\nUSER CONTEXT:\n{user_context}\n"
         messages = []
         for h in history:
             messages.append({"role": h["role"], "content": h["content"][:200]})
@@ -680,9 +744,12 @@ async def chat_route(request: Request):
     client_ip = request.client.host if request.client else ""
     route = _find_chat_route(msg)
 
+    # Plan 131 Phase 3: Fetch user context for personalized AI responses
+    user_context = await _fetch_user_context(request)
+
     # L68c: If no keyword match, use Claude for intent routing + general conversation
     if not route and AI_CHAT_ENABLED:
-        ai_fallback = await _ai_general_chat(msg, client_ip)
+        ai_fallback = await _ai_general_chat(msg, client_ip, user_context=user_context)
         _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000,
                   ai_response=ai_fallback, client_ip=client_ip)
         # Save conversation memory
@@ -722,7 +789,8 @@ async def chat_route(request: Request):
         service_data = resp.json()
         # L68: Generate AI conversational response with conversation memory
         client_ip = request.client.host if request.client else ""
-        ai_response = await _ai_respond(msg, service_data, route["service"], client_ip)
+        ai_response = await _ai_respond(msg, service_data, route["service"], client_ip,
+                                         user_context=user_context)
         # Save to conversation memory
         if client_ip:
             if client_ip not in _CONV_MEMORY:
@@ -750,7 +818,7 @@ async def chat_route(request: Request):
                   latency_ms=latency, client_ip=client_ip)
         logger.warning(f"chat/route error for {route['service']}: {exc}")
         # L72: AI fallback when service is unreachable — user still gets a helpful response
-        ai_fallback = await _ai_general_chat(msg, client_ip)
+        ai_fallback = await _ai_general_chat(msg, client_ip, user_context=user_context)
         if client_ip:
             if client_ip not in _CONV_MEMORY:
                 _CONV_MEMORY[client_ip] = []
