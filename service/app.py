@@ -963,17 +963,35 @@ async def upload_cv(request: Request):
                 try:
                     import docx  # type: ignore[import-untyped]
                     doc = docx.Document(io.BytesIO(file_bytes))
-                    cv_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-                    logger.info(f"Plan 131: DOCX parsed — {len(cv_text)} chars from {len(doc.paragraphs)} paragraphs")
+                    # Extract from paragraphs
+                    parts = [p.text for p in doc.paragraphs if p.text.strip()]
+                    # Extract from tables (CVs commonly use table layouts)
+                    for table in doc.tables:
+                        for row in table.rows:
+                            for cell in row.cells:
+                                txt = cell.text.strip()
+                                if txt and txt not in parts:
+                                    parts.append(txt)
+                    cv_text = "\n".join(parts)
+                    logger.info(
+                        f"Plan 131: DOCX parsed — {len(cv_text)} chars, "
+                        f"{len(doc.paragraphs)} paragraphs, {len(doc.tables)} tables"
+                    )
                 except Exception as docx_err:
                     logger.warning(f"Plan 131: DOCX parse failed: {docx_err}")
-                    # Try raw text extraction as last resort
+                    # Fallback: extract text from DOCX XML via zipfile
                     try:
-                        raw = file_bytes.decode("utf-8", errors="replace")
-                        # Extract readable text from DOCX XML
                         import re
-                        cv_text = " ".join(re.findall(r"[A-Za-zÀ-ÿ0-9@.\-,;:!?()/ ]{3,}", raw))
-                        logger.info(f"Plan 131: DOCX fallback text — {len(cv_text)} chars")
+                        import zipfile
+                        with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
+                            xml_content = ""
+                            for name in zf.namelist():
+                                if name.endswith(".xml"):
+                                    xml_content += zf.read(name).decode("utf-8", errors="replace")
+                        # Extract text between XML tags
+                        cv_text = " ".join(re.findall(r">([^<]{2,})<", xml_content))
+                        cv_text = re.sub(r"\s+", " ", cv_text).strip()
+                        logger.info(f"Plan 131: DOCX XML fallback — {len(cv_text)} chars")
                     except Exception:
                         cv_text = ""
             else:
