@@ -934,42 +934,54 @@ async def upload_cv(request: Request):
     filename = "uploaded_cv"
 
     if "multipart" in content_type:
-        # Parse multipart form data
-        from fastapi import UploadFile  # noqa: F811
         import io
 
-        # Simple multipart extraction — find the file content
-        # For proper multipart, python-multipart handles this via FastAPI
         try:
             form = await request.form()
             file_field = form.get("file") or form.get("cv")
-            if file_field and hasattr(file_field, "read"):
-                file_bytes = await file_field.read()
-                filename = getattr(file_field, "filename", "cv") or "cv"
+            if not file_field or not hasattr(file_field, "read"):
+                return JSONResponse({"error": "No file field found. Use field name 'file' or 'cv'."}, 400)
 
-                if filename.lower().endswith(".pdf"):
-                    try:
-                        import PyPDF2  # type: ignore[import-untyped]
+            file_bytes = await file_field.read()
+            filename = getattr(file_field, "filename", "cv") or "cv"
+            logger.info(f"Plan 131: Upload received: {filename} ({len(file_bytes)} bytes)")
 
-                        reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
-                        cv_text = "\n".join(page.extract_text() or "" for page in reader.pages)
-                    except ImportError:
-                        cv_text = file_bytes.decode("utf-8", errors="replace")
-                elif filename.lower().endswith(".docx"):
-                    try:
-                        import docx  # type: ignore[import-untyped]
+            if not file_bytes or len(file_bytes) < 10:
+                return JSONResponse({"error": f"File '{filename}' is empty or too small."}, 400)
 
-                        doc = docx.Document(io.BytesIO(file_bytes))
-                        cv_text = "\n".join(p.text for p in doc.paragraphs)
-                    except ImportError:
-                        cv_text = file_bytes.decode("utf-8", errors="replace")
-                else:
+            if filename.lower().endswith(".pdf"):
+                try:
+                    import PyPDF2  # type: ignore[import-untyped]
+                    reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+                    cv_text = "\n".join(page.extract_text() or "" for page in reader.pages)
+                    logger.info(f"Plan 131: PDF parsed — {len(cv_text)} chars from {len(reader.pages)} pages")
+                except Exception as pdf_err:
+                    logger.warning(f"Plan 131: PDF parse failed: {pdf_err}")
                     cv_text = file_bytes.decode("utf-8", errors="replace")
+
+            elif filename.lower().endswith(".docx") or filename.lower().endswith(".doc"):
+                try:
+                    import docx  # type: ignore[import-untyped]
+                    doc = docx.Document(io.BytesIO(file_bytes))
+                    cv_text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+                    logger.info(f"Plan 131: DOCX parsed — {len(cv_text)} chars from {len(doc.paragraphs)} paragraphs")
+                except Exception as docx_err:
+                    logger.warning(f"Plan 131: DOCX parse failed: {docx_err}")
+                    # Try raw text extraction as last resort
+                    try:
+                        raw = file_bytes.decode("utf-8", errors="replace")
+                        # Extract readable text from DOCX XML
+                        import re
+                        cv_text = " ".join(re.findall(r"[A-Za-zÀ-ÿ0-9@.\-,;:!?()/ ]{3,}", raw))
+                        logger.info(f"Plan 131: DOCX fallback text — {len(cv_text)} chars")
+                    except Exception:
+                        cv_text = ""
             else:
-                return JSONResponse({"error": "No file field found. Use 'file' or 'cv'."}, 400)
+                cv_text = file_bytes.decode("utf-8", errors="replace")
+
         except Exception as exc:
             logger.warning(f"Plan 131: Form parse error: {exc}")
-            cv_text = body.decode("utf-8", errors="replace")
+            return JSONResponse({"error": f"File upload failed: {exc}"}, 400)
     elif "text" in content_type or "json" in content_type:
         # Accept plain text or JSON with cv_text field
         try:
@@ -981,7 +993,13 @@ async def upload_cv(request: Request):
         cv_text = body.decode("utf-8", errors="replace")
 
     if not cv_text or len(cv_text.strip()) < 20:
-        return JSONResponse({"error": "CV text too short or empty. Upload a PDF/DOCX or paste text."}, 400)
+        return JSONResponse({
+            "error": f"Could not extract text from '{filename}'. "
+                     f"Got {len(cv_text.strip()) if cv_text else 0} chars. "
+                     "Try a different format (PDF, DOCX, or paste text as JSON).",
+            "filename": filename,
+            "content_type": content_type,
+        }, 400)
 
     # Call cv_processor:8020 for AI analysis (GPT-4 + Pinecone)
     try:
