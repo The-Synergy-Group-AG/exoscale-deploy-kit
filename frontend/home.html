@@ -159,8 +159,8 @@ async function uploadCV(input) {
   if (!file) return;
   input.value = '';
   const token = await ensureToken();
-  const thinkId = addMsg('user', 'Uploading CV: ' + file.name + '...');
-  const botId = addMsg('bot', '<span class="thinking">Analyzing your CV with AI...</span>');
+  const thinkId = appendMsg('user', 'Uploading CV: ' + file.name + '...');
+  const botId = appendMsg('bot', '<span class="thinking">Analyzing your CV with AI...</span>');
 
   try {
     const formData = new FormData();
