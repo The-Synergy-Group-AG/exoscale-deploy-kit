@@ -1011,13 +1011,34 @@ async def upload_cv(request: Request):
         cv_text = body.decode("utf-8", errors="replace")
 
     if not cv_text or len(cv_text.strip()) < 20:
-        return JSONResponse({
-            "error": f"Could not extract text from '{filename}'. "
-                     f"Got {len(cv_text.strip()) if cv_text else 0} chars. "
-                     "Try a different format (PDF, DOCX, or paste text as JSON).",
-            "filename": filename,
-            "content_type": content_type,
-        }, 400)
+        # Last resort: try extracting ANY text from the raw bytes
+        import re as _re
+        raw_text = body.decode("utf-8", errors="replace") if body else ""
+        # For DOCX/PDF binary: try to find text runs in the raw data
+        if filename.lower().endswith((".docx", ".doc")):
+            try:
+                import zipfile
+                import io as _io
+                with zipfile.ZipFile(_io.BytesIO(file_bytes)) as zf:
+                    for name in sorted(zf.namelist()):
+                        if "document" in name.lower() and name.endswith(".xml"):
+                            xml = zf.read(name).decode("utf-8", errors="replace")
+                            # Extract all text content between w:t tags
+                            texts = _re.findall(r"<w:t[^>]*>([^<]+)</w:t>", xml)
+                            if texts:
+                                cv_text = " ".join(texts)
+                                logger.info(f"Plan 131: DOCX w:t extraction — {len(cv_text)} chars from {name}")
+            except Exception as last_err:
+                logger.warning(f"Plan 131: DOCX last-resort failed: {last_err}")
+
+        if not cv_text or len(cv_text.strip()) < 20:
+            return JSONResponse({
+                "error": f"Could not extract text from '{filename}'. "
+                         f"Got {len(cv_text.strip()) if cv_text else 0} chars. "
+                         "Try a different format (PDF, DOCX, or paste text as JSON).",
+                "filename": filename,
+                "content_type": content_type,
+            }, 400)
 
     # Call cv_processor:8020 for AI analysis (GPT-4 + Pinecone)
     try:
