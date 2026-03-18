@@ -590,7 +590,9 @@ _CHAT_LOG_DIR = Path(os.getenv("CHAT_LOG_DIR", "/app/logs"))
 _CHAT_LOG_FILE = _CHAT_LOG_DIR / "chat_interactions.jsonl"
 _CHAT_LOG: deque = deque(maxlen=10000)  # last 10k interactions (in-memory cache)
 _CHAT_STATS: dict = {"total": 0, "routed": 0, "unrouted": 0, "errors": 0, "by_service": {}}
-_CONV_MEMORY: dict = {}  # ip → [{"role": "user/assistant", "content": str}]
+_CONV_MEMORY: dict = {}  # user_id_or_ip → [{"role": "user/assistant", "content": str}]
+# Plan 131: Per-user context from CV uploads and profile data
+_USER_CV_CONTEXT: dict = {}  # user_id → "CV summary text"
 
 
 def _init_chat_log():
@@ -742,10 +744,17 @@ async def chat_route(request: Request):
         body = {}
     msg = body.get("message", "")
     client_ip = request.client.host if request.client else ""
+    # Use JWT user_id for conversation memory (consistent across pods with sticky sessions)
+    user_id = _get_user_id(request)
+    mem_key = user_id or client_ip
     route = _find_chat_route(msg)
 
     # Plan 131 Phase 3: Fetch user context for personalized AI responses
     user_context = await _fetch_user_context(request)
+    # Add CV context if available
+    if user_id and user_id in _USER_CV_CONTEXT:
+        cv_summary = _USER_CV_CONTEXT[user_id][:500]
+        user_context = f"Uploaded CV: {cv_summary}\n{user_context}" if user_context else f"Uploaded CV: {cv_summary}"
 
     # Plan 131 Phase 4: "Match my CV" intent — semantic job-CV matching
     _cv_match_keywords = {"match my cv", "jobs matching my cv", "match cv", "jobs for my cv",
@@ -783,12 +792,12 @@ async def chat_route(request: Request):
                   ai_response=ai_fallback, client_ip=client_ip)
         # Save conversation memory
         if client_ip:
-            if client_ip not in _CONV_MEMORY:
-                _CONV_MEMORY[client_ip] = []
-            _CONV_MEMORY[client_ip].append({"role": "user", "content": msg})
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
             if ai_fallback:
-                _CONV_MEMORY[client_ip].append({"role": "assistant", "content": ai_fallback[:200]})
-            _CONV_MEMORY[client_ip] = _CONV_MEMORY[client_ip][-10:]
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_fallback[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
         return {
             "routed": True,
             "service": "ai-assistant",
@@ -822,13 +831,13 @@ async def chat_route(request: Request):
                                          user_context=user_context)
         # Save to conversation memory
         if client_ip:
-            if client_ip not in _CONV_MEMORY:
-                _CONV_MEMORY[client_ip] = []
-            _CONV_MEMORY[client_ip].append({"role": "user", "content": msg})
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
             if ai_response:
-                _CONV_MEMORY[client_ip].append({"role": "assistant", "content": ai_response[:200]})
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_response[:200]})
             # Keep last 10 turns
-            _CONV_MEMORY[client_ip] = _CONV_MEMORY[client_ip][-10:]
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
         latency = (_t.time() - t0) * 1000
         _log_chat(msg, routed=True, service=route["service"], latency_ms=latency,
                   ai_response=ai_response, client_ip=client_ip)
@@ -849,12 +858,12 @@ async def chat_route(request: Request):
         # L72: AI fallback when service is unreachable — user still gets a helpful response
         ai_fallback = await _ai_general_chat(msg, client_ip, user_context=user_context)
         if client_ip:
-            if client_ip not in _CONV_MEMORY:
-                _CONV_MEMORY[client_ip] = []
-            _CONV_MEMORY[client_ip].append({"role": "user", "content": msg})
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
             if ai_fallback:
-                _CONV_MEMORY[client_ip].append({"role": "assistant", "content": ai_fallback[:200]})
-            _CONV_MEMORY[client_ip] = _CONV_MEMORY[client_ip][-10:]
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_fallback[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
         return {
             "routed": True,
             "service": route["service"],
@@ -1067,6 +1076,23 @@ async def upload_cv(request: Request):
             )
         except Exception:
             pass
+
+    # Store CV context for conversation personalization
+    if user_id and cv_text:
+        _USER_CV_CONTEXT[user_id] = cv_text[:2000]
+        # Also store in conversation memory so Claude remembers
+        mem_key = user_id
+        if mem_key not in _CONV_MEMORY:
+            _CONV_MEMORY[mem_key] = []
+        _CONV_MEMORY[mem_key].append({
+            "role": "user",
+            "content": f"[CV UPLOADED: {filename}] {cv_text[:500]}",
+        })
+        if ai_advice:
+            _CONV_MEMORY[mem_key].append({
+                "role": "assistant",
+                "content": ai_advice[:500],
+            })
 
     return {
         "status": "uploaded",

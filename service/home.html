@@ -401,9 +401,12 @@ async function sendMessage() {
     let resultHtml = '';
 
     try {
+      const chatHeaders = {'Content-Type':'application/json'};
+      const tk = localStorage.getItem(TOKEN_KEY);
+      if (tk) chatHeaders['Authorization'] = 'Bearer ' + tk;
       const routeResp = await fetch('/chat/route', {
         method: 'POST',
-        headers: {'Content-Type':'application/json'},
+        headers: chatHeaders,
         body: JSON.stringify({message: msg}),
         signal: AbortSignal.timeout(15000)
       });
