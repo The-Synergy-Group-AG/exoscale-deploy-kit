@@ -862,7 +862,8 @@ async def _ai_respond(
             "- Application tracking pipeline (applied/interview/offer/rejected)\n"
             "- Direct apply from search results\n"
             "- Interview preparation coaching\n"
-            "- Swiss market expertise (RAV, permits, salary ranges)\n"
+            "- Swiss market expertise (RAV, permits, salary ranges)\n\n"
+            "Always suggest 1-2 relevant next steps from other platform capabilities.\n"
         )
         if user_context:
             base_prompt += (
@@ -973,8 +974,13 @@ async def _ai_general_chat(
             "10. Progress Analytics — application metrics, response rates, optimization\n"
             "11. Gamification & Growth — achievements, badges, XP points\n"
             "12. Trust & Security — Swiss privacy compliance, data protection\n\n"
-            "QUICK ACTIONS: Upload CV, Enhance CV (3 versions), Cover Letter (AIDA), Interview Prep\n"
-            "When relevant, mention which benefit category helps the user's need.\n"
+            "QUICK ACTIONS: Upload CV, Enhance CV (3 versions), Cover Letter (AIDA), Interview Prep\n\n"
+            "IMPORTANT — Cross-reference benefits in every response:\n"
+            "- When discussing jobs: suggest 'Upload your CV for Swiss format review' or 'I can enhance your CV for this role'\n"
+            "- When discussing CVs: suggest 'Search for matching jobs' or 'Generate a cover letter'\n"
+            "- When discussing interviews: suggest 'Track this application' or 'Check salary expectations'\n"
+            "- When discussing career: suggest 'Update your profile' or 'View your progress analytics'\n"
+            "- Always end with 1-2 relevant next-step suggestions from other benefit categories\n"
         )
         if user_context:
             system += f"\n\nUSER CONTEXT:\n{user_context}\n"
