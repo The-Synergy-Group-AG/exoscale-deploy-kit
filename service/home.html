@@ -88,14 +88,18 @@
       <h2>Hello, I'm your AI Career Assistant</h2>
       <p>Your Swiss job search platform — I deliver 12 career benefits including live job search, CV enhancement, interview coaching, and Swiss market expertise. What can I help with?</p>
       <div class="quick-prompts">
-        <button class="qp" onclick="sendPrompt('Find Business Analyst jobs in Zurich')">Job Discovery</button>
+        <button class="qp" onclick="sendPrompt('Find Project Manager jobs in Zurich')">Job Discovery</button>
         <button class="qp" onclick="document.getElementById('cv-upload').click()">Upload CV</button>
         <button class="qp" onclick="sendPrompt('Enhance my CV')">CV Enhancement</button>
         <button class="qp" onclick="sendPrompt('Write a cover letter')">Cover Letter</button>
         <button class="qp" onclick="sendPrompt('Prepare me for interviews')">Interview Prep</button>
-        <button class="qp" onclick="sendPrompt('Swiss salary expectations for engineers')">Swiss Market</button>
-        <button class="qp" onclick="sendPrompt('Help me stay motivated in my job search')">Career Coach</button>
+        <button class="qp" onclick="sendPrompt('Swiss salary expectations for engineers')">Salary Intel</button>
+        <button class="qp" onclick="sendPrompt('Help me stay motivated')">Career Coach</button>
         <button class="qp" onclick="sendPrompt('my applications')">Applications</button>
+        <button class="qp" onclick="sendPrompt('Networking strategies for Zurich')">Networking</button>
+        <button class="qp" onclick="sendPrompt('How is my data protected')">Privacy</button>
+        <button class="qp" onclick="sendPrompt('Show me my progress')">Analytics</button>
+        <button class="qp" onclick="sendPrompt('My achievements')">Achievements</button>
       </div>
     </div>
   </div>
@@ -106,13 +110,16 @@
     <button id="send-btn" onclick="sendMessage()">Send</button>
   </div>
   <div class="suggestions" id="suggestions">
-    <span class="sug" onclick="sendPrompt('jobs')">jobs</span>
-    <span class="sug" onclick="sendPrompt('enhance my cv')">enhance cv</span>
-    <span class="sug" onclick="sendPrompt('cover letter')">cover letter</span>
-    <span class="sug" onclick="sendPrompt('interviews')">interviews</span>
-    <span class="sug" onclick="sendPrompt('match my cv')">match cv to jobs</span>
-    <span class="sug" onclick="sendPrompt('analytics')">analytics</span>
-    <span class="sug" onclick="sendPrompt('status')">status</span>
+    <span class="sug" onclick="sendPrompt('jobs in Zurich')">jobs</span>
+    <span class="sug" onclick="sendPrompt('enhance my cv')">cv</span>
+    <span class="sug" onclick="sendPrompt('cover letter')">letter</span>
+    <span class="sug" onclick="sendPrompt('interview prep')">interviews</span>
+    <span class="sug" onclick="sendPrompt('salary expectations')">salary</span>
+    <span class="sug" onclick="sendPrompt('my applications')">apps</span>
+    <span class="sug" onclick="sendPrompt('networking')">network</span>
+    <span class="sug" onclick="sendPrompt('my progress')">progress</span>
+    <span class="sug" onclick="sendPrompt('my achievements')">badges</span>
+    <span class="sug" onclick="sendPrompt('data privacy')">privacy</span>
   </div>
 </div>
 

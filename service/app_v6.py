@@ -1117,19 +1117,44 @@ def _log_chat(
 
 
 @app.get("/chat/analytics")
-async def chat_analytics():
-    """L72: Chat interaction analytics with persistent history."""
+async def chat_analytics(request: Request):
+    """Plan 138: Chat analytics — per-user from Pinecone + platform-wide from memory."""
+    user_id = _get_user_id(request)
     recent = list(_CHAT_LOG)[-50:]
     top_services = sorted(_CHAT_STATS["by_service"].items(), key=lambda x: -x[1])[:10]
-    unrouted_msgs = [e["message"] for e in _CHAT_LOG if not e["routed"]][-20:]
-    return {
-        "stats": _CHAT_STATS,
-        "top_services": top_services,
-        "unrouted_messages": unrouted_msgs,
-        "recent_interactions": recent,
-        "log_file": str(_CHAT_LOG_FILE),
+
+    result = {
+        "platform": {
+            "total_chats": _CHAT_STATS.get("total", 0),
+            "routed": _CHAT_STATS.get("routed", 0),
+            "unrouted": _CHAT_STATS.get("unrouted", 0),
+            "top_services": dict(top_services),
+        },
         "log_entries": len(_CHAT_LOG),
     }
+
+    # Per-user analytics from Pinecone
+    if user_id:
+        try:
+            async with _sync_httpx.AsyncClient(timeout=5.0) as c:
+                r = await c.get(f"http://memory-system:8009/history/{user_id}")
+                if r.status_code == 200:
+                    history = r.json().get("history", [])
+                    conversations = [h for h in history if "conversation" in str(h.get("context", ""))]
+                    applications = [h for h in history if "application" in str(h.get("context", ""))]
+                    achievements = [h for h in history if "gamification" in str(h.get("context", ""))]
+                    cv_analyses = [h for h in history if "cv" in str(h.get("context", "")).lower()]
+                    result["user"] = {
+                        "total_interactions": len(history),
+                        "conversations": len(conversations),
+                        "applications_tracked": len(applications),
+                        "achievements_earned": len(achievements),
+                        "cv_analyses": len(cv_analyses),
+                    }
+        except Exception:
+            pass
+
+    return result
 
 
 @app.get("/chat/logs/export")
@@ -1610,8 +1635,92 @@ async def chat_route(request: Request):
             "ai_response": ai_resp,
         }
 
-    # Plan 133: AI-classified intents that don't have a dedicated handler → general chat
-    # Also handles: interview-prep, career-advice, applications, profile, general-chat
+    # ── Plan 138: Dedicated handlers for all classified intents ──
+
+    # Intent: interview-prep — use domain-specific coaching prompt
+    if intent == "interview-prep" and not route:
+        domain_prompt = _INTENT_PROMPTS.get("career", "")
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        _log_chat(msg, routed=True, service="interview-prep", latency_ms=(_t.time() - t0) * 1000,
+                  ai_response=ai_resp, client_ip=client_ip)
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            if ai_resp:
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {"routed": True, "service": "interview-prep", "intent": intent,
+                "language": detected_lang, "data": None, "ai_response": ai_resp}
+
+    # Intent: career-advice — salary info, market intelligence
+    if intent == "career-advice" and not route:
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        _log_chat(msg, routed=True, service="career-advice", latency_ms=(_t.time() - t0) * 1000,
+                  ai_response=ai_resp, client_ip=client_ip)
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            if ai_resp:
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {"routed": True, "service": "career-advice", "intent": intent,
+                "language": detected_lang, "data": None, "ai_response": ai_resp}
+
+    # Intent: applications — show tracked applications from Pinecone
+    if intent == "applications" and not route:
+        apps_data = {}
+        if user_id:
+            try:
+                async with _sync_httpx.AsyncClient(timeout=5.0) as c:
+                    r = await c.get(f"http://memory-system:8009/history/{user_id}")
+                    if r.status_code == 200:
+                        history = r.json().get("history", [])
+                        apps = []
+                        for entry in history:
+                            ctx = str(entry.get("context", entry.get("analysis", "")))
+                            if "application" in ctx.lower() or "applied" in ctx.lower():
+                                try:
+                                    app_data = json.loads(entry.get("data", "{}"))
+                                    if isinstance(app_data, dict) and app_data.get("id"):
+                                        apps.append(app_data)
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                        if apps:
+                            apps_data = {"applications": apps, "count": len(apps)}
+            except Exception:
+                pass
+        ai_resp = await _ai_respond(msg, {"data": apps_data, "source": "pinecone"} if apps_data else {"data": {}, "source": "empty"},
+                                     "application-tracker", mem_key, user_context=user_context)
+        _log_chat(msg, routed=True, service="application-tracker", latency_ms=(_t.time() - t0) * 1000,
+                  ai_response=ai_resp, client_ip=client_ip)
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            if ai_resp:
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {"routed": True, "service": "application-tracker", "intent": intent,
+                "data": apps_data if apps_data else {"applications": [], "count": 0}, "ai_response": ai_resp}
+
+    # Intent: profile — show/edit profile from Pinecone
+    if intent == "profile" and not route:
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        _log_chat(msg, routed=True, service="profile", latency_ms=(_t.time() - t0) * 1000,
+                  ai_response=ai_resp, client_ip=client_ip)
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            if ai_resp:
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {"routed": True, "service": "profile", "intent": intent,
+                "data": None, "ai_response": ai_resp}
+
+    # All remaining intents → general chat
     if not route:
         # For classified intents without dedicated service proxy, use AI general chat
         ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context)
@@ -1631,6 +1740,19 @@ async def chat_route(request: Request):
                     {"role": "assistant", "content": ai_fallback[:200]}
                 )
             _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+
+        # Plan 138: Persist conversation to Pinecone for cross-pod + cross-restart survival
+        if user_id and user_id != "anon" and ai_fallback:
+            try:
+                async with _sync_httpx.AsyncClient(timeout=3.0) as _pc:
+                    await _pc.post(
+                        "http://memory-system:8009/analyze",
+                        json={"user_id": user_id, "data": json.dumps({"msg": msg[:200], "resp": ai_fallback[:300]}),
+                              "context": ["conversation", intent]},
+                    )
+            except Exception:
+                pass
+
         return {
             "routed": True,
             "service": "ai-assistant",
@@ -2009,6 +2131,17 @@ async def upload_cv(request: Request):
                 }
             )
 
+    # Plan 138: Trigger gamification — award XP for CV upload
+    if user_id and user_id != "anon":
+        try:
+            async with _sync_httpx.AsyncClient(timeout=3.0) as gc:
+                await gc.post(
+                    f"http://gamification-service:{_get_service_port('gamification-service')}/achievements/unlock",
+                    json={"user_id": user_id, "achievement": "cv_uploaded", "points": 50},
+                )
+        except Exception:
+            pass  # Non-fatal — gamification is a bonus, not critical path
+
     return {
         "status": "uploaded",
         "user_id": user_id,
@@ -2145,20 +2278,42 @@ async def cover_letter_api(request: Request):
 
 @app.get("/api/profile")
 async def get_profile(request: Request):
-    """Plan 131: Get user profile from user-profile-service."""
+    """Plan 138: Get user profile — Pinecone primary, demo service fallback."""
     user_id = _get_user_id(request)
     if not user_id:
         return JSONResponse(
             {"error": "No auth token. Call POST /api/auth/token first."}, 401
         )
 
+    # Primary: query memory-system (Pinecone) for persisted profile
     try:
         async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"http://memory-system:8009/history/{user_id}")
+            if resp.status_code == 200:
+                history = resp.json().get("history", [])
+                # Find profile entries
+                for entry in reversed(history):
+                    data = entry.get("data", "")
+                    if "profile" in str(entry.get("context", entry.get("analysis", ""))).lower() or \
+                       any(k in data for k in ("name", "target_role", "skills")):
+                        try:
+                            profile = json.loads(data) if isinstance(data, str) else data
+                            return {"user_id": user_id, "profile": profile, "source": "pinecone"}
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+    except Exception as exc:
+        logger.warning(f"Plan 138: Pinecone profile fetch failed: {exc}")
+
+    # Fallback: try demo service
+    try:
+        async with _sync_httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.get(f"http://user-profile-service:8000/users/{user_id}")
             if resp.status_code == 200:
-                return resp.json()
-    except Exception as exc:
-        logger.warning(f"Plan 131: profile fetch failed: {exc}")
+                data = resp.json()
+                if not data.get("mode") == "demo":
+                    return data
+    except Exception:
+        pass
 
     return {
         "user_id": user_id,
@@ -2208,25 +2363,39 @@ async def update_profile(request: Request):
 
 @app.get("/api/applications")
 async def get_applications(request: Request):
-    """Plan 131: List user's job applications."""
+    """Plan 138: List user's job applications — Pinecone primary."""
     user_id = _get_user_id(request)
     if not user_id:
         return JSONResponse({"error": "No auth token."}, 401)
 
+    applications = []
+
+    # Primary: query memory-system (Pinecone) for application entries
     try:
         async with _sync_httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"http://application-service:8000/data", params={"q": user_id}
-            )
+            resp = await client.get(f"http://memory-system:8009/history/{user_id}")
             if resp.status_code == 200:
-                return resp.json()
+                history = resp.json().get("history", [])
+                for entry in history:
+                    data = entry.get("data", "")
+                    ctx = str(entry.get("context", entry.get("analysis", "")))
+                    if "application" in ctx.lower():
+                        try:
+                            app_data = json.loads(data) if isinstance(data, str) else data
+                            if isinstance(app_data, dict) and app_data.get("id"):
+                                applications.append(app_data)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
     except Exception as exc:
-        logger.warning(f"Plan 131: applications fetch failed: {exc}")
+        logger.warning(f"Plan 138: Pinecone applications fetch failed: {exc}")
+
+    if applications:
+        return {"user_id": user_id, "applications": applications, "count": len(applications), "source": "pinecone"}
 
     return {
         "user_id": user_id,
         "applications": [],
-        "message": "No applications tracked yet.",
+        "message": "No applications tracked yet. Use POST /api/applications to start tracking.",
     }
 
 
@@ -2266,6 +2435,17 @@ async def create_application(request: Request):
             )
     except Exception:
         pass
+
+    # Plan 138: Trigger gamification — award XP for application submission
+    if user_id and user_id != "anon":
+        try:
+            async with _sync_httpx.AsyncClient(timeout=3.0) as gc:
+                await gc.post(
+                    f"http://gamification-service:{_get_service_port('gamification-service')}/achievements/unlock",
+                    json={"user_id": user_id, "achievement": "application_submitted", "points": 30},
+                )
+        except Exception:
+            pass
 
     return {"status": "tracked", "application": body}
 
@@ -2341,6 +2521,46 @@ async def direct_apply(request: Request):
         "application": application,
         "message": f"Application tracked for {application['role']} at {application['company']}",
     }
+
+
+@app.get("/api/analytics")
+async def user_analytics(request: Request):
+    """Plan 138: User progress analytics — aggregates CV, application, and chat data."""
+    user_id = _get_user_id(request)
+
+    analytics = {
+        "user_id": user_id or "anonymous",
+        "chat": {
+            "total_messages": _CHAT_STATS.get("total", 0),
+            "routed": _CHAT_STATS.get("routed", 0),
+            "unrouted": _CHAT_STATS.get("unrouted", 0),
+            "top_services": dict(
+                sorted(_CHAT_STATS.get("by_service", {}).items(), key=lambda x: -x[1])[:5]
+            ),
+        },
+        "cv": {"uploaded": bool(_USER_CV_CONTEXT.get(user_id, ""))},
+        "intent_cache": len(_INTENT_CACHE),
+        "ai_health": {
+            "anthropic_ok": _AI_CALL_STATS["anthropic_ok"],
+            "anthropic_fail": _AI_CALL_STATS["anthropic_fail"],
+        },
+    }
+
+    # Get application count from Pinecone
+    if user_id:
+        try:
+            async with _sync_httpx.AsyncClient(timeout=3.0) as c:
+                r = await c.get(f"http://memory-system:8009/history/{user_id}")
+                if r.status_code == 200:
+                    history = r.json().get("history", [])
+                    apps = [h for h in history if "application" in str(h.get("context", h.get("analysis", ""))).lower()]
+                    analytics["applications"] = {"total": len(apps)}
+                    cv_entries = [h for h in history if "cv" in str(h.get("context", "")).lower() or "analysis" in str(h.get("analysis", "")).lower()]
+                    analytics["cv"]["analyses"] = len(cv_entries)
+        except Exception:
+            pass
+
+    return analytics
 
 
 @app.get("/health")

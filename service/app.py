@@ -16,13 +16,14 @@ CRITICAL INVARIANT (L2 from Plan 120 Lessons Learned):
 
 Plan: 121-Factory-E2E-Restart
 """
-import httpx
+
 import json
 import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -65,6 +66,7 @@ def _get_service_port(service_dns: str) -> int:
     """Return the correct port for a service. AI backends use native ports, all others use 8000."""
     return _AI_BACKEND_PORTS.get(service_dns, 8000)
 
+
 # Persistent HTTP client — shared across all requests (connection pooling + DNS cache)
 _http_client: httpx.AsyncClient | None = None
 
@@ -76,12 +78,14 @@ async def lifespan(app: FastAPI):
     _http_client = httpx.AsyncClient(
         timeout=PROXY_TIMEOUT,
         limits=httpx.Limits(
-            max_connections=50,           # L3 fix: reduced from 500 (prevents pool exhaustion)
+            max_connections=50,  # L3 fix: reduced from 500 (prevents pool exhaustion)
             max_keepalive_connections=10,  # Keep-alive slots (was 200)
-            keepalive_expiry=5.0,          # Expire idle connections quickly (was 30s)
+            keepalive_expiry=5.0,  # Expire idle connections quickly (was 30s)
         ),
     )
-    logger.info(f"Gateway v7 started — PROXY_TIMEOUT={PROXY_TIMEOUT}s, pool=50, persistent client ready")
+    logger.info(
+        f"Gateway v7 started — PROXY_TIMEOUT={PROXY_TIMEOUT}s, pool=50, persistent client ready"
+    )
     yield
     await _http_client.aclose()
     logger.info("Gateway v7 shutdown — HTTP client closed")
@@ -132,7 +136,9 @@ async def api_catalog():
     """L62: Runtime API catalog — all services, endpoints, and dependencies."""
     return {
         "total": len(_SERVICE_CATALOG),
-        "domains": sorted({v.get("domain", "general") for v in _SERVICE_CATALOG.values()}),
+        "domains": sorted(
+            {v.get("domain", "general") for v in _SERVICE_CATALOG.values()}
+        ),
         "services": _SERVICE_CATALOG,
     }
 
@@ -141,75 +147,223 @@ async def api_catalog():
 # Curated routes have priority — hand-tuned patterns for core user-facing services
 _CURATED_ROUTES = [
     # ── Core job-seeker journey (7 routes) ────────────────────────────────────
-    {"patterns": ["job", "jobs", "vacancy", "position", "hire", "hiring"],
-     "service": "job-search-service", "path": "/jobs", "method": "GET"},
-    {"patterns": ["cv", "resume", "curriculum", "generate cv"],
-     "service": "cv-generation-service", "path": "/cv/generate", "method": "POST"},
-    {"patterns": ["interview", "interviews", "prep", "interview schedule"],
-     "service": "interview-prep-service", "path": "/interviews", "method": "GET"},
-    {"patterns": ["application", "applications", "track", "tracking", "applied"],
-     "service": "application-service", "path": "/data", "method": "GET"},
-    {"patterns": ["career", "advice", "growth", "path", "guidance"],
-     "service": "career-search-core-service", "path": "/career/advice", "method": "GET"},
-    {"patterns": ["skill", "skills", "learn", "training", "development", "course"],
-     "service": "skill-development-infrastructure", "path": "/jobs", "method": "GET"},
-    {"patterns": ["network", "networking", "connections", "connect", "contacts"],
-     "service": "networking-service", "path": "/data", "method": "GET"},
+    {
+        "patterns": ["job", "jobs", "vacancy", "position", "hire", "hiring"],
+        "service": "job-search-service",
+        "path": "/jobs",
+        "method": "GET",
+    },
+    {
+        "patterns": ["cv", "resume", "curriculum", "generate cv"],
+        "service": "cv-generation-service",
+        "path": "/cv/generate",
+        "method": "POST",
+    },
+    {
+        "patterns": ["interview", "interviews", "prep", "interview schedule"],
+        "service": "interview-prep-service",
+        "path": "/interviews",
+        "method": "GET",
+    },
+    {
+        "patterns": ["application", "applications", "track", "tracking", "applied"],
+        "service": "application-service",
+        "path": "/data",
+        "method": "GET",
+    },
+    {
+        "patterns": ["career", "advice", "growth", "path", "guidance"],
+        "service": "career-search-core-service",
+        "path": "/career/advice",
+        "method": "GET",
+    },
+    {
+        "patterns": ["skill", "skills", "learn", "training", "development", "course"],
+        "service": "skill-development-infrastructure",
+        "path": "/jobs",
+        "method": "GET",
+    },
+    {
+        "patterns": ["network", "networking", "connections", "connect", "contacts"],
+        "service": "networking-service",
+        "path": "/data",
+        "method": "GET",
+    },
     # ── User account & platform (5 routes) ────────────────────────────────────
-    {"patterns": ["profile", "my profile", "preferences", "my account"],
-     "service": "user-profile-service", "path": "/users", "method": "GET"},
-    {"patterns": ["user", "users", "admin", "manage users"],
-     "service": "admin-service", "path": "/users", "method": "GET"},
-    {"patterns": ["notification", "notifications", "alert", "message", "inbox"],
-     "service": "notification-service", "path": "/notifications", "method": "GET"},
-    {"patterns": ["onboarding", "welcome", "setup", "getting started"],
-     "service": "onboarding-service", "path": "/users", "method": "GET"},
-    {"patterns": ["email", "smtp", "mail", "recruiter"],
-     "service": "email-integration-service", "path": "/notifications", "method": "GET"},
+    {
+        "patterns": ["profile", "my profile", "preferences", "my account"],
+        "service": "user-profile-service",
+        "path": "/users",
+        "method": "GET",
+    },
+    {
+        "patterns": ["user", "users", "admin", "manage users"],
+        "service": "admin-service",
+        "path": "/users",
+        "method": "GET",
+    },
+    {
+        "patterns": ["notification", "notifications", "alert", "message", "inbox"],
+        "service": "notification-service",
+        "path": "/notifications",
+        "method": "GET",
+    },
+    {
+        "patterns": ["onboarding", "welcome", "setup", "getting started"],
+        "service": "onboarding-service",
+        "path": "/users",
+        "method": "GET",
+    },
+    {
+        "patterns": ["email", "smtp", "mail", "recruiter"],
+        "service": "email-integration-service",
+        "path": "/notifications",
+        "method": "GET",
+    },
     # ── Monetization & billing (3 routes) ─────────────────────────────────────
-    {"patterns": ["payment", "billing", "invoice", "pay"],
-     "service": "payment-processor-service", "path": "/auth/status", "method": "GET"},
-    {"patterns": ["subscription", "subscriptions", "plan", "upgrade", "downgrade"],
-     "service": "subscription-management-service", "path": "/subscriptions", "method": "GET"},
-    {"patterns": ["credit", "credits", "balance", "redeem", "points"],
-     "service": "credits-service", "path": "/payments", "method": "GET"},
+    {
+        "patterns": ["payment", "billing", "invoice", "pay"],
+        "service": "payment-processor-service",
+        "path": "/auth/status",
+        "method": "GET",
+    },
+    {
+        "patterns": ["subscription", "subscriptions", "plan", "upgrade", "downgrade"],
+        "service": "subscription-management-service",
+        "path": "/subscriptions",
+        "method": "GET",
+    },
+    {
+        "patterns": ["credit", "credits", "balance", "redeem", "points"],
+        "service": "credits-service",
+        "path": "/payments",
+        "method": "GET",
+    },
     # ── Intelligence & analytics (4 routes) ───────────────────────────────────
-    {"patterns": ["analytic", "analytics", "metric", "dashboard", "report", "insight"],
-     "service": "advanced-analytics-bi-service", "path": "/analytics/dashboard", "method": "GET"},
-    {"patterns": ["ai", "ml", "model", "predict", "pipeline"],
-     "service": "advanced-ai-ml-service", "path": "/ai/process", "method": "POST"},
-    {"patterns": ["recommend", "recommendation", "personaliz", "suggest"],
-     "service": "personalization-ai-adaptor", "path": "/models", "method": "GET"},
-    {"patterns": ["predictive", "forecast", "prediction"],
-     "service": "predictive-analytics-engine", "path": "/analytics/dashboard", "method": "GET"},
+    {
+        "patterns": [
+            "analytic",
+            "analytics",
+            "metric",
+            "dashboard",
+            "report",
+            "insight",
+        ],
+        "service": "advanced-analytics-bi-service",
+        "path": "/analytics/dashboard",
+        "method": "GET",
+    },
+    {
+        "patterns": ["ai", "ml", "model", "predict", "pipeline"],
+        "service": "advanced-ai-ml-service",
+        "path": "/ai/process",
+        "method": "POST",
+    },
+    {
+        "patterns": ["recommend", "recommendation", "personaliz", "suggest"],
+        "service": "personalization-ai-adaptor",
+        "path": "/models",
+        "method": "GET",
+    },
+    {
+        "patterns": ["predictive", "forecast", "prediction"],
+        "service": "predictive-analytics-engine",
+        "path": "/analytics/dashboard",
+        "method": "GET",
+    },
     # ── Operations & infrastructure (7 routes) ────────────────────────────────
-    {"patterns": ["status", "health", "system", "monitor", "uptime"],
-     "service": "monitoring-system-bulk", "path": "/status", "method": "GET"},
-    {"patterns": ["security", "threat", "scan", "firewall", "vulnerability"],
-     "service": "access-control-service", "path": "/security/status", "method": "GET"},
-    {"patterns": ["compliance", "regulation", "regulations", "rav", "gdpr"],
-     "service": "swiss-compliance-service", "path": "/regulations", "method": "GET"},
-    {"patterns": ["log", "logs", "audit log", "audit trail"],
-     "service": "audit-logging-service", "path": "/compliance/status", "method": "GET"},
-    {"patterns": ["document", "documents", "file", "export"],
-     "service": "document-management-service", "path": "/documents", "method": "GET"},
-    {"patterns": ["workflow", "automation", "process", "pipeline"],
-     "service": "workflow-engines-service", "path": "/workflows", "method": "GET"},
-    {"patterns": ["webhook", "integration", "linkedin", "indeed", "sync"],
-     "service": "webhook-integrations-service", "path": "/workflows", "method": "GET"},
+    {
+        "patterns": ["status", "health", "system", "monitor", "uptime"],
+        "service": "monitoring-system-bulk",
+        "path": "/status",
+        "method": "GET",
+    },
+    {
+        "patterns": ["security", "threat", "scan", "firewall", "vulnerability"],
+        "service": "access-control-service",
+        "path": "/security/status",
+        "method": "GET",
+    },
+    {
+        "patterns": ["compliance", "regulation", "regulations", "rav", "gdpr"],
+        "service": "swiss-compliance-service",
+        "path": "/regulations",
+        "method": "GET",
+    },
+    {
+        "patterns": ["log", "logs", "audit log", "audit trail"],
+        "service": "audit-logging-service",
+        "path": "/compliance/status",
+        "method": "GET",
+    },
+    {
+        "patterns": ["document", "documents", "file", "export"],
+        "service": "document-management-service",
+        "path": "/documents",
+        "method": "GET",
+    },
+    {
+        "patterns": ["workflow", "automation", "process", "pipeline"],
+        "service": "workflow-engines-service",
+        "path": "/workflows",
+        "method": "GET",
+    },
+    {
+        "patterns": ["webhook", "integration", "linkedin", "indeed", "sync"],
+        "service": "webhook-integrations-service",
+        "path": "/workflows",
+        "method": "GET",
+    },
     # ── System & config (4 routes) ────────────────────────────────────────────
-    {"patterns": ["config", "configuration", "settings", "feature flag"],
-     "service": "configuration-management", "path": "/config", "method": "GET"},
-    {"patterns": ["backup", "restore", "recovery"],
-     "service": "backup-recovery-system", "path": "/backup/status", "method": "GET"},
-    {"patterns": ["biological", "harmony", "consciousness"],
-     "service": "biological-analytics-performance-test", "path": "/status", "method": "GET"},
-    {"patterns": ["gamification", "achievement", "badge", "leaderboard", "xp"],
-     "service": "gamification-service", "path": "/leaderboard", "method": "GET"},
+    {
+        "patterns": ["config", "configuration", "settings", "feature flag"],
+        "service": "configuration-management",
+        "path": "/config",
+        "method": "GET",
+    },
+    {
+        "patterns": ["backup", "restore", "recovery"],
+        "service": "backup-recovery-system",
+        "path": "/backup/status",
+        "method": "GET",
+    },
+    {
+        "patterns": ["biological", "harmony", "consciousness"],
+        "service": "biological-analytics-performance-test",
+        "path": "/status",
+        "method": "GET",
+    },
+    {
+        "patterns": [
+            "gamification",
+            "achievement",
+            "badge",
+            "leaderboard",
+            "xp",
+            "progress",
+            "level",
+            "points",
+            "reward",
+        ],
+        "service": "gamification-service",
+        "path": "/leaderboard",
+        "method": "GET",
+    },
 ]
 
 # Noise words excluded from service name pattern extraction
-_NOISE = {"service", "system", "engine", "api", "the", "for", "and", "test", "bulk", "category"}
+_NOISE = {
+    "service",
+    "system",
+    "engine",
+    "api",
+    "the",
+    "for",
+    "and",
+    "test",
+    "bulk",
+    "category",
+}
 
 
 def _build_dynamic_routes() -> list:
@@ -221,8 +375,11 @@ def _build_dynamic_routes() -> list:
         if dns_name in curated_services:
             continue  # already covered by curated route
         # Extract keywords from service name
-        patterns = [w for w in svc_name.replace("-", "_").split("_")
-                    if len(w) > 2 and w.lower() not in _NOISE]
+        patterns = [
+            w
+            for w in svc_name.replace("-", "_").split("_")
+            if len(w) > 2 and w.lower() not in _NOISE
+        ]
         domain = spec.get("domain", "")
         if domain and domain not in patterns:
             patterns.append(domain)
@@ -232,19 +389,25 @@ def _build_dynamic_routes() -> list:
         endpoints = spec.get("endpoints", [])
         get_eps = [e for e in endpoints if e.get("method") == "GET"]
         path = get_eps[0]["path"] if get_eps else "/health"
-        routes.append({
-            "patterns": patterns,
-            "service": dns_name,
-            "path": path,
-            "method": "GET",
-        })
+        routes.append(
+            {
+                "patterns": patterns,
+                "service": dns_name,
+                "path": path,
+                "method": "GET",
+            }
+        )
     return routes
 
 
 # L64: Curated routes first (better patterns), then dynamic for remaining 199 services
 _CHAT_ROUTES = _CURATED_ROUTES + _build_dynamic_routes()
-logger.info("L64: %d chat routes (%d curated + %d dynamic from catalog)",
-            len(_CHAT_ROUTES), len(_CURATED_ROUTES), len(_CHAT_ROUTES) - len(_CURATED_ROUTES))
+logger.info(
+    "L64: %d chat routes (%d curated + %d dynamic from catalog)",
+    len(_CHAT_ROUTES),
+    len(_CURATED_ROUTES),
+    len(_CHAT_ROUTES) - len(_CURATED_ROUTES),
+)
 
 
 def _find_chat_route(msg: str):
@@ -255,10 +418,12 @@ def _find_chat_route(msg: str):
     return None
 
 
+from collections import deque
+from datetime import datetime as _dt
+from datetime import timezone as _tz
+
 # ── L68: AI-powered conversational chat ──────────────────────────────────────
 import httpx as _sync_httpx
-from collections import deque
-from datetime import datetime as _dt, timezone as _tz
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 AI_CHAT_ENABLED = bool(ANTHROPIC_API_KEY)
@@ -266,17 +431,73 @@ AI_MODEL = "claude-haiku-4-5-20251001"
 
 # ── L72: Job search query extraction ─────────────────────────────────────────
 _JOB_STOP_WORDS = {
-    "find", "show", "search", "get", "list", "me", "my", "i", "want", "need",
-    "looking", "for", "the", "a", "an", "in", "at", "on", "to", "of", "and",
-    "or", "with", "some", "any", "available", "open", "please", "can", "you",
-    "jobs", "job", "positions", "position", "roles", "role", "opportunities",
-    "vacancies", "openings", "work", "career", "careers",
+    "find",
+    "show",
+    "search",
+    "get",
+    "list",
+    "me",
+    "my",
+    "i",
+    "want",
+    "need",
+    "looking",
+    "for",
+    "the",
+    "a",
+    "an",
+    "in",
+    "at",
+    "on",
+    "to",
+    "of",
+    "and",
+    "or",
+    "with",
+    "some",
+    "any",
+    "available",
+    "open",
+    "please",
+    "can",
+    "you",
+    "jobs",
+    "job",
+    "positions",
+    "position",
+    "roles",
+    "role",
+    "opportunities",
+    "vacancies",
+    "openings",
+    "work",
+    "career",
+    "careers",
 }
 _SWISS_LOCATIONS = {
-    "zurich", "zürich", "geneva", "genève", "geneve", "basel", "bern", "berne",
-    "lausanne", "winterthur", "lucerne", "luzern", "st gallen", "lugano",
-    "biel", "thun", "aarau", "zug", "fribourg", "schaffhausen", "chur",
-    "switzerland", "swiss",
+    "zurich",
+    "zürich",
+    "geneva",
+    "genève",
+    "geneve",
+    "basel",
+    "bern",
+    "berne",
+    "lausanne",
+    "winterthur",
+    "lucerne",
+    "luzern",
+    "st gallen",
+    "lugano",
+    "biel",
+    "thun",
+    "aarau",
+    "zug",
+    "fribourg",
+    "schaffhausen",
+    "chur",
+    "switzerland",
+    "swiss",
 }
 
 
@@ -324,27 +545,40 @@ def _extract_job_search_terms(msg: str) -> str:
     query = " ".join(expanded)
     if location_parts:
         # jobs.ch handles location separately, but including it helps relevance
-        query = query + " " + " ".join(location_parts) if query else " ".join(location_parts)
+        query = (
+            query + " " + " ".join(location_parts)
+            if query
+            else " ".join(location_parts)
+        )
 
     return query.strip()
+
 
 if AI_CHAT_ENABLED:
     logger.info("L68: AI chat enabled (Claude Haiku)")
 else:
-    logger.warning("L68: AI chat DISABLED — no ANTHROPIC_API_KEY found. Set via K8s secret.")
+    logger.warning(
+        "L68: AI chat DISABLED — no ANTHROPIC_API_KEY found. Set via K8s secret."
+    )
 
 # ── Plan 133: AI-First Intent Classification (multilingual, replaces keywords) ──
-_INTENT_CACHE: dict = {}  # msg_lower → {"intent": ..., "language": ..., "confidence": ...}
+_INTENT_CACHE: dict = (
+    {}
+)  # msg_lower → {"intent": ..., "language": ..., "confidence": ...}
 _AI_CALL_STATS = {
-    "anthropic_ok": 0, "anthropic_fail": 0, "openai_ok": 0, "openai_fail": 0,
-    "last_error": "", "last_success": "",
+    "anthropic_ok": 0,
+    "anthropic_fail": 0,
+    "openai_ok": 0,
+    "openai_fail": 0,
+    "last_error": "",
+    "last_success": "",
 }
 
 _INTENT_CLASSIFIER_PROMPT = (
     "You are an intent classifier for JobTrackerPro, a Swiss job search platform.\n"
     "Classify the user's message into exactly ONE intent and detect the language.\n"
     "Return ONLY valid JSON on a single line: "
-    '{\"intent\": \"...\", \"language\": \"...\", \"confidence\": 0.0-1.0}\n\n'
+    '{"intent": "...", "language": "...", "confidence": 0.0-1.0}\n\n'
     "CRITICAL RULES:\n"
     "1. If the user NEGATES an action (don't, not, stop, cancel, keine, pas, non), classify as general-chat.\n"
     "2. Questions ABOUT a feature (should I enhance?) are general-chat, not the feature itself.\n"
@@ -440,11 +674,17 @@ async def _classify_intent(msg: str) -> dict:
                     _AI_CALL_STATS["last_success"] = _dt.now(_tz.utc).isoformat()
                     return result
                 else:
-                    logger.warning(f"Plan 133: Intent classifier returned non-JSON: {raw[:100]}")
+                    logger.warning(
+                        f"Plan 133: Intent classifier returned non-JSON: {raw[:100]}"
+                    )
             else:
                 _AI_CALL_STATS["anthropic_fail"] += 1
-                _AI_CALL_STATS["last_error"] = f"HTTP {resp.status_code}: {resp.text[:100]}"
-                logger.warning(f"Plan 133: Intent classifier API error: {resp.status_code}")
+                _AI_CALL_STATS["last_error"] = (
+                    f"HTTP {resp.status_code}: {resp.text[:100]}"
+                )
+                logger.warning(
+                    f"Plan 133: Intent classifier API error: {resp.status_code}"
+                )
     except Exception as exc:
         _AI_CALL_STATS["anthropic_fail"] += 1
         _AI_CALL_STATS["last_error"] = str(exc)[:100]
@@ -465,7 +705,13 @@ def _is_demo_data(service_data: dict) -> bool:
     if isinstance(data, dict):
         # Telltale mock data markers from _DOMAIN_ENDPOINT_DATA
         data_str = json.dumps(data, default=str)[:3000]
-        _mock_markers = ["job-001", "badge-001", "TechCorp AG", "item-001", "sample data"]
+        _mock_markers = [
+            "job-001",
+            "badge-001",
+            "TechCorp AG",
+            "item-001",
+            "sample data",
+        ]
         if sum(1 for m in _mock_markers if m in data_str) >= 2:
             return True
     return False
@@ -525,7 +771,11 @@ async def _fetch_user_context(request: Request) -> str:
                     history = data.get("history", [])
                     if history:
                         latest = history[-1] if isinstance(history, list) else history
-                        analysis = latest.get("analysis", "")[:300] if isinstance(latest, dict) else str(latest)[:300]
+                        analysis = (
+                            latest.get("analysis", "")[:300]
+                            if isinstance(latest, dict)
+                            else str(latest)[:300]
+                        )
                         if analysis:
                             context_parts.append(f"CV analysis: {analysis}")
             except Exception:
@@ -558,7 +808,9 @@ async def _fetch_user_context(request: Request) -> str:
 
             # Fetch applications
             try:
-                r = await c.get("http://application-service:8000/data", params={"q": user_id})
+                r = await c.get(
+                    "http://application-service:8000/data", params={"q": user_id}
+                )
                 if r.status_code == 200:
                     data = r.json()
                     apps = data.get("data", {})
@@ -576,8 +828,13 @@ async def _fetch_user_context(request: Request) -> str:
     return "\n".join(context_parts)
 
 
-async def _ai_respond(user_msg: str, service_data: dict, service_name: str, client_ip: str = "",
-                      user_context: str = "") -> str:
+async def _ai_respond(
+    user_msg: str,
+    service_data: dict,
+    service_name: str,
+    client_ip: str = "",
+    user_context: str = "",
+) -> str:
     """L72: Call Claude to generate a genuinely helpful response.
 
     If service data is real (from AI backends), Claude incorporates it.
@@ -608,7 +865,9 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str, clie
             "- Swiss market expertise (RAV, permits, salary ranges)\n"
         )
         if user_context:
-            base_prompt += f"\n\nUSER CONTEXT (personalize your response):\n{user_context}\n"
+            base_prompt += (
+                f"\n\nUSER CONTEXT (personalize your response):\n{user_context}\n"
+            )
         domain_prompt = _INTENT_PROMPTS.get(domain, "")
         if domain_prompt:
             base_prompt += f"\n\nDomain expertise: {domain_prompt}"
@@ -617,14 +876,19 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str, clie
         history = _CONV_MEMORY.get(client_ip, [])[-4:]
         history_text = ""
         if history:
-            history_text = "Recent conversation:\n" + "\n".join(
-                f"{'User' if h['role']=='user' else 'Assistant'}: {h['content'][:150]}" for h in history
-            ) + "\n\n"
+            history_text = (
+                "Recent conversation:\n"
+                + "\n".join(
+                    f"{'User' if h['role']=='user' else 'Assistant'}: {h['content'][:150]}"
+                    for h in history
+                )
+                + "\n\n"
+            )
 
         if demo_mode:
             user_prompt = (
                 f"{history_text}"
-                f"User asked: \"{user_msg}\"\n\n"
+                f'User asked: "{user_msg}"\n\n'
                 "The platform has live job search capabilities but the query was too broad "
                 "to return specific results. Help the user refine their search — suggest "
                 "they specify a role, location, or skill. Also provide helpful Swiss job "
@@ -632,10 +896,12 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str, clie
                 "to jobs — the platform DOES search jobs.ch for specific queries."
             )
         else:
-            data_json = json.dumps(service_data.get("data", {}), indent=2, default=str)[:2000]
+            data_json = json.dumps(service_data.get("data", {}), indent=2, default=str)[
+                :2000
+            ]
             user_prompt = (
                 f"{history_text}"
-                f"User asked: \"{user_msg}\"\n\n"
+                f'User asked: "{user_msg}"\n\n'
                 f"Live service data from {service_name}:\n{data_json}\n\n"
                 "Incorporate this data into a helpful, conversational response."
             )
@@ -658,14 +924,18 @@ async def _ai_respond(user_msg: str, service_data: dict, service_name: str, clie
             if resp.status_code == 200:
                 return resp.json()["content"][0]["text"]
             else:
-                logger.warning(f"L72: Claude API error {resp.status_code}: {resp.text[:200]}")
+                logger.warning(
+                    f"L72: Claude API error {resp.status_code}: {resp.text[:200]}"
+                )
                 return ""
     except Exception as exc:
         logger.warning(f"L72: AI response failed: {exc}")
         return ""
 
 
-async def _ai_general_chat(user_msg: str, client_ip: str = "", user_context: str = "") -> str:
+async def _ai_general_chat(
+    user_msg: str, client_ip: str = "", user_context: str = ""
+) -> str:
     """L68c: Handle general conversation, greetings, follow-ups, and complex queries."""
     if not AI_CHAT_ENABLED:
         return ""
@@ -673,10 +943,13 @@ async def _ai_general_chat(user_msg: str, client_ip: str = "", user_context: str
         history = _CONV_MEMORY.get(client_ip, [])[-6:]
         history_block = ""
         if history:
-            history_block = "\n".join(
-                f"{'User' if h['role'] == 'user' else 'Assistant'}: {h['content'][:150]}"
-                for h in history
-            ) + "\n\n"
+            history_block = (
+                "\n".join(
+                    f"{'User' if h['role'] == 'user' else 'Assistant'}: {h['content'][:150]}"
+                    for h in history
+                )
+                + "\n\n"
+            )
 
         # Build service catalog summary for Claude
         svc_summary = ", ".join(
@@ -698,7 +971,7 @@ async def _ai_general_chat(user_msg: str, client_ip: str = "", user_context: str
             "8. Emotional Resilience — motivation, stress management during job search\n"
             "9. Professional Network — networking strategies, LinkedIn optimization\n"
             "10. Progress Analytics — application metrics, response rates, optimization\n"
-            "11. Gamification & Growth — achievements, milestones, learning paths\n"
+            "11. Gamification & Growth — achievements, badges, XP points\n"
             "12. Trust & Security — Swiss privacy compliance, data protection\n\n"
             "QUICK ACTIONS: Upload CV, Enhance CV (3 versions), Cover Letter (AIDA), Interview Prep\n"
             "When relevant, mention which benefit category helps the user's need.\n"
@@ -744,7 +1017,13 @@ async def _ai_general_chat(user_msg: str, client_ip: str = "", user_context: str
 _CHAT_LOG_DIR = Path(os.getenv("CHAT_LOG_DIR", "/app/logs"))
 _CHAT_LOG_FILE = _CHAT_LOG_DIR / "chat_interactions.jsonl"
 _CHAT_LOG: deque = deque(maxlen=10000)  # last 10k interactions (in-memory cache)
-_CHAT_STATS: dict = {"total": 0, "routed": 0, "unrouted": 0, "errors": 0, "by_service": {}}
+_CHAT_STATS: dict = {
+    "total": 0,
+    "routed": 0,
+    "unrouted": 0,
+    "errors": 0,
+    "by_service": {},
+}
 _CONV_MEMORY: dict = {}  # user_id_or_ip → [{"role": "user/assistant", "content": str}]
 # Plan 131: Per-user context from CV uploads and profile data
 _USER_CV_CONTEXT: dict = {}  # user_id → "CV summary text"
@@ -772,7 +1051,9 @@ def _init_chat_log():
                         _CHAT_STATS["routed"] += 1
                         svc = entry.get("service")
                         if svc:
-                            _CHAT_STATS["by_service"][svc] = _CHAT_STATS["by_service"].get(svc, 0) + 1
+                            _CHAT_STATS["by_service"][svc] = (
+                                _CHAT_STATS["by_service"].get(svc, 0) + 1
+                            )
                     else:
                         _CHAT_STATS["unrouted"] += 1
                     if entry.get("error"):
@@ -789,15 +1070,26 @@ def _init_chat_log():
 _init_chat_log()
 
 
-def _log_chat(msg: str, routed: bool, service: str = None, error: str = None,
-              latency_ms: float = 0, ai_response: str = None, client_ip: str = ""):
+def _log_chat(
+    msg: str,
+    routed: bool,
+    service: str = None,
+    error: str = None,
+    latency_ms: float = 0,
+    ai_response: str = None,
+    client_ip: str = "",
+):
     """Record a chat interaction — persisted to JSONL file + in-memory cache."""
-    logger.info(f"CHAT|routed={routed}|service={service or 'none'}|latency={latency_ms:.0f}ms|error={error or ''}|msg={msg[:100]}")
+    logger.info(
+        f"CHAT|routed={routed}|service={service or 'none'}|latency={latency_ms:.0f}ms|error={error or ''}|msg={msg[:100]}"
+    )
     _CHAT_STATS["total"] += 1
     if routed:
         _CHAT_STATS["routed"] += 1
         if service:
-            _CHAT_STATS["by_service"][service] = _CHAT_STATS["by_service"].get(service, 0) + 1
+            _CHAT_STATS["by_service"][service] = (
+                _CHAT_STATS["by_service"].get(service, 0) + 1
+            )
     else:
         _CHAT_STATS["unrouted"] += 1
     if error:
@@ -825,25 +1117,51 @@ def _log_chat(msg: str, routed: bool, service: str = None, error: str = None,
 
 
 @app.get("/chat/analytics")
-async def chat_analytics():
-    """L72: Chat interaction analytics with persistent history."""
+async def chat_analytics(request: Request):
+    """Plan 138: Chat analytics — per-user from Pinecone + platform-wide from memory."""
+    user_id = _get_user_id(request)
     recent = list(_CHAT_LOG)[-50:]
     top_services = sorted(_CHAT_STATS["by_service"].items(), key=lambda x: -x[1])[:10]
-    unrouted_msgs = [e["message"] for e in _CHAT_LOG if not e["routed"]][-20:]
-    return {
-        "stats": _CHAT_STATS,
-        "top_services": top_services,
-        "unrouted_messages": unrouted_msgs,
-        "recent_interactions": recent,
-        "log_file": str(_CHAT_LOG_FILE),
+
+    result = {
+        "platform": {
+            "total_chats": _CHAT_STATS.get("total", 0),
+            "routed": _CHAT_STATS.get("routed", 0),
+            "unrouted": _CHAT_STATS.get("unrouted", 0),
+            "top_services": dict(top_services),
+        },
         "log_entries": len(_CHAT_LOG),
     }
+
+    # Per-user analytics from Pinecone
+    if user_id:
+        try:
+            async with _sync_httpx.AsyncClient(timeout=5.0) as c:
+                r = await c.get(f"http://memory-system:8009/history/{user_id}")
+                if r.status_code == 200:
+                    history = r.json().get("history", [])
+                    conversations = [h for h in history if "conversation" in str(h.get("context", ""))]
+                    applications = [h for h in history if "application" in str(h.get("context", ""))]
+                    achievements = [h for h in history if "gamification" in str(h.get("context", ""))]
+                    cv_analyses = [h for h in history if "cv" in str(h.get("context", "")).lower()]
+                    result["user"] = {
+                        "total_interactions": len(history),
+                        "conversations": len(conversations),
+                        "applications_tracked": len(applications),
+                        "achievements_earned": len(achievements),
+                        "cv_analyses": len(cv_analyses),
+                    }
+        except Exception:
+            pass
+
+    return result
 
 
 @app.get("/chat/logs/export")
 async def chat_logs_export():
     """L72: Export full chat interaction log as JSONL for backup/analysis."""
     from fastapi.responses import FileResponse
+
     if _CHAT_LOG_FILE.exists():
         return FileResponse(
             _CHAT_LOG_FILE,
@@ -874,7 +1192,9 @@ async def chat_logs_import(request: Request):
                         _CHAT_STATS["routed"] += 1
                         svc = entry.get("service")
                         if svc:
-                            _CHAT_STATS["by_service"][svc] = _CHAT_STATS["by_service"].get(svc, 0) + 1
+                            _CHAT_STATS["by_service"][svc] = (
+                                _CHAT_STATS["by_service"].get(svc, 0) + 1
+                            )
                     else:
                         _CHAT_STATS["unrouted"] += 1
                     if entry.get("error"):
@@ -892,6 +1212,7 @@ async def chat_logs_import(request: Request):
 async def chat_route(request: Request):
     """Server-side intent router for the AI-First home page (L56)."""
     import time as _t
+
     t0 = _t.time()
     try:
         body = await request.json()
@@ -910,7 +1231,9 @@ async def chat_route(request: Request):
     intent_result = await _classify_intent(msg)
     intent = intent_result.get("intent", "general-chat")
     detected_lang = intent_result.get("language", "en")
-    logger.info(f"Plan 133: Intent={intent} lang={detected_lang} conf={intent_result.get('confidence', 0):.2f} msg={msg[:60]}")
+    logger.info(
+        f"Plan 133: Intent={intent} lang={detected_lang} conf={intent_result.get('confidence', 0):.2f} msg={msg[:60]}"
+    )
 
     # Legacy keyword fallback ONLY for service proxy (job-search routed via proxy if jobs.ch direct fails)
     # Do NOT run keyword matcher for general-chat — it catches false positives like "don't enhance my cv" → "cv"
@@ -921,7 +1244,11 @@ async def chat_route(request: Request):
     # Add CV context if available
     if user_id and user_id in _USER_CV_CONTEXT:
         cv_summary = _USER_CV_CONTEXT[user_id][:500]
-        user_context = f"Uploaded CV: {cv_summary}\n{user_context}" if user_context else f"Uploaded CV: {cv_summary}"
+        user_context = (
+            f"Uploaded CV: {cv_summary}\n{user_context}"
+            if user_context
+            else f"Uploaded CV: {cv_summary}"
+        )
 
     # ── Helper: fetch CV text from Pinecone if not in this pod's memory ──
     async def _ensure_cv_context() -> str:
@@ -938,7 +1265,9 @@ async def chat_route(request: Request):
                             cv = latest.get("data", "")
                             if cv:
                                 _USER_CV_CONTEXT[user_id] = cv
-                                logger.info(f"Plan 133: Restored CV from Pinecone for {user_id} ({len(cv)} chars)")
+                                logger.info(
+                                    f"Plan 133: Restored CV from Pinecone for {user_id} ({len(cv)} chars)"
+                                )
             except Exception as e:
                 logger.warning(f"Plan 133: Pinecone CV fetch failed for {user_id}: {e}")
         return cv
@@ -949,34 +1278,95 @@ async def chat_route(request: Request):
         if search_terms:
             try:
                 from job_scraper.scraper import JobScraper
+
                 _scraper = JobScraper()
                 # Extract location separately for jobs.ch location param
                 _loc = ""
                 _query_parts = search_terms.split()
-                for _sw in ("zurich", "zürich", "bern", "basel", "geneva", "genève",
-                            "lausanne", "lucerne", "luzern", "lugano", "winterthur",
-                            "zug", "thun", "fribourg", "schaffhausen", "chur", "st gallen"):
+                for _sw in (
+                    "zurich",
+                    "zürich",
+                    "bern",
+                    "basel",
+                    "geneva",
+                    "genève",
+                    "lausanne",
+                    "lucerne",
+                    "luzern",
+                    "lugano",
+                    "winterthur",
+                    "zug",
+                    "thun",
+                    "fribourg",
+                    "schaffhausen",
+                    "chur",
+                    "st gallen",
+                ):
                     if _sw in [p.lower() for p in _query_parts]:
                         _loc = _sw
                         _query_parts = [p for p in _query_parts if p.lower() != _sw]
                         break
-                _core_query = " ".join(w for w in _query_parts
-                                       if w.lower() not in ("sector", "industry", "field", "area", "bereich")).strip()
+                _core_query = " ".join(
+                    w
+                    for w in _query_parts
+                    if w.lower()
+                    not in ("sector", "industry", "field", "area", "bereich")
+                ).strip()
 
                 # ── Strategic 4-language Swiss job search ──
                 # Switzerland has 4 official languages. Job titles are posted in
                 # the local language of the canton. A search MUST cover all 4.
                 _ROLE_TRANSLATIONS = {
-                    "project manager":    {"de": "Projektleiter", "fr": "Chef de projet", "it": "Responsabile di progetto"},
-                    "project management": {"de": "Projektleitung", "fr": "Gestion de projet", "it": "Gestione progetti"},
-                    "business analyst":   {"de": "Business Analyst", "fr": "Analyste d'affaires", "it": "Analista aziendale"},
-                    "software engineer":  {"de": "Software Entwickler", "fr": "Ingénieur logiciel", "it": "Ingegnere software"},
-                    "product manager":    {"de": "Produktmanager", "fr": "Chef de produit", "it": "Product Manager"},
-                    "data analyst":       {"de": "Datenanalyst", "fr": "Analyste de données", "it": "Analista dati"},
-                    "it manager":         {"de": "IT-Leiter", "fr": "Responsable IT", "it": "Responsabile IT"},
-                    "program manager":    {"de": "Programmleiter", "fr": "Directeur de programme", "it": "Responsabile programma"},
-                    "consultant":         {"de": "Berater", "fr": "Consultant", "it": "Consulente"},
-                    "team lead":          {"de": "Teamleiter", "fr": "Chef d'équipe", "it": "Capo squadra"},
+                    "project manager": {
+                        "de": "Projektleiter",
+                        "fr": "Chef de projet",
+                        "it": "Responsabile di progetto",
+                    },
+                    "project management": {
+                        "de": "Projektleitung",
+                        "fr": "Gestion de projet",
+                        "it": "Gestione progetti",
+                    },
+                    "business analyst": {
+                        "de": "Business Analyst",
+                        "fr": "Analyste d'affaires",
+                        "it": "Analista aziendale",
+                    },
+                    "software engineer": {
+                        "de": "Software Entwickler",
+                        "fr": "Ingénieur logiciel",
+                        "it": "Ingegnere software",
+                    },
+                    "product manager": {
+                        "de": "Produktmanager",
+                        "fr": "Chef de produit",
+                        "it": "Product Manager",
+                    },
+                    "data analyst": {
+                        "de": "Datenanalyst",
+                        "fr": "Analyste de données",
+                        "it": "Analista dati",
+                    },
+                    "it manager": {
+                        "de": "IT-Leiter",
+                        "fr": "Responsable IT",
+                        "it": "Responsabile IT",
+                    },
+                    "program manager": {
+                        "de": "Programmleiter",
+                        "fr": "Directeur de programme",
+                        "it": "Responsabile programma",
+                    },
+                    "consultant": {
+                        "de": "Berater",
+                        "fr": "Consultant",
+                        "it": "Consulente",
+                    },
+                    "team lead": {
+                        "de": "Teamleiter",
+                        "fr": "Chef d'équipe",
+                        "it": "Capo squadra",
+                    },
                 }
 
                 # Build list of queries: original + all language variants
@@ -992,7 +1382,10 @@ async def chat_route(request: Request):
 
                 # Execute all queries concurrently
                 import asyncio as _aio
-                _search_tasks = [_scraper.search(q, location=_loc, limit=15) for q in _queries]
+
+                _search_tasks = [
+                    _scraper.search(q, location=_loc, limit=15) for q in _queries
+                ]
                 _all_results = await _aio.gather(*_search_tasks, return_exceptions=True)
 
                 # Merge and deduplicate
@@ -1007,28 +1400,56 @@ async def chat_route(request: Request):
                             jobs.append(j)
                             _seen.add(_k)
 
-                _lang_count = sum(1 for r in _all_results if not isinstance(r, Exception) and r)
-                logger.info(f"Plan 134: 4-lang search '{_core_query}' → {len(jobs)} jobs from {_lang_count}/{len(_queries)} queries")
+                _lang_count = sum(
+                    1 for r in _all_results if not isinstance(r, Exception) and r
+                )
+                logger.info(
+                    f"Plan 134: 4-lang search '{_core_query}' → {len(jobs)} jobs from {_lang_count}/{len(_queries)} queries"
+                )
                 if jobs:
-                    jobs_data = {"jobs": jobs, "total": len(jobs), "query": search_terms, "source": "jobs.ch"}
-                    ai_resp = await _ai_respond(msg, {"data": jobs_data, "source": "live"},
-                                                 "job-search-service", mem_key, user_context=user_context)
-                    _log_chat(msg, routed=True, service="job-search-service",
-                              latency_ms=(_t.time() - t0) * 1000, ai_response=ai_resp, client_ip=client_ip)
+                    jobs_data = {
+                        "jobs": jobs,
+                        "total": len(jobs),
+                        "query": search_terms,
+                        "source": "jobs.ch",
+                    }
+                    ai_resp = await _ai_respond(
+                        msg,
+                        {"data": jobs_data, "source": "live"},
+                        "job-search-service",
+                        mem_key,
+                        user_context=user_context,
+                    )
+                    _log_chat(
+                        msg,
+                        routed=True,
+                        service="job-search-service",
+                        latency_ms=(_t.time() - t0) * 1000,
+                        ai_response=ai_resp,
+                        client_ip=client_ip,
+                    )
                     if mem_key:
                         if mem_key not in _CONV_MEMORY:
                             _CONV_MEMORY[mem_key] = []
                         _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
                         if ai_resp:
-                            _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+                            _CONV_MEMORY[mem_key].append(
+                                {"role": "assistant", "content": ai_resp[:200]}
+                            )
                         _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
                     return {
-                        "routed": True, "service": "job-search-service", "path": "/jobs",
-                        "intent": intent, "language": detected_lang,
-                        "data": jobs_data, "ai_response": ai_resp,
+                        "routed": True,
+                        "service": "job-search-service",
+                        "path": "/jobs",
+                        "intent": intent,
+                        "language": detected_lang,
+                        "data": jobs_data,
+                        "ai_response": ai_resp,
                     }
             except ImportError:
-                logger.warning("Plan 134: job_scraper module not available, falling back to proxy")
+                logger.warning(
+                    "Plan 134: job_scraper module not available, falling back to proxy"
+                )
             except Exception as exc:
                 logger.warning(f"Plan 134: jobs.ch search failed: {exc}")
         # Fall through to proxy route if jobs.ch failed
@@ -1053,8 +1474,12 @@ async def chat_route(request: Request):
                     cv_skills += line + " "
         if cv_skills:
             search_terms = _extract_job_search_terms(cv_skills)
-            route = {"service": "job-search-service", "path": "/jobs", "method": "GET",
-                     "patterns": ["match"]}
+            route = {
+                "service": "job-search-service",
+                "path": "/jobs",
+                "method": "GET",
+                "patterns": ["match"],
+            }
             msg = f"Find jobs matching: {search_terms}"
 
     # ── Intent: cv-enhance ──
@@ -1075,8 +1500,11 @@ async def chat_route(request: Request):
                 _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp})
                 _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
             return {
-                "routed": True, "service": "cv-enhancement",
-                "path": "/enhance", "data": None, "ai_response": ai_resp,
+                "routed": True,
+                "service": "cv-enhancement",
+                "path": "/enhance",
+                "data": None,
+                "ai_response": ai_resp,
             }
 
         # CV exists — call cv_processor:8020/enhance
@@ -1103,7 +1531,9 @@ async def chat_route(request: Request):
                     parts = ["Here are **3 enhanced versions** of your CV:\n"]
                     for i, (key, ver) in enumerate(versions.items(), 1):
                         letter = chr(64 + i)  # A, B, C
-                        parts.append(f"---\n### Option {letter}: {ver.get('name', key)}")
+                        parts.append(
+                            f"---\n### Option {letter}: {ver.get('name', key)}"
+                        )
                         parts.append(f"*{ver.get('description', '')}*\n")
                         cv_text_full = ver.get("cv_text", "")
                         parts.append(f"{cv_text_full}\n")
@@ -1122,11 +1552,15 @@ async def chat_route(request: Request):
             if mem_key not in _CONV_MEMORY:
                 _CONV_MEMORY[mem_key] = []
             _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
-            _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:500]})
+            _CONV_MEMORY[mem_key].append(
+                {"role": "assistant", "content": ai_resp[:500]}
+            )
             _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
         return {
-            "routed": True, "service": "cv-enhancement",
-            "path": "/enhance", "data": None,
+            "routed": True,
+            "service": "cv-enhancement",
+            "path": "/enhance",
+            "data": None,
             "ai_response": ai_resp,
         }
 
@@ -1147,7 +1581,7 @@ async def chat_route(request: Request):
             # Try to parse "cover letter for [Company] - [Role]"
             for sep in [" for ", " at ", " to "]:
                 if sep in _msg_lower:
-                    after = msg[_msg_lower.index(sep) + len(sep):]
+                    after = msg[_msg_lower.index(sep) + len(sep) :]
                     if " - " in after:
                         company, job_title = after.split(" - ", 1)
                     elif " as " in after.lower():
@@ -1189,27 +1623,136 @@ async def chat_route(request: Request):
             if mem_key not in _CONV_MEMORY:
                 _CONV_MEMORY[mem_key] = []
             _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
-            _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:500]})
+            _CONV_MEMORY[mem_key].append(
+                {"role": "assistant", "content": ai_resp[:500]}
+            )
             _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
         return {
-            "routed": True, "service": "cv-enhancement",
-            "path": "/cover-letter", "data": None, "ai_response": ai_resp,
+            "routed": True,
+            "service": "cv-enhancement",
+            "path": "/cover-letter",
+            "data": None,
+            "ai_response": ai_resp,
         }
 
-    # Plan 133: AI-classified intents that don't have a dedicated handler → general chat
-    # Also handles: interview-prep, career-advice, applications, profile, general-chat
+    # ── Plan 138: Dedicated handlers for all classified intents ──
+
+    # Intent: interview-prep — use domain-specific coaching prompt
+    if intent == "interview-prep" and not route:
+        domain_prompt = _INTENT_PROMPTS.get("career", "")
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        _log_chat(msg, routed=True, service="interview-prep", latency_ms=(_t.time() - t0) * 1000,
+                  ai_response=ai_resp, client_ip=client_ip)
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            if ai_resp:
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {"routed": True, "service": "interview-prep", "intent": intent,
+                "language": detected_lang, "data": None, "ai_response": ai_resp}
+
+    # Intent: career-advice — salary info, market intelligence
+    if intent == "career-advice" and not route:
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        _log_chat(msg, routed=True, service="career-advice", latency_ms=(_t.time() - t0) * 1000,
+                  ai_response=ai_resp, client_ip=client_ip)
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            if ai_resp:
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {"routed": True, "service": "career-advice", "intent": intent,
+                "language": detected_lang, "data": None, "ai_response": ai_resp}
+
+    # Intent: applications — show tracked applications from Pinecone
+    if intent == "applications" and not route:
+        apps_data = {}
+        if user_id:
+            try:
+                async with _sync_httpx.AsyncClient(timeout=5.0) as c:
+                    r = await c.get(f"http://memory-system:8009/history/{user_id}")
+                    if r.status_code == 200:
+                        history = r.json().get("history", [])
+                        apps = []
+                        for entry in history:
+                            ctx = str(entry.get("context", entry.get("analysis", "")))
+                            if "application" in ctx.lower() or "applied" in ctx.lower():
+                                try:
+                                    app_data = json.loads(entry.get("data", "{}"))
+                                    if isinstance(app_data, dict) and app_data.get("id"):
+                                        apps.append(app_data)
+                                except (json.JSONDecodeError, TypeError):
+                                    pass
+                        if apps:
+                            apps_data = {"applications": apps, "count": len(apps)}
+            except Exception:
+                pass
+        ai_resp = await _ai_respond(msg, {"data": apps_data, "source": "pinecone"} if apps_data else {"data": {}, "source": "empty"},
+                                     "application-tracker", mem_key, user_context=user_context)
+        _log_chat(msg, routed=True, service="application-tracker", latency_ms=(_t.time() - t0) * 1000,
+                  ai_response=ai_resp, client_ip=client_ip)
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            if ai_resp:
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {"routed": True, "service": "application-tracker", "intent": intent,
+                "data": apps_data if apps_data else {"applications": [], "count": 0}, "ai_response": ai_resp}
+
+    # Intent: profile — show/edit profile from Pinecone
+    if intent == "profile" and not route:
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        _log_chat(msg, routed=True, service="profile", latency_ms=(_t.time() - t0) * 1000,
+                  ai_response=ai_resp, client_ip=client_ip)
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            if ai_resp:
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {"routed": True, "service": "profile", "intent": intent,
+                "data": None, "ai_response": ai_resp}
+
+    # All remaining intents → general chat
     if not route:
         # For classified intents without dedicated service proxy, use AI general chat
         ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context)
-        _log_chat(msg, routed=False, latency_ms=(_t.time() - t0) * 1000,
-                  ai_response=ai_fallback, client_ip=client_ip)
+        _log_chat(
+            msg,
+            routed=False,
+            latency_ms=(_t.time() - t0) * 1000,
+            ai_response=ai_fallback,
+            client_ip=client_ip,
+        )
         if mem_key:
             if mem_key not in _CONV_MEMORY:
                 _CONV_MEMORY[mem_key] = []
             _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
             if ai_fallback:
-                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_fallback[:200]})
+                _CONV_MEMORY[mem_key].append(
+                    {"role": "assistant", "content": ai_fallback[:200]}
+                )
             _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+
+        # Plan 138: Persist conversation to Pinecone for cross-pod + cross-restart survival
+        if user_id and user_id != "anon" and ai_fallback:
+            try:
+                async with _sync_httpx.AsyncClient(timeout=3.0) as _pc:
+                    await _pc.post(
+                        "http://memory-system:8009/analyze",
+                        json={"user_id": user_id, "data": json.dumps({"msg": msg[:200], "resp": ai_fallback[:300]}),
+                              "context": ["conversation", intent]},
+                    )
+            except Exception:
+                pass
+
         return {
             "routed": True,
             "service": "ai-assistant",
@@ -1224,40 +1767,64 @@ async def chat_route(request: Request):
     _search_query = msg
     # If message is short/vague, augment with conversation context
     _short_msg = len(msg.split()) < 6
-    _has_pronoun = any(w in msg.lower() for w in ("them", "those", "it", "that", "these", "yes", "please"))
+    _has_pronoun = any(
+        w in msg.lower()
+        for w in ("them", "those", "it", "that", "these", "yes", "please")
+    )
     if (_short_msg or _has_pronoun) and mem_key in _CONV_MEMORY:
         # Pull context from recent conversation
         recent = _CONV_MEMORY.get(mem_key, [])[-6:]
-        context_msgs = [h["content"] for h in recent if h["role"] == "user" and len(h["content"]) > 10]
+        context_msgs = [
+            h["content"]
+            for h in recent
+            if h["role"] == "user" and len(h["content"]) > 10
+        ]
         if context_msgs:
             _search_query = " ".join(context_msgs[-3:]) + " " + msg
-    if route.get("service") in ("job-search-service", "career-search-core-service", "job-discovery-service"):
+    if route.get("service") in (
+        "job-search-service",
+        "career-search-core-service",
+        "job-discovery-service",
+    ):
         _search_query = _extract_job_search_terms(_search_query)
     _query_params = {"q": _search_query} if _search_query else {}
     url = f"http://{svc_dns}:{_get_service_port(svc_dns)}{route['path']}"
     try:
         method = route["method"]
         if method == "GET":
-            resp = await _http_client.get(url, params=_query_params, timeout=PROXY_TIMEOUT)
+            resp = await _http_client.get(
+                url, params=_query_params, timeout=PROXY_TIMEOUT
+            )
         else:
-            resp = await _http_client.post(url, json={"message": msg}, timeout=PROXY_TIMEOUT)
+            resp = await _http_client.post(
+                url, json={"message": msg}, timeout=PROXY_TIMEOUT
+            )
         service_data = resp.json()
         # L68: Generate AI conversational response with conversation memory
         client_ip = request.client.host if request.client else ""
-        ai_response = await _ai_respond(msg, service_data, route["service"], mem_key,
-                                         user_context=user_context)
+        ai_response = await _ai_respond(
+            msg, service_data, route["service"], mem_key, user_context=user_context
+        )
         # Save to conversation memory
         if mem_key:
             if mem_key not in _CONV_MEMORY:
                 _CONV_MEMORY[mem_key] = []
             _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
             if ai_response:
-                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_response[:200]})
+                _CONV_MEMORY[mem_key].append(
+                    {"role": "assistant", "content": ai_response[:200]}
+                )
             # Keep last 10 turns
             _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
         latency = (_t.time() - t0) * 1000
-        _log_chat(msg, routed=True, service=route["service"], latency_ms=latency,
-                  ai_response=ai_response, client_ip=client_ip)
+        _log_chat(
+            msg,
+            routed=True,
+            service=route["service"],
+            latency_ms=latency,
+            ai_response=ai_response,
+            client_ip=client_ip,
+        )
         result = {
             "routed": True,
             "service": route["service"],
@@ -1269,8 +1836,14 @@ async def chat_route(request: Request):
         return result
     except Exception as exc:
         latency = (_t.time() - t0) * 1000
-        _log_chat(msg, routed=True, service=route["service"], error=str(exc),
-                  latency_ms=latency, client_ip=client_ip)
+        _log_chat(
+            msg,
+            routed=True,
+            service=route["service"],
+            error=str(exc),
+            latency_ms=latency,
+            client_ip=client_ip,
+        )
         logger.warning(f"chat/route error for {route['service']}: {exc}")
         # L72: AI fallback when service is unreachable — user still gets a helpful response
         ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context)
@@ -1279,7 +1852,9 @@ async def chat_route(request: Request):
                 _CONV_MEMORY[mem_key] = []
             _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
             if ai_fallback:
-                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_fallback[:200]})
+                _CONV_MEMORY[mem_key].append(
+                    {"role": "assistant", "content": ai_fallback[:200]}
+                )
             _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
         return {
             "routed": True,
@@ -1292,9 +1867,9 @@ async def chat_route(request: Request):
 
 # ── Plan 131: Core Product Features — JWT + Upload + Profile + Applications ────
 
+import base64 as _b64
 import hashlib as _hashlib
 import hmac as _hmac
-import base64 as _b64
 import uuid as _uuid
 
 _JWT_SECRET = os.getenv(
@@ -1304,8 +1879,12 @@ _JWT_SECRET = os.getenv(
 
 def _jwt_encode(payload: dict) -> str:
     """Minimal JWT encoder (HS256) — no external dependency."""
-    header = _b64.urlsafe_b64encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode()).rstrip(b"=")
-    body = _b64.urlsafe_b64encode(json.dumps(payload, default=str).encode()).rstrip(b"=")
+    header = _b64.urlsafe_b64encode(
+        json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
+    ).rstrip(b"=")
+    body = _b64.urlsafe_b64encode(json.dumps(payload, default=str).encode()).rstrip(
+        b"="
+    )
     msg = header + b"." + body
     sig = _hmac.new(_JWT_SECRET.encode(), msg, _hashlib.sha256).digest()
     sig_b64 = _b64.urlsafe_b64encode(sig).rstrip(b"=")
@@ -1366,28 +1945,43 @@ async def upload_cv(request: Request):
             form = await request.form()
             file_field = form.get("file") or form.get("cv")
             if not file_field or not hasattr(file_field, "read"):
-                return JSONResponse({"error": "No file field found. Use field name 'file' or 'cv'."}, 400)
+                return JSONResponse(
+                    {"error": "No file field found. Use field name 'file' or 'cv'."},
+                    400,
+                )
 
             file_bytes = await file_field.read()
             filename = getattr(file_field, "filename", "cv") or "cv"
-            logger.info(f"Plan 131: Upload received: {filename} ({len(file_bytes)} bytes)")
+            logger.info(
+                f"Plan 131: Upload received: {filename} ({len(file_bytes)} bytes)"
+            )
 
             if not file_bytes or len(file_bytes) < 10:
-                return JSONResponse({"error": f"File '{filename}' is empty or too small."}, 400)
+                return JSONResponse(
+                    {"error": f"File '{filename}' is empty or too small."}, 400
+                )
 
             if filename.lower().endswith(".pdf"):
                 try:
                     import PyPDF2  # type: ignore[import-untyped]
+
                     reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
-                    cv_text = "\n".join(page.extract_text() or "" for page in reader.pages)
-                    logger.info(f"Plan 131: PDF parsed — {len(cv_text)} chars from {len(reader.pages)} pages")
+                    cv_text = "\n".join(
+                        page.extract_text() or "" for page in reader.pages
+                    )
+                    logger.info(
+                        f"Plan 131: PDF parsed — {len(cv_text)} chars from {len(reader.pages)} pages"
+                    )
                 except Exception as pdf_err:
                     logger.warning(f"Plan 131: PDF parse failed: {pdf_err}")
                     cv_text = file_bytes.decode("utf-8", errors="replace")
 
-            elif filename.lower().endswith(".docx") or filename.lower().endswith(".doc"):
+            elif filename.lower().endswith(".docx") or filename.lower().endswith(
+                ".doc"
+            ):
                 try:
                     import docx  # type: ignore[import-untyped]
+
                     doc = docx.Document(io.BytesIO(file_bytes))
                     # Extract from paragraphs
                     parts = [p.text for p in doc.paragraphs if p.text.strip()]
@@ -1409,15 +2003,20 @@ async def upload_cv(request: Request):
                     try:
                         import re
                         import zipfile
+
                         with zipfile.ZipFile(io.BytesIO(file_bytes)) as zf:
                             xml_content = ""
                             for name in zf.namelist():
                                 if name.endswith(".xml"):
-                                    xml_content += zf.read(name).decode("utf-8", errors="replace")
+                                    xml_content += zf.read(name).decode(
+                                        "utf-8", errors="replace"
+                                    )
                         # Extract text between XML tags
                         cv_text = " ".join(re.findall(r">([^<]{2,})<", xml_content))
                         cv_text = re.sub(r"\s+", " ", cv_text).strip()
-                        logger.info(f"Plan 131: DOCX XML fallback — {len(cv_text)} chars")
+                        logger.info(
+                            f"Plan 131: DOCX XML fallback — {len(cv_text)} chars"
+                        )
                     except Exception:
                         cv_text = ""
             else:
@@ -1439,12 +2038,14 @@ async def upload_cv(request: Request):
     if not cv_text or len(cv_text.strip()) < 20:
         # Last resort: try extracting ANY text from the raw bytes
         import re as _re
+
         raw_text = body.decode("utf-8", errors="replace") if body else ""
         # For DOCX/PDF binary: try to find text runs in the raw data
         if filename.lower().endswith((".docx", ".doc")):
             try:
-                import zipfile
                 import io as _io
+                import zipfile
+
                 with zipfile.ZipFile(_io.BytesIO(file_bytes)) as zf:
                     for name in sorted(zf.namelist()):
                         if "document" in name.lower() and name.endswith(".xml"):
@@ -1453,33 +2054,48 @@ async def upload_cv(request: Request):
                             texts = _re.findall(r"<w:t[^>]*>([^<]+)</w:t>", xml)
                             if texts:
                                 cv_text = " ".join(texts)
-                                logger.info(f"Plan 131: DOCX w:t extraction — {len(cv_text)} chars from {name}")
+                                logger.info(
+                                    f"Plan 131: DOCX w:t extraction — {len(cv_text)} chars from {name}"
+                                )
             except Exception as last_err:
                 logger.warning(f"Plan 131: DOCX last-resort failed: {last_err}")
 
         if not cv_text or len(cv_text.strip()) < 20:
-            return JSONResponse({
-                "error": f"Could not extract text from '{filename}'. "
-                         f"Got {len(cv_text.strip()) if cv_text else 0} chars. "
-                         "Try a different format (PDF, DOCX, or paste text as JSON).",
-                "filename": filename,
-                "content_type": content_type,
-            }, 400)
+            return JSONResponse(
+                {
+                    "error": f"Could not extract text from '{filename}'. "
+                    f"Got {len(cv_text.strip()) if cv_text else 0} chars. "
+                    "Try a different format (PDF, DOCX, or paste text as JSON).",
+                    "filename": filename,
+                    "content_type": content_type,
+                },
+                400,
+            )
 
     # Call cv_processor:8020 for AI analysis (GPT-4 + Pinecone)
     try:
         async with _sync_httpx.AsyncClient(timeout=45.0) as client:
             resp = await client.post(
                 "http://cv-processor:8020/analyze",
-                json={"user_id": user_id, "data": cv_text[:5000], "context": ["cv_upload", filename]},
+                json={
+                    "user_id": user_id,
+                    "data": cv_text[:5000],
+                    "context": ["cv_upload", filename],
+                },
             )
             if resp.status_code == 200:
                 analysis = resp.json()
             else:
-                analysis = {"analysis": "CV received but AI analysis unavailable.", "source": "fallback"}
+                analysis = {
+                    "analysis": "CV received but AI analysis unavailable.",
+                    "source": "fallback",
+                }
     except Exception as exc:
         logger.warning(f"Plan 131: cv_processor call failed: {exc}")
-        analysis = {"analysis": "CV received but AI backend unavailable.", "source": "fallback"}
+        analysis = {
+            "analysis": "CV received but AI backend unavailable.",
+            "source": "fallback",
+        }
 
     # Also get Claude to provide Swiss CV advice
     ai_advice = ""
@@ -1501,15 +2117,30 @@ async def upload_cv(request: Request):
         mem_key = user_id
         if mem_key not in _CONV_MEMORY:
             _CONV_MEMORY[mem_key] = []
-        _CONV_MEMORY[mem_key].append({
-            "role": "user",
-            "content": f"[CV UPLOADED: {filename}] {cv_text[:500]}",
-        })
+        _CONV_MEMORY[mem_key].append(
+            {
+                "role": "user",
+                "content": f"[CV UPLOADED: {filename}] {cv_text[:500]}",
+            }
+        )
         if ai_advice:
-            _CONV_MEMORY[mem_key].append({
-                "role": "assistant",
-                "content": ai_advice[:500],
-            })
+            _CONV_MEMORY[mem_key].append(
+                {
+                    "role": "assistant",
+                    "content": ai_advice[:500],
+                }
+            )
+
+    # Plan 138: Trigger gamification — award XP for CV upload
+    if user_id and user_id != "anon":
+        try:
+            async with _sync_httpx.AsyncClient(timeout=3.0) as gc:
+                await gc.post(
+                    f"http://gamification-service:{_get_service_port('gamification-service')}/achievements/unlock",
+                    json={"user_id": user_id, "achievement": "cv_uploaded", "points": 50},
+                )
+        except Exception:
+            pass  # Non-fatal — gamification is a bonus, not critical path
 
     return {
         "status": "uploaded",
@@ -1554,7 +2185,9 @@ async def enhance_cv_api(request: Request):
         target_role = target_company = target_industry = ""
 
     if not cv_text or len(cv_text.strip()) < 20:
-        return JSONResponse({"error": "No CV found. Upload your CV first via /api/cv/upload."}, 400)
+        return JSONResponse(
+            {"error": "No CV found. Upload your CV first via /api/cv/upload."}, 400
+        )
 
     try:
         async with _sync_httpx.AsyncClient(timeout=90.0) as client:
@@ -1570,7 +2203,10 @@ async def enhance_cv_api(request: Request):
             )
             if resp.status_code == 200:
                 return resp.json()
-            return JSONResponse({"error": "CV enhancement failed", "detail": resp.text[:200]}, resp.status_code)
+            return JSONResponse(
+                {"error": "CV enhancement failed", "detail": resp.text[:200]},
+                resp.status_code,
+            )
     except Exception as exc:
         logger.warning(f"Plan 132: CV enhance API failed: {exc}")
         return JSONResponse({"error": f"Enhancement service unavailable: {exc}"}, 503)
@@ -1600,12 +2236,16 @@ async def cover_letter_api(request: Request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "JSON body required with job_title and company_name"}, 400)
+        return JSONResponse(
+            {"error": "JSON body required with job_title and company_name"}, 400
+        )
 
     if body.get("cv_text"):
         cv_text = body["cv_text"]
     if not cv_text or len(cv_text.strip()) < 20:
-        return JSONResponse({"error": "No CV found. Upload your CV first via /api/cv/upload."}, 400)
+        return JSONResponse(
+            {"error": "No CV found. Upload your CV first via /api/cv/upload."}, 400
+        )
 
     job_title = body.get("job_title", "")
     company_name = body.get("company_name", "")
@@ -1627,7 +2267,10 @@ async def cover_letter_api(request: Request):
             )
             if resp.status_code == 200:
                 return resp.json()
-            return JSONResponse({"error": "Cover letter generation failed", "detail": resp.text[:200]}, resp.status_code)
+            return JSONResponse(
+                {"error": "Cover letter generation failed", "detail": resp.text[:200]},
+                resp.status_code,
+            )
     except Exception as exc:
         logger.warning(f"Plan 132: Cover letter API failed: {exc}")
         return JSONResponse({"error": f"Cover letter service unavailable: {exc}"}, 503)
@@ -1635,20 +2278,48 @@ async def cover_letter_api(request: Request):
 
 @app.get("/api/profile")
 async def get_profile(request: Request):
-    """Plan 131: Get user profile from user-profile-service."""
+    """Plan 138: Get user profile — Pinecone primary, demo service fallback."""
     user_id = _get_user_id(request)
     if not user_id:
-        return JSONResponse({"error": "No auth token. Call POST /api/auth/token first."}, 401)
+        return JSONResponse(
+            {"error": "No auth token. Call POST /api/auth/token first."}, 401
+        )
 
+    # Primary: query memory-system (Pinecone) for persisted profile
     try:
         async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"http://memory-system:8009/history/{user_id}")
+            if resp.status_code == 200:
+                history = resp.json().get("history", [])
+                # Find profile entries
+                for entry in reversed(history):
+                    data = entry.get("data", "")
+                    if "profile" in str(entry.get("context", entry.get("analysis", ""))).lower() or \
+                       any(k in data for k in ("name", "target_role", "skills")):
+                        try:
+                            profile = json.loads(data) if isinstance(data, str) else data
+                            return {"user_id": user_id, "profile": profile, "source": "pinecone"}
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+    except Exception as exc:
+        logger.warning(f"Plan 138: Pinecone profile fetch failed: {exc}")
+
+    # Fallback: try demo service
+    try:
+        async with _sync_httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.get(f"http://user-profile-service:8000/users/{user_id}")
             if resp.status_code == 200:
-                return resp.json()
-    except Exception as exc:
-        logger.warning(f"Plan 131: profile fetch failed: {exc}")
+                data = resp.json()
+                if not data.get("mode") == "demo":
+                    return data
+    except Exception:
+        pass
 
-    return {"user_id": user_id, "profile": None, "message": "No profile yet. Use PUT /api/profile to create one."}
+    return {
+        "user_id": user_id,
+        "profile": None,
+        "message": "No profile yet. Use PUT /api/profile to create one.",
+    }
 
 
 @app.put("/api/profile")
@@ -1656,14 +2327,18 @@ async def update_profile(request: Request):
     """Plan 131: Create/update user profile."""
     user_id = _get_user_id(request)
     if not user_id:
-        return JSONResponse({"error": "No auth token. Call POST /api/auth/token first."}, 401)
+        return JSONResponse(
+            {"error": "No auth token. Call POST /api/auth/token first."}, 401
+        )
 
     body = await request.json()
     body["user_id"] = user_id
 
     try:
         async with _sync_httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.put(f"http://user-profile-service:8000/users/{user_id}", json=body)
+            resp = await client.put(
+                f"http://user-profile-service:8000/users/{user_id}", json=body
+            )
             if resp.status_code == 200:
                 return resp.json()
     except Exception as exc:
@@ -1674,7 +2349,11 @@ async def update_profile(request: Request):
         async with _sync_httpx.AsyncClient(timeout=5.0) as client:
             await client.post(
                 "http://memory-system:8009/analyze",
-                json={"user_id": user_id, "data": json.dumps(body), "context": ["profile"]},
+                json={
+                    "user_id": user_id,
+                    "data": json.dumps(body),
+                    "context": ["profile"],
+                },
             )
     except Exception:
         pass
@@ -1684,20 +2363,40 @@ async def update_profile(request: Request):
 
 @app.get("/api/applications")
 async def get_applications(request: Request):
-    """Plan 131: List user's job applications."""
+    """Plan 138: List user's job applications — Pinecone primary."""
     user_id = _get_user_id(request)
     if not user_id:
         return JSONResponse({"error": "No auth token."}, 401)
 
+    applications = []
+
+    # Primary: query memory-system (Pinecone) for application entries
     try:
         async with _sync_httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"http://application-service:8000/data", params={"q": user_id})
+            resp = await client.get(f"http://memory-system:8009/history/{user_id}")
             if resp.status_code == 200:
-                return resp.json()
+                history = resp.json().get("history", [])
+                for entry in history:
+                    data = entry.get("data", "")
+                    ctx = str(entry.get("context", entry.get("analysis", "")))
+                    if "application" in ctx.lower():
+                        try:
+                            app_data = json.loads(data) if isinstance(data, str) else data
+                            if isinstance(app_data, dict) and app_data.get("id"):
+                                applications.append(app_data)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
     except Exception as exc:
-        logger.warning(f"Plan 131: applications fetch failed: {exc}")
+        logger.warning(f"Plan 138: Pinecone applications fetch failed: {exc}")
 
-    return {"user_id": user_id, "applications": [], "message": "No applications tracked yet."}
+    if applications:
+        return {"user_id": user_id, "applications": applications, "count": len(applications), "source": "pinecone"}
+
+    return {
+        "user_id": user_id,
+        "applications": [],
+        "message": "No applications tracked yet. Use POST /api/applications to start tracking.",
+    }
 
 
 @app.post("/api/applications")
@@ -1715,7 +2414,9 @@ async def create_application(request: Request):
 
     try:
         async with _sync_httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post("http://application-service:8000/process", json=body)
+            resp = await client.post(
+                "http://application-service:8000/process", json=body
+            )
             if resp.status_code in (200, 201):
                 return {"status": "tracked", "application": body}
     except Exception as exc:
@@ -1726,10 +2427,25 @@ async def create_application(request: Request):
         async with _sync_httpx.AsyncClient(timeout=5.0) as client:
             await client.post(
                 "http://memory-system:8009/analyze",
-                json={"user_id": user_id, "data": json.dumps(body), "context": ["application"]},
+                json={
+                    "user_id": user_id,
+                    "data": json.dumps(body),
+                    "context": ["application"],
+                },
             )
     except Exception:
         pass
+
+    # Plan 138: Trigger gamification — award XP for application submission
+    if user_id and user_id != "anon":
+        try:
+            async with _sync_httpx.AsyncClient(timeout=3.0) as gc:
+                await gc.post(
+                    f"http://gamification-service:{_get_service_port('gamification-service')}/achievements/unlock",
+                    json={"user_id": user_id, "achievement": "application_submitted", "points": 30},
+                )
+        except Exception:
+            pass
 
     return {"status": "tracked", "application": body}
 
@@ -1747,7 +2463,9 @@ async def update_application(app_id: str, request: Request):
 
     try:
         async with _sync_httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.put(f"http://application-service:8000/data/{app_id}", json=body)
+            resp = await client.put(
+                f"http://application-service:8000/data/{app_id}", json=body
+            )
             if resp.status_code == 200:
                 return resp.json()
     except Exception as exc:
@@ -1778,7 +2496,9 @@ async def direct_apply(request: Request):
     # Track in application service
     try:
         async with _sync_httpx.AsyncClient(timeout=5.0) as client:
-            await client.post("http://application-service:8000/process", json=application)
+            await client.post(
+                "http://application-service:8000/process", json=application
+            )
     except Exception:
         pass
 
@@ -1787,12 +2507,60 @@ async def direct_apply(request: Request):
         async with _sync_httpx.AsyncClient(timeout=5.0) as client:
             await client.post(
                 "http://memory-system:8009/analyze",
-                json={"user_id": user_id, "data": json.dumps(application), "context": ["applied"]},
+                json={
+                    "user_id": user_id,
+                    "data": json.dumps(application),
+                    "context": ["applied"],
+                },
             )
     except Exception:
         pass
 
-    return {"status": "applied", "application": application, "message": f"Application tracked for {application['role']} at {application['company']}"}
+    return {
+        "status": "applied",
+        "application": application,
+        "message": f"Application tracked for {application['role']} at {application['company']}",
+    }
+
+
+@app.get("/api/analytics")
+async def user_analytics(request: Request):
+    """Plan 138: User progress analytics — aggregates CV, application, and chat data."""
+    user_id = _get_user_id(request)
+
+    analytics = {
+        "user_id": user_id or "anonymous",
+        "chat": {
+            "total_messages": _CHAT_STATS.get("total", 0),
+            "routed": _CHAT_STATS.get("routed", 0),
+            "unrouted": _CHAT_STATS.get("unrouted", 0),
+            "top_services": dict(
+                sorted(_CHAT_STATS.get("by_service", {}).items(), key=lambda x: -x[1])[:5]
+            ),
+        },
+        "cv": {"uploaded": bool(_USER_CV_CONTEXT.get(user_id, ""))},
+        "intent_cache": len(_INTENT_CACHE),
+        "ai_health": {
+            "anthropic_ok": _AI_CALL_STATS["anthropic_ok"],
+            "anthropic_fail": _AI_CALL_STATS["anthropic_fail"],
+        },
+    }
+
+    # Get application count from Pinecone
+    if user_id:
+        try:
+            async with _sync_httpx.AsyncClient(timeout=3.0) as c:
+                r = await c.get(f"http://memory-system:8009/history/{user_id}")
+                if r.status_code == 200:
+                    history = r.json().get("history", [])
+                    apps = [h for h in history if "application" in str(h.get("context", h.get("analysis", ""))).lower()]
+                    analytics["applications"] = {"total": len(apps)}
+                    cv_entries = [h for h in history if "cv" in str(h.get("context", "")).lower() or "analysis" in str(h.get("analysis", "")).lower()]
+                    analytics["cv"]["analyses"] = len(cv_entries)
+        except Exception:
+            pass
+
+    return analytics
 
 
 @app.get("/health")
@@ -1800,8 +2568,10 @@ async def health():
     """Gateway health check — includes AI engine status (Plan 133)."""
     _ai_ok = _AI_CALL_STATS["anthropic_ok"]
     _ai_fail = _AI_CALL_STATS["anthropic_fail"]
-    _ai_status = "operational" if _ai_ok > 0 and _ai_fail < _ai_ok else (
-        "degraded" if _ai_fail > 0 else "unknown"
+    _ai_status = (
+        "operational"
+        if _ai_ok > 0 and _ai_fail < _ai_ok
+        else ("degraded" if _ai_fail > 0 else "unknown")
     )
     return {
         "status": "healthy",
@@ -1811,8 +2581,13 @@ async def health():
         "ai_chat": AI_CHAT_ENABLED,
         "ai_status": _ai_status,
         "ai_stats": {
-            "anthropic_ok": _ai_ok, "anthropic_fail": _ai_fail,
-            "last_error": _AI_CALL_STATS["last_error"][:200] if _AI_CALL_STATS["last_error"] else "",
+            "anthropic_ok": _ai_ok,
+            "anthropic_fail": _ai_fail,
+            "last_error": (
+                _AI_CALL_STATS["last_error"][:200]
+                if _AI_CALL_STATS["last_error"]
+                else ""
+            ),
         },
         "intent_cache_size": len(_INTENT_CACHE),
     }
@@ -1855,7 +2630,8 @@ async def proxy(service_name: str, path: str, request: Request):
             method=request.method,
             url=url,
             headers={
-                k: v for k, v in request.headers.items()
+                k: v
+                for k, v in request.headers.items()
                 if k.lower() not in ("host", "content-length", "transfer-encoding")
             },
             content=await request.body(),
