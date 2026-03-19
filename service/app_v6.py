@@ -204,7 +204,7 @@ _CURATED_ROUTES = [
      "service": "backup-recovery-system", "path": "/backup/status", "method": "GET"},
     {"patterns": ["biological", "harmony", "consciousness"],
      "service": "biological-analytics-performance-test", "path": "/status", "method": "GET"},
-    {"patterns": ["gamification", "achievement", "badge", "leaderboard", "xp"],
+    {"patterns": ["gamification", "achievement", "badge", "leaderboard", "xp", "progress", "level", "points", "reward"],
      "service": "gamification-service", "path": "/leaderboard", "method": "GET"},
 ]
 
@@ -698,7 +698,7 @@ async def _ai_general_chat(user_msg: str, client_ip: str = "", user_context: str
             "8. Emotional Resilience — motivation, stress management during job search\n"
             "9. Professional Network — networking strategies, LinkedIn optimization\n"
             "10. Progress Analytics — application metrics, response rates, optimization\n"
-            "11. Gamification & Growth — achievements, milestones, learning paths\n"
+            "11. Gamification & Growth - Earn achievements, badges, and XP points as you progress through your career journey. Track learning milestones, compete on leaderboards, and unlock rewards for completing courses, applying to jobs, and reaching career goals. — achievements, milestones, learning paths\n"
             "12. Trust & Security — Swiss privacy compliance, data protection\n\n"
             "QUICK ACTIONS: Upload CV, Enhance CV (3 versions), Cover Letter (AIDA), Interview Prep\n"
             "When relevant, mention which benefit category helps the user's need.\n"
