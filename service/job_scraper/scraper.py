@@ -110,6 +110,14 @@ class JobScraper:
 
         jobs = []
         for doc in documents:
+            # Extract URL from _links (jobs.ch uses detail_en/de/fr)
+            _links = doc.get("_links", {})
+            _url = (
+                _links.get("detail_en", {}).get("href", "")
+                or _links.get("detail_de", {}).get("href", "")
+                or _links.get("detail_fr", {}).get("href", "")
+                or doc.get("url", "")
+            )
             job = {
                 "id": hashlib.md5(
                     json.dumps(doc, default=str, sort_keys=True).encode()
@@ -118,7 +126,7 @@ class JobScraper:
                 "company": doc.get("company_name", "Unknown"),
                 "location": doc.get("place", "Switzerland"),
                 "published": (doc.get("publication_date", "") or "")[:10],
-                "url": doc.get("url", ""),
+                "url": _url,
                 "source": "jobs.ch",
             }
             jobs.append(job)
