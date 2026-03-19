@@ -971,7 +971,7 @@ async def _ai_general_chat(
             "8. Emotional Resilience — motivation, stress management during job search\n"
             "9. Professional Network — networking strategies, LinkedIn optimization\n"
             "10. Progress Analytics — application metrics, response rates, optimization\n"
-            "11. Gamification & Growth — achievements, badges, XP points for progress tracking\n"
+            "11. Gamification & Growth — achievements, badges, XP points\n"
             "12. Trust & Security — Swiss privacy compliance, data protection\n\n"
             "QUICK ACTIONS: Upload CV, Enhance CV (3 versions), Cover Letter (AIDA), Interview Prep\n"
             "When relevant, mention which benefit category helps the user's need.\n"
