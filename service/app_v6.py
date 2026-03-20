@@ -1139,23 +1139,20 @@ async def chat_analytics(request: Request):
         "log_entries": len(_CHAT_LOG),
     }
 
-    # Per-user analytics from Pinecone
+    # Per-user analytics from Pinecone via /aggregate (unified persistence)
     if user_id:
         try:
             async with _sync_httpx.AsyncClient(timeout=5.0) as c:
-                r = await c.get(f"http://memory-system:8009/history/{user_id}")
+                r = await c.get(f"http://memory-system:8009/aggregate/{user_id}")
                 if r.status_code == 200:
-                    history = r.json().get("history", [])
-                    conversations = [h for h in history if "conversation" in str(h.get("context", ""))]
-                    applications = [h for h in history if "application" in str(h.get("context", ""))]
-                    achievements = [h for h in history if "gamification" in str(h.get("context", ""))]
-                    cv_analyses = [h for h in history if "cv" in str(h.get("context", "")).lower()]
+                    agg = r.json()
                     result["user"] = {
-                        "total_interactions": len(history),
-                        "conversations": len(conversations),
-                        "applications_tracked": len(applications),
-                        "achievements_earned": len(achievements),
-                        "cv_analyses": len(cv_analyses),
+                        "total_entries": agg.get("total_entries", 0),
+                        "conversations": agg.get("conversations", 0),
+                        "applications_tracked": agg.get("applications", 0),
+                        "achievements_earned": agg.get("achievements", 0),
+                        "cv_analyses": agg.get("cv_analyses", 0),
+                        "profile_entries": agg.get("profile_entries", 0),
                     }
         except Exception:
             pass
@@ -1752,8 +1749,9 @@ async def chat_route(request: Request):
             try:
                 async with _sync_httpx.AsyncClient(timeout=3.0) as _pc:
                     await _pc.post(
-                        "http://memory-system:8009/analyze",
-                        json={"user_id": user_id, "data": json.dumps({"msg": msg[:200], "resp": ai_fallback[:300]}),
+                        "http://memory-system:8009/store",
+                        json={"user_id": user_id, "entity_type": "conversation",
+                              "data": json.dumps({"msg": msg[:200], "resp": ai_fallback[:300], "intent": intent}),
                               "context": ["conversation", intent]},
                     )
             except Exception:
