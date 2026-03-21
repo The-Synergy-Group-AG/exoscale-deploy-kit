@@ -15,6 +15,12 @@ PyPDF2>=3.0.0
 python-docx>=1.0.0
 python-multipart>=0.0.6
 
+# Plan 140: PDF export for CVs and cover letters
+weasyprint>=68.0
+
+# Plan 143: Stripe payment integration
+stripe>=7.0.0
+
 # Test support for in-pod test execution (Plan 125 Phase 1)
 pytest==8.3.4
 pytest-json-report==1.5.0

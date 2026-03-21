@@ -369,6 +369,58 @@ def main() -> int:
     else:
         _warn("L54: _patch_generated_tests.py not found — skipping test patch")
 
+    # Plan 145: Patch interview_prep_service with Pinecone tracking
+    for _p145_name, _p145_file, _p145_svc in [
+        ("interview", "_patch_interview_wiring.py", "interview_prep_service"),
+        ("emotional", "_patch_emotional_wiring.py", "emotional_intelligence_system"),
+        ("employer/market", "_patch_employer_research_wiring.py", "swiss_market_service"),
+        ("user_profile", "_patch_user_profile_wiring.py", "user_profile_service"),
+        ("notification", "_patch_notification_wiring.py", "notification_service"),
+    ]:
+        _p145_path = SCRIPT_DIR / _p145_file
+        if _p145_path.exists():
+            import subprocess as _sp145
+            _p145_result = _sp145.run(
+                [sys.executable, str(_p145_path)],
+                capture_output=True, text=True, cwd=str(SCRIPT_DIR),
+            )
+            if "PATCHED" in _p145_result.stdout:
+                _ok(f"Plan 145: {_p145_name} service patched with Pinecone persistence")
+            elif "SKIP" in _p145_result.stdout:
+                _ok(f"Plan 145: {_p145_name} service already patched")
+
+    # Plan 143: Patch subscription_management_service with Stripe + Pinecone
+    _sub_patch = SCRIPT_DIR / "_patch_subscription_wiring.py"
+    if _sub_patch.exists():
+        _info("Plan 143: Patching subscription_management_service...")
+        import subprocess as _sp143
+        _sp_result = _sp143.run(
+            [sys.executable, str(_sub_patch)],
+            capture_output=True, text=True, cwd=str(SCRIPT_DIR),
+        )
+        if "PATCHED" in _sp_result.stdout:
+            _ok("Plan 143: Subscription service patched with Stripe + Pinecone")
+        elif "SKIP" in _sp_result.stdout:
+            _ok("Plan 143: Subscription service already patched")
+        else:
+            _warn(f"Plan 143: Subscription patch result: {_sp_result.stdout.strip()}")
+
+    # Plan 142: Patch gamification_service with Pinecone wiring
+    _gamif_patch = SCRIPT_DIR / "_patch_gamification_wiring.py"
+    if _gamif_patch.exists():
+        _info("Plan 142: Patching gamification_service with Pinecone wiring...")
+        import subprocess as _sp142
+        _gp_result = _sp142.run(
+            [sys.executable, str(_gamif_patch)],
+            capture_output=True, text=True, cwd=str(SCRIPT_DIR),
+        )
+        if "PATCHED" in _gp_result.stdout:
+            _ok("Plan 142: Gamification service patched with real Pinecone persistence")
+        elif "SKIP" in _gp_result.stdout:
+            _ok("Plan 142: Gamification service already patched")
+        else:
+            _warn(f"Plan 142: Gamification patch result: {_gp_result.stdout.strip()}")
+
     print()
     if exit_code == 0:
         print("=" * 64)

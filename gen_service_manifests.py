@@ -280,24 +280,30 @@ spec:
 """
 
 
-# ── L72: AI Backend Services — First-Class Factory Citizens ──────────────────
+# ── L72 + Plan 144: AI Backend Services — Port Registry SSOT ─────────────────
 # These 12 services provide real GPT-4 + Pinecone intelligence.
-# They're deployed alongside the 219 generated services using the same Docker
-# image but with SERVICE_PORT set to their native port.
-AI_BACKEND_SERVICES: list[dict] = [
-    {"name": "gpt4_orchestrator",   "dns": "gpt4-orchestrator",   "port": 8032, "source": "shared/ai/gpt4_orchestrator"},
-    {"name": "claude_integration",  "dns": "claude-integration",  "port": 8033, "source": "shared/ai/claude_integration"},
-    {"name": "embeddings_engine",   "dns": "embeddings-engine",   "port": 8034, "source": "shared/ai/embeddings_engine"},
-    {"name": "vector_store",        "dns": "vector-store",        "port": 8035, "source": "shared/ai/vector_store"},
-    {"name": "job_matcher",         "dns": "job-matcher",         "port": 8019, "source": "shared/extended/job_matcher"},
-    {"name": "cv_processor",        "dns": "cv-processor",        "port": 8020, "source": "shared/extended/cv_processor"},
-    {"name": "career_navigator",    "dns": "career-navigator",    "port": 8017, "source": "shared/extended/career_navigator"},
-    {"name": "skill_bridge",        "dns": "skill-bridge",        "port": 8018, "source": "shared/extended/skill_bridge"},
-    {"name": "memory_system",       "dns": "memory-system",       "port": 8009, "source": "shared/consciousness/memory_system"},
-    {"name": "learning_system",     "dns": "learning-system",     "port": 8010, "source": "shared/consciousness/learning_system"},
-    {"name": "pattern_recognition", "dns": "pattern-recognition", "port": 8011, "source": "shared/consciousness/pattern_recognition"},
-    {"name": "decision_making",     "dns": "decision-making",     "port": 8012, "source": "shared/consciousness/decision_making"},
-]
+# Port assignments come from shared/core/service_ports.py (single source of truth).
+try:
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent.parent / "shared" / "core"))
+    from service_ports import get_ai_backend_manifests
+    AI_BACKEND_SERVICES: list[dict] = get_ai_backend_manifests()
+except ImportError:
+    # Fallback if service_ports.py not accessible at generation time
+    AI_BACKEND_SERVICES: list[dict] = [
+        {"name": "gpt4_orchestrator",   "dns": "gpt4-orchestrator",   "port": 8032, "source": "shared/ai/gpt4_orchestrator"},
+        {"name": "claude_integration",  "dns": "claude-integration",  "port": 8033, "source": "shared/ai/claude_integration"},
+        {"name": "embeddings_engine",   "dns": "embeddings-engine",   "port": 8034, "source": "shared/ai/embeddings_engine"},
+        {"name": "vector_store",        "dns": "vector-store",        "port": 8035, "source": "shared/ai/vector_store"},
+        {"name": "job_matcher",         "dns": "job-matcher",         "port": 8019, "source": "shared/extended/job_matcher"},
+        {"name": "cv_processor",        "dns": "cv-processor",        "port": 8020, "source": "shared/extended/cv_processor"},
+        {"name": "career_navigator",    "dns": "career-navigator",    "port": 8017, "source": "shared/extended/career_navigator"},
+        {"name": "skill_bridge",        "dns": "skill-bridge",        "port": 8018, "source": "shared/extended/skill_bridge"},
+        {"name": "memory_system",       "dns": "memory-system",       "port": 8009, "source": "shared/consciousness/memory_system"},
+        {"name": "learning_system",     "dns": "learning-system",     "port": 8010, "source": "shared/consciousness/learning_system"},
+        {"name": "pattern_recognition", "dns": "pattern-recognition", "port": 8011, "source": "shared/consciousness/pattern_recognition"},
+        {"name": "decision_making",     "dns": "decision-making",     "port": 8012, "source": "shared/consciousness/decision_making"},
+    ]
 
 
 def render_ai_backend_yaml(

@@ -97,6 +97,9 @@ fi
 echo "Step 2: Set gateway entrypoint (app_v6.py → service/app.py)..."
 cp "${SERVICE_DIR}/app_v6.py" "${SERVICE_DIR}/app.py"
 echo "  ✅ app.py = Gateway v7 (PROXY_TIMEOUT=2.5s, pool=50)"
+# Plan 144: Copy port registry (single source of truth for all service ports)
+cp "${SCRIPT_DIR}/../shared/core/service_ports.py" "${SERVICE_DIR}/service_ports.py" 2>/dev/null || echo "  ⚠ service_ports.py not found (using hardcoded fallback)"
+echo "  ✅ service_ports.py = Port Registry SSOT (Plan 144)"
 cp "${SCRIPT_DIR}/frontend/index.html" "${SERVICE_DIR}/dashboard.html"
 echo "  ✅ dashboard.html = service dashboard (219 services)"
 cp "${SCRIPT_DIR}/frontend/home.html"  "${SERVICE_DIR}/home.html"

@@ -13,7 +13,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
+# Plan 140: WeasyPrint build deps (cffi needs libffi-dev)
+RUN apt-get update && apt-get install -y build-essential libffi-dev libpango1.0-dev libcairo2-dev && rm -rf /var/lib/apt/lists/*
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -31,7 +32,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     ENVIRONMENT="production" \
     BUILD_TIME=""
 
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/* \
+# Plan 140: WeasyPrint needs pango, cairo, gdk-pixbuf for PDF generation
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 \
+    libffi8 fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/* \
     && groupadd -r appuser && useradd -r -g appuser appuser
 
 COPY --from=builder /opt/venv /opt/venv
@@ -42,6 +47,7 @@ WORKDIR /app
 # NOTE: app.py in this build = app_v6.py (gateway v7) — copied by build_and_push.sh
 # NOTE: dashboard.html copied from frontend/index.html by build_and_push.sh
 COPY app.py .
+COPY service_ports.py .
 COPY start.sh .
 COPY dashboard.html .
 COPY home.html .

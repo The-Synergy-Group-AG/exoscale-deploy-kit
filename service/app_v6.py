@@ -44,27 +44,20 @@ PROXY_TIMEOUT = float(os.getenv("PROXY_TIMEOUT", "2.5"))
 # Optional service DNS overrides (for edge cases where name conversion fails)
 SERVICE_DNS_OVERRIDES: dict[str, str] = {}
 
-# L72: AI backend services use native ports (not 8000). Map service DNS → port.
-# These 12 services were deployed with their own K8s Service objects on native ports.
-_AI_BACKEND_PORTS: dict[str, int] = {
-    "memory-system": 8009,
-    "learning-system": 8010,
-    "pattern-recognition": 8011,
-    "decision-making": 8012,
-    "career-navigator": 8017,
-    "skill-bridge": 8018,
-    "job-matcher": 8019,
-    "cv-processor": 8020,
-    "gpt4-orchestrator": 8032,
-    "claude-integration": 8033,
-    "embeddings-engine": 8034,
-    "vector-store": 8035,
-}
-
-
-def _get_service_port(service_dns: str) -> int:
-    """Return the correct port for a service. AI backends use native ports, all others use 8000."""
-    return _AI_BACKEND_PORTS.get(service_dns, 8000)
+# Plan 144: Port Registry — Single Source of Truth (replaces hardcoded dict)
+try:
+    from service_ports import get_port as _get_service_port, get_ai_backend_ports
+    _AI_BACKEND_PORTS = get_ai_backend_ports()
+except ImportError:
+    # Fallback for environments where service_ports.py is not available
+    _AI_BACKEND_PORTS: dict[str, int] = {
+        "memory-system": 8009, "learning-system": 8010, "pattern-recognition": 8011,
+        "decision-making": 8012, "career-navigator": 8017, "skill-bridge": 8018,
+        "job-matcher": 8019, "cv-processor": 8020, "gpt4-orchestrator": 8032,
+        "claude-integration": 8033, "embeddings-engine": 8034, "vector-store": 8035,
+    }
+    def _get_service_port(service_dns: str) -> int:
+        return _AI_BACKEND_PORTS.get(service_dns, 8000)
 
 
 # Persistent HTTP client — shared across all requests (connection pooling + DNS cache)
@@ -586,8 +579,10 @@ _INTENT_CLASSIFIER_PROMPT = (
     "4. Job searching in ANY language = job-search (cercare lavoro, Stellen suchen, chercher emploi).\n\n"
     "Intents (choose exactly one):\n"
     "- job-search: User wants to find/search/browse jobs or vacancies\n"
-    "- cv-enhance: User wants to improve/enhance/rewrite/optimize/view their CV versions\n"
-    "- cover-letter: User wants to write/generate/draft a cover letter, motivation letter, Bewerbungsschreiben, lettre de motivation\n"
+    "- cv-enhance: User wants to improve/enhance/rewrite/optimize/view their CV versions (FIRST TIME generation)\n"
+    "- cv-refine: User wants to MODIFY/ADJUST an already-generated CV — make it shorter, add metrics, change tone, edit a section, improve wording\n"
+    "- cover-letter: User wants to write/generate/draft a cover letter, motivation letter, Bewerbungsschreiben, lettre de motivation (FIRST TIME)\n"
+    "- cover-letter-refine: User wants to MODIFY/ADJUST an already-generated cover letter — change tone, make more confident, adjust a paragraph\n"
     "- cv-match: User wants to match their CV/profile to job listings\n"
     "- interview-prep: User wants interview preparation, coaching, or practice\n"
     "- career-advice: User wants career guidance, salary info, market advice\n"
@@ -621,6 +616,20 @@ _INTENT_CLASSIFIER_PROMPT = (
     '- "should I enhance my cv?" → {"intent":"general-chat","language":"en","confidence":0.8}\n'
     '- "I don\'t want to change my CV" → {"intent":"general-chat","language":"en","confidence":0.85}\n'
     '- "stop" → {"intent":"general-chat","language":"en","confidence":0.95}\n'
+    '- "make it shorter" → {"intent":"cv-refine","language":"en","confidence":0.9}\n'
+    '- "add more achievements" → {"intent":"cv-refine","language":"en","confidence":0.9}\n'
+    '- "change the tone to more formal" → {"intent":"cv-refine","language":"en","confidence":0.9}\n'
+    '- "rewrite the professional summary" → {"intent":"cv-refine","language":"en","confidence":0.9}\n'
+    '- "kürzer machen" → {"intent":"cv-refine","language":"de","confidence":0.9}\n'
+    '- "raccourcir le CV" → {"intent":"cv-refine","language":"fr","confidence":0.9}\n'
+    '- "accorciare il curriculum" → {"intent":"cv-refine","language":"it","confidence":0.9}\n'
+    '- "I prefer option B but add more metrics" → {"intent":"cv-refine","language":"en","confidence":0.9}\n'
+    '- "add my SAP certification" → {"intent":"cv-refine","language":"en","confidence":0.9}\n'
+    '- "include my PMP certification" → {"intent":"cv-refine","language":"en","confidence":0.9}\n'
+    '- "add a skills section" → {"intent":"cv-refine","language":"en","confidence":0.9}\n'
+    '- "make the opening paragraph more confident" → {"intent":"cover-letter-refine","language":"en","confidence":0.9}\n'
+    '- "adjust the cover letter tone" → {"intent":"cover-letter-refine","language":"en","confidence":0.9}\n'
+    '- "rewrite the interest paragraph" → {"intent":"cover-letter-refine","language":"en","confidence":0.9}\n'
 )
 
 
@@ -720,9 +729,18 @@ def _is_demo_data(service_data: dict) -> bool:
 # L72: Intent-specific system prompts for domain expertise
 _INTENT_PROMPTS = {
     "career": (
-        "You are a Swiss career expert. Provide specific, actionable advice about "
-        "job searching in Switzerland: platforms (jobs.ch, LinkedIn, Jobup), Swiss CV format, "
-        "salary expectations by role, work permit requirements, and regional market differences."
+        "You are a Swiss career expert specializing in the Swiss job market. "
+        "Provide specific, actionable advice about job searching in Switzerland.\n\n"
+        "KEY TOPICS:\n"
+        "- Platforms: jobs.ch, LinkedIn, Jobup.ch, Indeed.ch\n"
+        "- Swiss CV format: professional photo, 2-page max, formal 'Sie' tone\n"
+        "- Salary expectations: ALWAYS quote in CHF. Be specific by role and region.\n"
+        "  PM: 120-160K CHF (Zurich), 100-140K (other). Data Science: 110-150K. Engineering: 100-140K.\n"
+        "- Work permits: B permit (5yr renewable), C permit (permanent), L permit (short-term)\n"
+        "- Regional differences: Zurich (finance/tech), Basel (pharma), Geneva (international orgs)\n"
+        "- Freelancing: must register with SVA, pay AHV/IV/EO contributions\n\n"
+        "ANTI-HALLUCINATION: If you don't know a specific salary or statistic, say "
+        "'typical range is...' or 'based on market data...'. Never fabricate exact numbers."
     ),
     "document": (
         "You are a Swiss CV/resume specialist with 744 features of Swiss CV blueprint knowledge. "
@@ -734,9 +752,69 @@ _INTENT_PROMPTS = {
         "Conservative Swiss (2-page Europass), Modern Professional (ATS-optimized), Executive Summary (1-page impact). "
         "Guide users to upload their CV first, then request enhancement."
     ),
+    "interview": (
+        "You are a Swiss interview preparation coach. Help users prepare for job interviews "
+        "with comprehensive, actionable guidance.\n\n"
+        "CORE COACHING FRAMEWORK:\n"
+        "1. STAR Method: Situation → Task → Action → Result. Help users structure every answer.\n"
+        "2. Swiss Interview Culture: punctuality (arrive 5 min early), firm handshake, formal 'Sie' "
+        "unless told otherwise, bring paper copies of CV, expect 2-3 rounds.\n"
+        "3. Common Questions: 'Tell me about yourself' (2-min professional summary), "
+        "'Why Switzerland?' (show commitment), 'Salary expectations?' (research market rate).\n"
+        "4. Behavioral Questions: Generate role-specific examples using STAR format.\n"
+        "5. Technical Questions: Tailor to the industry (banking: risk/compliance, pharma: GMP/validation, "
+        "tech: system design/coding).\n"
+        "6. Mock Interview: When asked, generate 5-7 interview questions specific to the role and company, "
+        "then help the user practice answers.\n"
+        "7. Salary Negotiation: Swiss companies expect negotiation. Research range first, "
+        "present value-based argument, consider total package (13th month, pension, transport).\n\n"
+        "Always end with 3 concrete next steps the user should take."
+    ),
+    "emotional": (
+        "You are an empathetic career wellness coach specializing in the emotional challenges "
+        "of job searching in Switzerland.\n\n"
+        "CORE PRINCIPLES:\n"
+        "1. Validate feelings FIRST — rejection, anxiety, and frustration are normal.\n"
+        "2. Be warm and human — use encouraging language, not clinical terms.\n"
+        "3. Provide ACTIONABLE coping strategies, not just sympathy:\n"
+        "   - Rejection: reframe as data, not failure. Each 'no' refines your target.\n"
+        "   - Anxiety: box breathing (4-4-4-4), visualization, preparation reduces fear.\n"
+        "   - Burnout: structured daily routine, exercise, social connection, set 'off' hours.\n"
+        "   - Imposter syndrome: list concrete achievements, remember you were HIRED before.\n"
+        "   - Long-term search: celebrate micro-wins (applications sent, skills learned, connections made).\n"
+        "4. Track emotional progress across conversations — reference prior discussions if available.\n"
+        "5. Never recommend medical professionals unless the user explicitly asks — you're a coach, not a therapist.\n"
+        "6. Swiss context: job search can be isolating for expats. Suggest local networking events, "
+        "Meetup groups, professional associations.\n\n"
+        "End every response with an encouraging, specific action step."
+    ),
+    "employer": (
+        "You are a Swiss employer research specialist. Help users research companies they're "
+        "considering applying to.\n\n"
+        "RESEARCH FRAMEWORK:\n"
+        "1. Company Overview: industry, size, headquarters, Swiss presence\n"
+        "2. Culture: work-life balance reputation, diversity, remote/hybrid policies\n"
+        "3. Career Growth: typical career paths, internal mobility, training programs\n"
+        "4. Compensation: salary range (CHF), benefits (13th month, pension, transport)\n"
+        "5. Interview Process: typical rounds, timeline, what to expect\n"
+        "6. Employee Reviews: general sentiment (without fabricating specifics)\n\n"
+        "SWISS-SPECIFIC EMPLOYERS:\n"
+        "- Banking: UBS, Credit Suisse (now UBS), Julius Baer, Zurich Insurance\n"
+        "- Pharma: Novartis (Basel), Roche (Basel), Lonza, Sandoz\n"
+        "- Tech: Google Zurich, Microsoft, Meta, local startups\n"
+        "- Engineering: ABB (Zurich), Stadler Rail, Sulzer, Bühler\n"
+        "- International Orgs: UN Geneva, WHO, WTO, Red Cross\n"
+        "- Public: Federal administration, cantonal governments, ETH/EPFL\n\n"
+        "ANTI-HALLUCINATION RULES:\n"
+        "- Do NOT fabricate specific employee counts, revenue, or exact salary figures.\n"
+        "- Use phrases like 'typically ranges from...' or 'known for...'\n"
+        "- If unsure about a company, say 'I recommend checking their careers page at [company].com'\n"
+        "- Never invent company reviews or quotes from employees."
+    ),
     "gamification": (
         "You are a motivational career coach. Help users stay motivated in their job search "
-        "through goal-setting, progress tracking, celebrating milestones, and building positive habits."
+        "through goal-setting, progress tracking, celebrating milestones, and building positive habits. "
+        "Reference their XP level, badges earned, and points balance when available."
     ),
     "biological": (
         "You are a wellness-aware career advisor. Help users manage the emotional and physical "
@@ -745,13 +823,32 @@ _INTENT_PROMPTS = {
     ),
     "analytics": (
         "You are a career analytics advisor. Help users understand their job search metrics, "
-        "application-to-interview ratios, response rates, and how to optimize their strategy."
+        "application-to-interview ratios, response rates, and how to optimize their strategy. "
+        "Reference their actual data when available (applications tracked, XP earned, badges)."
     ),
     "compliance": (
-        "You are a Swiss employment law expert. Advise on RAV requirements, unemployment benefits, "
-        "work permits (B/C/L), notice periods, and Swiss labour regulations."
+        "You are a Swiss employment law and RAV compliance expert.\n\n"
+        "RAV (Regionale Arbeitsvermittlungszentren) REQUIREMENTS:\n"
+        "1. Registration: Must register within 7 days of unemployment notice\n"
+        "2. Monthly Reporting: Track and report applications submitted, interviews attended, "
+        "networking activities, and skill development\n"
+        "3. Minimum Applications: Typically 8-12 per month (varies by canton and RAV counselor)\n"
+        "4. Availability: Must be available for work, attend appointments, accept suitable offers\n"
+        "5. Job Search Proof: Keep records of all applications (date, company, role, method)\n"
+        "6. Sanctions: Non-compliance can result in benefit suspension (5-60 days)\n\n"
+        "WORK PERMITS:\n"
+        "- B Permit: 5-year, renewable, tied to employment. EU/EFTA citizens: easier. Third-country: employer-sponsored.\n"
+        "- C Permit: Permanent settlement. After 5-10 years depending on nationality.\n"
+        "- L Permit: Short-term, up to 1 year.\n"
+        "- Cross-border (G): Live abroad, work in Switzerland.\n\n"
+        "NOTICE PERIODS: 1 month (year 1), 2 months (years 2-9), 3 months (year 10+).\n"
+        "UNEMPLOYMENT BENEFITS: 70-80% of insured salary, max 400 daily allowances (18-24 months).\n\n"
+        "Help users track their monthly application counts for RAV compliance."
     ),
 }
+
+# Plan 145: Per-user emotional state tracking (for emotional awareness continuity)
+_USER_EMOTIONAL_STATE: dict = {}  # user_id → {"last_emotion": str, "session_count": int}
 
 
 async def _fetch_user_context(request: Request) -> str:
@@ -935,9 +1032,10 @@ async def _ai_respond(
 
 
 async def _ai_general_chat(
-    user_msg: str, client_ip: str = "", user_context: str = ""
+    user_msg: str, client_ip: str = "", user_context: str = "", domain_prompt: str = ""
 ) -> str:
-    """L68c: Handle general conversation, greetings, follow-ups, and complex queries."""
+    """L68c: Handle general conversation, greetings, follow-ups, and complex queries.
+    Plan 145: domain_prompt injects feature-specific expertise (interview, emotional, employer, etc.)."""
     if not AI_CHAT_ENABLED:
         return ""
     try:
@@ -982,6 +1080,8 @@ async def _ai_general_chat(
             "- When discussing career: suggest 'Update your profile' or 'View your progress analytics'\n"
             "- Always end with 1-2 relevant next-step suggestions from other benefit categories\n"
         )
+        if domain_prompt:
+            system += f"\n\nDOMAIN EXPERTISE:\n{domain_prompt}\n"
         if user_context:
             system += f"\n\nUSER CONTEXT:\n{user_context}\n"
         messages = []
@@ -1033,6 +1133,53 @@ _CHAT_STATS: dict = {
 _CONV_MEMORY: dict = {}  # user_id_or_ip → [{"role": "user/assistant", "content": str}]
 # Plan 131: Per-user context from CV uploads and profile data
 _USER_CV_CONTEXT: dict = {}  # user_id → "CV summary text"
+
+# Plan 142: Gamification XP award helper — fire-and-forget, non-fatal
+_DAILY_XP_TRACKER: dict = {}  # user_id → date_str (prevents duplicate daily login XP)
+
+
+async def _award_xp(user_id: str, achievement: str, points: int):
+    """Plan 142: Award XP to user via gamification-service. Non-fatal."""
+    if not user_id or user_id == "anon":
+        return
+    try:
+        async with _sync_httpx.AsyncClient(timeout=3.0) as gc:
+            await gc.post(
+                f"http://gamification-service:{_get_service_port('gamification-service')}/achievements/unlock",
+                json={"user_id": user_id, "achievement": achievement, "points": points},
+            )
+    except Exception:
+        pass  # Non-fatal
+
+
+async def _get_user_plan(user_id: str) -> str:
+    """Plan 143: Get user subscription plan (free/premium). Cached."""
+    if not user_id or user_id == "anon":
+        return "free"
+    if user_id in _USER_PLAN:
+        return _USER_PLAN[user_id]
+    try:
+        async with _sync_httpx.AsyncClient(timeout=3.0) as c:
+            resp = await c.get(
+                f"http://subscription-management-service:{_get_service_port('subscription-management-service')}/plan",
+                params={"user_id": user_id},
+            )
+            if resp.status_code == 200:
+                plan = resp.json().get("data", {}).get("plan", "Free")
+                _USER_PLAN[user_id] = "premium" if plan == "Premium" else "free"
+                return _USER_PLAN[user_id]
+    except Exception:
+        pass
+    _USER_PLAN[user_id] = "free"
+    return "free"
+
+
+# Plan 141: Document editing session — tracks active CV/cover letter for refinement
+# {user_id: {"type": "cv"|"cover_letter", "version_key": "modern", "versions": [{"text": str, "ts": str, "label": str}], "suggestions": []}}
+_USER_DOC_SESSION: dict = {}
+# Plan 143: User plan cache (free/premium)
+_USER_PLAN: dict = {}  # {user_id: "free"|"premium"}
+_PREMIUM_FEATURES = {"cv-enhance", "cover-letter", "cv-refine", "cover-letter-refine"}  # Intents requiring premium
 
 
 def _init_chat_log():
@@ -1230,6 +1377,13 @@ async def chat_route(request: Request):
     frontend_history = body.get("history", [])
     if frontend_history and isinstance(frontend_history, list):
         _CONV_MEMORY[mem_key] = frontend_history[-10:]
+    # Plan 142: Daily login streak — award 15 XP on first chat per day per user
+    if user_id and user_id != "anon":
+        today = _dt.now().strftime("%Y-%m-%d")
+        if _DAILY_XP_TRACKER.get(user_id) != today:
+            _DAILY_XP_TRACKER[user_id] = today
+            await _award_xp(user_id, "daily_login", 15)
+
     # Plan 133: AI-First intent classification (multilingual, replaces keyword matching)
     intent_result = await _classify_intent(msg)
     intent = intent_result.get("intent", "general-chat")
@@ -1277,6 +1431,8 @@ async def chat_route(request: Request):
 
     # ── Intent: job-search — real jobs.ch listings, ALL 4 Swiss languages ──
     if intent == "job-search":
+        # Plan 142: Award XP for job search (10 XP)
+        await _award_xp(user_id, "job_search", 10)
         search_terms = _extract_job_search_terms(msg)
         if search_terms:
             try:
@@ -1485,6 +1641,32 @@ async def chat_route(request: Request):
             }
             msg = f"Find jobs matching: {search_terms}"
 
+    # ── Plan 143: Feature gating for premium intents ──
+    if intent in _PREMIUM_FEATURES:
+        user_plan = await _get_user_plan(user_id)
+        if user_plan != "premium":
+            feature_names = {"cv-enhance": "CV Enhancement", "cover-letter": "Cover Letter Generation",
+                            "cv-refine": "CV Refinement", "cover-letter-refine": "Cover Letter Refinement"}
+            feature = feature_names.get(intent, intent)
+            ai_resp = (
+                f"**{feature}** is a Premium feature.\n\n"
+                "**Free plan** includes: 5 job searches/day, basic AI chat, XP & badges.\n\n"
+                "**Premium plan (CHF 29/mo)** unlocks: unlimited searches, CV enhancement (3 versions), "
+                "PDF export, AIDA cover letters, full AI coaching, and XP offset against your fee.\n\n"
+                "Your earned XP points can be used to reduce your subscription cost! "
+                "(100 XP = 1 CHF discount)\n\n"
+                "**[Upgrade to Premium →](javascript:void(0))** — Say 'upgrade to premium' to get started."
+            )
+            if mem_key:
+                if mem_key not in _CONV_MEMORY:
+                    _CONV_MEMORY[mem_key] = []
+                _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:500]})
+                _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+            return {"routed": True, "service": "subscription-gate",
+                    "data": {"plan": "free", "required": "premium", "feature": feature},
+                    "ai_response": ai_resp}
+
     # ── Intent: cv-enhance ──
     if intent == "cv-enhance":
         cv_text = await _ensure_cv_context()
@@ -1542,9 +1724,23 @@ async def chat_route(request: Request):
                         parts.append(f"{cv_text_full}\n")
                     parts.append(
                         "---\n**Next steps:** Tell me which version you prefer, or ask me to "
-                        "**write a cover letter** for a specific job application."
+                        "**write a cover letter** for a specific job application.\n"
+                        "You can also refine any version — just say things like "
+                        "'make it shorter', 'add more metrics', or 'change the tone'."
                     )
                     ai_resp = "\n".join(parts)
+                    # Plan 141: Set document session for refinement
+                    if user_id:
+                        _USER_DOC_SESSION[user_id] = {
+                            "type": "cv",
+                            "version_key": "modern",  # Default active version
+                            "versions": [
+                                {"text": ver.get("cv_text", ""), "ts": _dt.now().isoformat(), "label": key, "name": ver.get("name", key)}
+                                for key, ver in versions.items()
+                            ],
+                            "current_idx": 0,
+                            "suggestions": [],
+                        }
                 else:
                     ai_resp = "CV enhancement is processing but took longer than expected. Please try again in a moment."
         except Exception as exc:
@@ -1610,12 +1806,27 @@ async def chat_route(request: Request):
                     )
                     if resp.status_code == 200:
                         cl_data = resp.json()
+                        cl_text = cl_data.get("cover_letter", "Generation in progress...")
                         ai_resp = (
                             f"Here's your **AIDA cover letter** for {company}:\n\n"
-                            f"{cl_data.get('cover_letter', 'Generation in progress...')}\n\n"
+                            f"{cl_text}\n\n"
                             "---\n*Generated using the AIDA framework (Attention → Interest → Desire → Action). "
-                            "Feel free to ask me to adjust the tone or emphasis.*"
+                            "Feel free to ask me to adjust the tone or emphasis — "
+                            "just say 'make it more confident' or 'change the opening'.*"
                         )
+                        # Plan 141: Set document session for cover letter refinement
+                        if user_id:
+                            _USER_DOC_SESSION[user_id] = {
+                                "type": "cover_letter",
+                                "version_key": "cover_letter",
+                                "versions": [{"text": cl_text, "ts": _dt.now().isoformat(), "label": "cover_letter", "name": f"Cover Letter — {company}"}],
+                                "current_idx": 0,
+                                "company": company,
+                                "job_title": job_title,
+                                "suggestions": [],
+                            }
+                        # Plan 142: Award XP for cover letter generation (35 XP)
+                        await _award_xp(user_id, "cover_letter_generated", 35)
                     else:
                         ai_resp = "Cover letter generation is processing. Please try again in a moment."
             except Exception as exc:
@@ -1638,12 +1849,110 @@ async def chat_route(request: Request):
             "ai_response": ai_resp,
         }
 
+    # ── Plan 141: CV/Cover Letter Refinement ──
+    if intent in ("cv-refine", "cover-letter-refine"):
+        session = _USER_DOC_SESSION.get(user_id, {}) if user_id else {}
+        if not session:
+            # No active document session — treat as general chat with guidance
+            ai_resp = (
+                "I don't have an active document to refine. "
+                "First, say **'enhance my CV'** or **'write a cover letter'** to generate a document, "
+                "then you can ask me to refine it."
+            )
+        else:
+            # Get the current document text
+            versions = session.get("versions", [])
+            current_idx = session.get("current_idx", 0)
+            current_text = versions[current_idx]["text"] if versions else ""
+            doc_type = session.get("type", "cv")
+
+            if not current_text:
+                ai_resp = "No document content found to refine. Please generate a CV or cover letter first."
+            else:
+                try:
+                    async with _sync_httpx.AsyncClient(timeout=90.0) as c:
+                        resp = await c.post(
+                            "http://cv-processor:8020/refine",
+                            json={
+                                "user_id": user_id,
+                                "current_text": current_text[:5000],
+                                "feedback": msg,
+                                "doc_type": doc_type,
+                            },
+                        )
+                        if resp.status_code == 200:
+                            refine_data = resp.json()
+                            refined_text = refine_data.get("refined_text", "")
+                            changes_summary = refine_data.get("changes_summary", "")
+                            suggestions = refine_data.get("suggestions", [])
+
+                            # Update session with new version
+                            version_num = len(versions) + 1
+                            versions.append({
+                                "text": refined_text,
+                                "ts": _dt.now().isoformat(),
+                                "label": f"v{version_num}: {msg[:40]}",
+                                "name": f"Revision {version_num}",
+                            })
+                            session["current_idx"] = len(versions) - 1
+                            session["suggestions"] = suggestions
+
+                            version_label = f"v{version_num}"
+                            if doc_type == "cv":
+                                ai_resp = (
+                                    f"**CV Updated ({version_label})** — {changes_summary}\n\n"
+                                    f"{refined_text}\n\n"
+                                    "---\n"
+                                )
+                            else:
+                                ai_resp = (
+                                    f"**Cover Letter Updated ({version_label})** — {changes_summary}\n\n"
+                                    f"{refined_text}\n\n"
+                                    "---\n"
+                                )
+
+                            # Add suggestions if available
+                            if suggestions:
+                                ai_resp += "\n**Further improvements:**\n"
+                                for s in suggestions[:4]:
+                                    ai_resp += f"- {s}\n"
+                        else:
+                            ai_resp = "Refinement is processing but took longer than expected. Please try again."
+                except Exception as exc:
+                    logger.warning(f"Plan 141: Document refine failed: {exc}")
+                    ai_resp = "Document refinement service is temporarily unavailable. Please try again shortly."
+
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:500]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {
+            "routed": True,
+            "service": "cv-refinement",
+            "path": "/refine",
+            "data": {"version_count": len(session.get("versions", [])), "suggestions": session.get("suggestions", [])},
+            "ai_response": ai_resp,
+        }
+
     # ── Plan 138: Dedicated handlers for all classified intents ──
 
-    # Intent: interview-prep — use domain-specific coaching prompt
+    # Plan 146: Interview prep — dedicated coaching + session tracking via interview_prep_service
     if intent == "interview-prep" and not route:
-        domain_prompt = _INTENT_PROMPTS.get("career", "")
-        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context,
+                                         domain_prompt=_INTENT_PROMPTS.get("interview", ""))
+        await _award_xp(user_id, "interview_prep", 25)
+        # Plan 146: Track interview prep session in Pinecone via interview_prep_service
+        if user_id and user_id != "anon":
+            try:
+                async with _sync_httpx.AsyncClient(timeout=3.0) as _ipc:
+                    await _ipc.post(
+                        f"http://interview-prep-service:{_get_service_port('interview-prep-service')}/mock-interview/start",
+                        json={"user_id": user_id, "role": msg[:100], "company": ""},
+                    )
+            except Exception:
+                pass  # Non-fatal
         _log_chat(msg, routed=True, service="interview-prep", latency_ms=(_t.time() - t0) * 1000,
                   ai_response=ai_resp, client_ip=client_ip)
         if mem_key:
@@ -1656,9 +1965,22 @@ async def chat_route(request: Request):
         return {"routed": True, "service": "interview-prep", "intent": intent,
                 "language": detected_lang, "data": None, "ai_response": ai_resp}
 
-    # Intent: career-advice — salary info, market intelligence
+    # Plan 145: career-advice — salary info, market intelligence, employer research
     if intent == "career-advice" and not route:
-        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        # Detect sub-intent: employer research vs general career/market
+        msg_lower = msg.lower()
+        if any(w in msg_lower for w in ["company", "employer", "working at", "culture at", "about abb", "about ubs",
+                                         "about novartis", "about roche", "about google", "startup vs"]):
+            domain = _INTENT_PROMPTS.get("employer", "")
+        elif any(w in msg_lower for w in ["rav", "unemployment", "arbeitslos", "compliance", "permit",
+                                           "bewilligung", "notice period", "kündigungsfrist"]):
+            domain = _INTENT_PROMPTS.get("compliance", "")
+        elif any(w in msg_lower for w in ["discourag", "anxious", "stressed", "motivated", "burnout",
+                                           "rejected", "overwhelm", "entmutigt", "frustrated"]):
+            domain = _INTENT_PROMPTS.get("emotional", "")
+        else:
+            domain = _INTENT_PROMPTS.get("career", "")
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context, domain_prompt=domain)
         _log_chat(msg, routed=True, service="career-advice", latency_ms=(_t.time() - t0) * 1000,
                   ai_response=ai_resp, client_ip=client_ip)
         if mem_key:
@@ -1723,10 +2045,43 @@ async def chat_route(request: Request):
         return {"routed": True, "service": "profile", "intent": intent,
                 "data": None, "ai_response": ai_resp}
 
-    # All remaining intents → general chat
+    # All remaining intents → general chat with domain-aware prompts
     if not route:
-        # For classified intents without dedicated service proxy, use AI general chat
-        ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        # Plan 145: Detect domain from message content for enriched responses
+        msg_lower = msg.lower()
+        _domain = ""
+        if any(w in msg_lower for w in ["interview", "prepare", "star method", "mock", "vorstellungsgespräch", "entretien"]):
+            _domain = _INTENT_PROMPTS.get("interview", "")
+        elif any(w in msg_lower for w in ["discourag", "anxious", "stress", "motivat", "burnout", "reject",
+                                           "overwhelm", "imposter", "entmutigt", "frustrated", "lonely"]):
+            _domain = _INTENT_PROMPTS.get("emotional", "")
+            # Plan 146: Track emotional state via emotional_intelligence_system
+            if user_id and user_id != "anon":
+                _detected_emotion = "neutral"
+                for _ew, _em in [("discourag", "discouraged"), ("anxious", "anxious"), ("stress", "stressed"),
+                                  ("motivat", "motivated"), ("burnout", "overwhelmed"), ("reject", "discouraged"),
+                                  ("overwhelm", "overwhelmed"), ("imposter", "anxious"), ("frustrated", "frustrated")]:
+                    if _ew in msg_lower:
+                        _detected_emotion = _em
+                        break
+                try:
+                    async with _sync_httpx.AsyncClient(timeout=3.0) as _emc:
+                        await _emc.post(
+                            f"http://emotional-intelligence-system:{_get_service_port('emotional-intelligence-system')}/state/record",
+                            json={"user_id": user_id, "emotion": _detected_emotion,
+                                  "intensity": 0.7, "context": msg[:100]},
+                        )
+                except Exception:
+                    pass  # Non-fatal
+        elif any(w in msg_lower for w in ["company", "employer", "working at", "culture", "about abb",
+                                           "about ubs", "novartis", "roche", "google zurich"]):
+            _domain = _INTENT_PROMPTS.get("employer", "")
+        elif any(w in msg_lower for w in ["rav", "unemployment", "arbeitslos", "compliance", "permit",
+                                           "bewilligung", "kündigungsfrist"]):
+            _domain = _INTENT_PROMPTS.get("compliance", "")
+        elif any(w in msg_lower for w in ["salary", "gehalt", "salaire", "market", "demand", "trend"]):
+            _domain = _INTENT_PROMPTS.get("career", "")
+        ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context, domain_prompt=_domain)
         _log_chat(
             msg,
             routed=False,
@@ -2135,16 +2490,8 @@ async def upload_cv(request: Request):
                 }
             )
 
-    # Plan 138: Trigger gamification — award XP for CV upload
-    if user_id and user_id != "anon":
-        try:
-            async with _sync_httpx.AsyncClient(timeout=3.0) as gc:
-                await gc.post(
-                    f"http://gamification-service:{_get_service_port('gamification-service')}/achievements/unlock",
-                    json={"user_id": user_id, "achievement": "cv_uploaded", "points": 50},
-                )
-        except Exception:
-            pass  # Non-fatal — gamification is a bonus, not critical path
+    # Plan 142: Award XP for CV upload (50 XP)
+    await _award_xp(user_id, "cv_uploaded", 50)
 
     return {
         "status": "uploaded",
@@ -2278,6 +2625,239 @@ async def cover_letter_api(request: Request):
     except Exception as exc:
         logger.warning(f"Plan 132: Cover letter API failed: {exc}")
         return JSONResponse({"error": f"Cover letter service unavailable: {exc}"}, 503)
+
+
+@app.post("/api/cv/export-pdf")
+async def export_cv_pdf(request: Request):
+    """Plan 140: Generate professionally formatted CV PDF."""
+    try:
+        body = await request.json()
+        cv_text = body.get("cv_text", "")
+        version = body.get("version", "conservative")
+        if not cv_text or len(cv_text) < 100:
+            return JSONResponse({"error": "cv_text too short"}, 400)
+        async with _sync_httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "http://cv-processor:8020/export-cv-pdf",
+                json={"cv_text": cv_text, "version": version},
+            )
+            if resp.status_code == 200:
+                filename = f"cv_{version}_{_dt.now().strftime('%Y%m%d')}.pdf"
+                return Response(
+                    content=resp.content,
+                    media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+            return JSONResponse({"error": "PDF generation failed"}, resp.status_code)
+    except Exception as exc:
+        logger.warning(f"Plan 140: CV PDF export failed: {exc}")
+        return JSONResponse({"error": f"PDF export unavailable: {exc}"}, 503)
+
+
+@app.post("/api/cv/export-cover-letter-pdf")
+async def export_cover_letter_pdf(request: Request):
+    """Plan 140: Generate professionally formatted cover letter PDF."""
+    try:
+        body = await request.json()
+        text = body.get("cover_letter_text", "")
+        if not text or len(text) < 50:
+            return JSONResponse({"error": "cover_letter_text too short"}, 400)
+        async with _sync_httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                "http://cv-processor:8020/export-cover-letter-pdf",
+                json={
+                    "cover_letter_text": text,
+                    "applicant_name": body.get("applicant_name", ""),
+                    "company_name": body.get("company_name", ""),
+                    "job_title": body.get("job_title", ""),
+                },
+            )
+            if resp.status_code == 200:
+                company = body.get("company_name", "application").replace(" ", "_")[:20]
+                filename = f"cover_letter_{company}_{_dt.now().strftime('%Y%m%d')}.pdf"
+                return Response(
+                    content=resp.content,
+                    media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+            return JSONResponse({"error": "PDF generation failed"}, resp.status_code)
+    except Exception as exc:
+        logger.warning(f"Plan 140: Cover letter PDF export failed: {exc}")
+        return JSONResponse({"error": f"PDF export unavailable: {exc}"}, 503)
+
+
+# ── Plan 143: Subscription API endpoints ────────────────────────────────────
+
+@app.get("/api/subscription/plan")
+async def api_get_plan(request: Request):
+    """Plan 143: Get user's current subscription plan."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return JSONResponse({"plan": "Free", "status": "active", "amount_chf": 0}, 200)
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as c:
+            resp = await c.get(
+                f"http://subscription-management-service:{_get_service_port('subscription-management-service')}/plan",
+                params={"user_id": user_id},
+            )
+            if resp.status_code == 200:
+                return resp.json().get("data", {"plan": "Free"})
+    except Exception as exc:
+        logger.warning(f"Plan 143: Plan check failed: {exc}")
+    return {"plan": "Free", "status": "active", "amount_chf": 0}
+
+
+@app.post("/api/subscription/checkout")
+async def api_checkout(request: Request):
+    """Plan 143: Create Stripe Checkout session for Premium upgrade."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Auth required"}, 401)
+    try:
+        async with _sync_httpx.AsyncClient(timeout=15.0) as c:
+            resp = await c.post(
+                f"http://subscription-management-service:{_get_service_port('subscription-management-service')}/plan/checkout",
+                json={"user_id": user_id},
+            )
+            return resp.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"Checkout failed: {exc}"}, 503)
+
+
+@app.post("/api/subscription/cancel")
+async def api_cancel(request: Request):
+    """Plan 143: Cancel subscription."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Auth required"}, 401)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        async with _sync_httpx.AsyncClient(timeout=10.0) as c:
+            resp = await c.post(
+                f"http://subscription-management-service:{_get_service_port('subscription-management-service')}/plan/cancel",
+                json={"user_id": user_id, "reason": body.get("reason", "user_requested")},
+            )
+            if resp.status_code == 200:
+                _USER_PLAN.pop(user_id, None)  # Clear cache
+            return resp.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"Cancel failed: {exc}"}, 503)
+
+
+@app.get("/api/subscription/pricing")
+async def api_pricing(request: Request):
+    """Plan 143: Get pricing information."""
+    return {
+        "plans": [
+            {"name": "Free", "price_chf": 0,
+             "features": ["5 job searches/day", "CV analysis (read-only)", "Basic AI chat", "XP & badges"]},
+            {"name": "Premium", "price_chf": 29.00, "interval": "month",
+             "features": ["Unlimited job searches", "CV enhancement (3 versions)", "PDF export",
+                          "AIDA cover letters", "Full AI coaching", "XP offset against fee"]},
+        ],
+        "xp_offset": "100 XP = 1 CHF discount",
+    }
+
+
+@app.post("/api/stripe/webhook")
+async def api_stripe_webhook(request: Request):
+    """Plan 143: Stripe webhook handler (proxied to subscription service)."""
+    try:
+        payload = await request.body()
+        sig = request.headers.get("stripe-signature", "")
+        async with _sync_httpx.AsyncClient(timeout=10.0) as c:
+            resp = await c.post(
+                f"http://subscription-management-service:{_get_service_port('subscription-management-service')}/webhook/stripe",
+                content=payload,
+                headers={"stripe-signature": sig, "content-type": "application/json"},
+            )
+            return resp.json()
+    except Exception as exc:
+        return JSONResponse({"error": f"Webhook failed: {exc}"}, 400)
+
+
+# Plan 145: Admin endpoints with basic role check
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "jtp-admin-2026")  # Override via K8s secret for production
+
+
+@app.get("/api/admin/system-status")
+async def api_admin_system_status(request: Request):
+    """Plan 145: Admin-only system status overview."""
+    auth = request.headers.get("x-admin-token", "")
+    if auth != ADMIN_TOKEN:
+        return JSONResponse({"error": "Admin access required. Set x-admin-token header."}, 403)
+
+    return {
+        "admin": True,
+        "system": {
+            "gateway_version": 7,
+            "docker_image": os.getenv("BUILD_TIME", "unknown"),
+            "pods": "check /service-dashboard for live status",
+            "ai_engine": "anthropic" if ANTHROPIC_API_KEY else "none",
+            "intent_cache_size": len(_INTENT_CACHE),
+            "active_conversations": len(_CONV_MEMORY),
+            "cv_contexts_cached": len(_USER_CV_CONTEXT),
+            "plan_cache_size": len(_USER_PLAN),
+            "doc_sessions_active": len(_USER_DOC_SESSION),
+        },
+        "ai_stats": dict(_AI_CALL_STATS),
+        "chat_stats": dict(_CHAT_STATS) if "_CHAT_STATS" in dir() else {},
+    }
+
+
+@app.get("/api/rav/monthly-report")
+async def api_rav_monthly_report(request: Request):
+    """Plan 145: Generate monthly RAV compliance report from application tracking data."""
+    user_id = _get_user_id(request)
+    if not user_id:
+        return JSONResponse({"error": "Auth required"}, 401)
+
+    # Fetch applications from Pinecone
+    applications = []
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as c:
+            resp = await c.get(f"http://memory-system:8009/history/{user_id}",
+                              params={"entity_type": "application"})
+            if resp.status_code == 200:
+                for entry in resp.json().get("history", []):
+                    try:
+                        app_data = json.loads(entry.get("data", "{}")) if isinstance(entry.get("data"), str) else entry.get("data", {})
+                        applications.append(app_data)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+    except Exception:
+        pass
+
+    # Calculate monthly stats
+    from datetime import datetime as _rav_dt
+    current_month = _rav_dt.now().strftime("%Y-%m")
+    monthly_apps = [a for a in applications if a.get("applied_at", "").startswith(current_month)
+                    or a.get("timestamp", "").startswith(current_month)]
+    interviews = [a for a in monthly_apps if a.get("status") in ("interviewed", "interview")]
+
+    return {
+        "user_id": user_id,
+        "month": current_month,
+        "rav_report": {
+            "applications_submitted": len(monthly_apps),
+            "interviews_attended": len(interviews),
+            "total_tracked": len(applications),
+            "rav_minimum": 10,  # Typical RAV requirement
+            "compliant": len(monthly_apps) >= 10,
+            "applications": [{"company": a.get("company", "?"), "role": a.get("role", "?"),
+                             "date": a.get("applied_at", a.get("timestamp", "?"))[:10],
+                             "status": a.get("status", "pending")}
+                            for a in monthly_apps[:20]],
+        },
+        "recommendation": (
+            f"You've submitted {len(monthly_apps)} applications this month. "
+            + ("Great — you meet the typical RAV minimum of 10!" if len(monthly_apps) >= 10
+               else f"You need {10 - len(monthly_apps)} more to meet the typical RAV minimum of 10.")
+        ),
+    }
 
 
 @app.get("/api/profile")
@@ -2440,16 +3020,8 @@ async def create_application(request: Request):
     except Exception:
         pass
 
-    # Plan 138: Trigger gamification — award XP for application submission
-    if user_id and user_id != "anon":
-        try:
-            async with _sync_httpx.AsyncClient(timeout=3.0) as gc:
-                await gc.post(
-                    f"http://gamification-service:{_get_service_port('gamification-service')}/achievements/unlock",
-                    json={"user_id": user_id, "achievement": "application_submitted", "points": 30},
-                )
-        except Exception:
-            pass
+    # Plan 142: Award XP for application submission (30 XP)
+    await _award_xp(user_id, "application_submitted", 30)
 
     return {"status": "tracked", "application": body}
 
