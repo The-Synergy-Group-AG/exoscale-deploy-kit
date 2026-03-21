@@ -376,6 +376,15 @@ def main() -> int:
         ("employer/market", "_patch_employer_research_wiring.py", "swiss_market_service"),
         ("user_profile", "_patch_user_profile_wiring.py", "user_profile_service"),
         ("notification", "_patch_notification_wiring.py", "notification_service"),
+        ("email", "_patch_email_wiring.py", "email_integration_service"),
+        ("affiliate", "_patch_affiliate_wiring.py", "affiliate_manager_service"),
+        ("crm", "_patch_crm_wiring.py", "crm_integration_service"),
+        ("credit_system", "_patch_credit_system_wiring.py", "credit_system_service"),
+        ("retention", "_patch_retention_wiring.py", "real_time_data_refresher"),
+        ("personality", "_patch_personality_assessment.py", "cognitive_assistance_engine"),
+        ("wheel_of_life", "_patch_wheel_of_life.py", "self_awareness_integrator"),
+        ("vision_mission", "_patch_vision_mission.py", "decision_support_service"),
+        ("portfolio", "_patch_portfolio_wiring.py", "document_management_service"),
     ]:
         _p145_path = SCRIPT_DIR / _p145_file
         if _p145_path.exists():
@@ -420,6 +429,39 @@ def main() -> int:
             _ok("Plan 142: Gamification service already patched")
         else:
             _warn(f"Plan 142: Gamification patch result: {_gp_result.stdout.strip()}")
+
+    # ── L62: Re-sync patched services from source → destination ────────────
+    # Patches modify source (generated-v*/services/*/src/main.py) but the
+    # sync already copied UNPATCHED files to service/services/. Re-copy the
+    # patched main.py files so the Docker build workspace has the real code.
+    _PATCHED_SERVICES = [
+        "interview_prep_service",
+        "emotional_intelligence_system",
+        "swiss_market_service",
+        "user_profile_service",
+        "notification_service",
+        "email_integration_service",
+        "affiliate_manager_service",
+        "crm_integration_service",
+        "subscription_management_service",
+        "gamification_service",
+        "credit_system_service",
+        "real_time_data_refresher",
+        "cognitive_assistance_engine",
+        "self_awareness_integrator",
+        "decision_support_service",
+        "document_management_service",
+    ]
+    _resync_count = 0
+    services_src = gen_path / "services"
+    for _svc_name in _PATCHED_SERVICES:
+        _src_main = services_src / _svc_name / "src" / "main.py"
+        _dst_main = DEST / _svc_name / "main.py"
+        if _src_main.exists() and _dst_main.parent.exists():
+            shutil.copy2(_src_main, _dst_main)
+            _resync_count += 1
+    if _resync_count:
+        _ok(f"L62: Re-synced {_resync_count} patched services to Docker build workspace")
 
     print()
     if exit_code == 0:

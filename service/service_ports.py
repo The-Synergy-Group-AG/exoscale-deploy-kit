@@ -23,22 +23,24 @@ Usage:
 # services in shared/ with their own Uvicorn entrypoints.
 AI_BACKENDS: dict[str, dict] = {
     # Consciousness layer (shared/consciousness/)
-    "memory-system":       {"port": 8009, "source": "shared/consciousness/memory_system",      "category": "consciousness"},
-    "learning-system":     {"port": 8010, "source": "shared/consciousness/learning_system",    "category": "consciousness"},
-    "pattern-recognition": {"port": 8011, "source": "shared/consciousness/pattern_recognition", "category": "consciousness"},
-    "decision-making":     {"port": 8012, "source": "shared/consciousness/decision_making",    "category": "consciousness"},
-
+    "memory-system": {"port": 8009, "source": "shared/consciousness/memory_system", "category": "consciousness"},
+    "learning-system": {"port": 8010, "source": "shared/consciousness/learning_system", "category": "consciousness"},
+    "pattern-recognition": {
+        "port": 8011,
+        "source": "shared/consciousness/pattern_recognition",
+        "category": "consciousness",
+    },
+    "decision-making": {"port": 8012, "source": "shared/consciousness/decision_making", "category": "consciousness"},
     # Extended layer (shared/extended/)
-    "career-navigator":    {"port": 8017, "source": "shared/extended/career_navigator",  "category": "extended"},
-    "skill-bridge":        {"port": 8018, "source": "shared/extended/skill_bridge",      "category": "extended"},
-    "job-matcher":          {"port": 8019, "source": "shared/extended/job_matcher",       "category": "extended"},
-    "cv-processor":        {"port": 8020, "source": "shared/extended/cv_processor",      "category": "extended"},
-
+    "career-navigator": {"port": 8017, "source": "shared/extended/career_navigator", "category": "extended"},
+    "skill-bridge": {"port": 8018, "source": "shared/extended/skill_bridge", "category": "extended"},
+    "job-matcher": {"port": 8019, "source": "shared/extended/job_matcher", "category": "extended"},
+    "cv-processor": {"port": 8020, "source": "shared/extended/cv_processor", "category": "extended"},
     # AI layer (shared/ai/)
-    "gpt4-orchestrator":   {"port": 8032, "source": "shared/ai/gpt4_orchestrator",     "category": "ai"},
-    "claude-integration":  {"port": 8033, "source": "shared/ai/claude_integration",    "category": "ai"},
-    "embeddings-engine":   {"port": 8034, "source": "shared/ai/embeddings_engine",     "category": "ai"},
-    "vector-store":        {"port": 8035, "source": "shared/ai/vector_store",          "category": "ai"},
+    "gpt4-orchestrator": {"port": 8032, "source": "shared/ai/gpt4_orchestrator", "category": "ai"},
+    "claude-integration": {"port": 8033, "source": "shared/ai/claude_integration", "category": "ai"},
+    "embeddings-engine": {"port": 8034, "source": "shared/ai/embeddings_engine", "category": "ai"},
+    "vector-store": {"port": 8035, "source": "shared/ai/vector_store", "category": "ai"},
 }
 
 # ── Default port for generated factory services (219 services) ──────────
