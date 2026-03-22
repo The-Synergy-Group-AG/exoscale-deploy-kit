@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-_patch_universal_persistence.py — Inject real Pinecone persistence into ALL services
-====================================================================================
-Plan 149: Replaces in-memory demo `_pool` data with real Pinecone-backed persistence
-for every factory-generated service that doesn't already have a dedicated patch.
+_patch_universal_persistence.py — Inject real persistence into ALL services
+===========================================================================
+Plan 153: Uses memory-system:8009 REST API (PostgreSQL+pgvector backend).
+Replaces in-memory demo `_pool` data with real persistence for every
+factory-generated service that doesn't already have a dedicated patch.
 
 Each service gets:
-  - _store_event() / _get_events() helpers using memory-system:8009
+  - _store_event() / _get_events() helpers using memory-system:8009 /store + /history
   - Local _EVENT_CACHE for instant consistency
   - Real CRUD operations that persist user data across pod restarts
   - Domain-specific event types based on the service's domain
@@ -44,67 +45,63 @@ SKIP_SERVICES = {
 }
 
 PERSISTENCE_CODE = '''
-# ── Plan 149: Universal Pinecone Persistence ─────────────────────────────────
+# ── Plan 153: Universal Persistence (PostgreSQL+pgvector via memory-system) ──
 import asyncio as _asyncio
-import hashlib as _hashlib
 SERVICE_NAME = config.get("service_name", "unknown_service")
 _PERSISTENCE_URL = os.environ.get("PERSISTENCE_SERVICE_URL", "http://memory-system.exo-jtp-prod.svc.cluster.local:8009")
 _EVENT_CACHE: dict = {}
 
 async def _store_event(user_id: str, event_type: str, payload: dict):
-    """Store event to Pinecone via memory-system (async, non-blocking)."""
+    """Store event to PostgreSQL via memory-system REST API (async, non-blocking)."""
     _ts = time.time()
-    _key = f"{user_id}:{event_type}:{_ts}"
     _cache_key = f"{user_id}:{event_type}"
     _EVENT_CACHE.setdefault(_cache_key, []).append({**payload, "timestamp": _ts})
     try:
-        _vec = [float(_hashlib.md5(f"{_key}{i}".encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
-                for i in range(384)]
-        async with httpx.AsyncClient(timeout=3.0) as _hc:
-            await _hc.post(f"{_PERSISTENCE_URL}/vectors/upsert", json={
-                "vectors": [{"id": _key, "values": _vec, "metadata": {
-                    "user_id": user_id, "event_type": event_type,
-                    "entity_type": SERVICE_NAME.replace("_service", ""),
-                    "timestamp": _ts, **{k: str(v)[:200] for k, v in payload.items()}
-                }}]
+        _entity_type = SERVICE_NAME.replace("_service", "")
+        async with httpx.AsyncClient(timeout=5.0) as _hc:
+            await _hc.post(f"{_PERSISTENCE_URL}/store", json={
+                "user_id": user_id,
+                "entity_type": _entity_type,
+                "data": json.dumps({**payload, "event_type": event_type, "timestamp": _ts}),
+                "entity_id": f"{user_id}_{_entity_type}_{int(_ts * 1000)}",
             })
     except Exception:
         pass
 
 async def _get_events(user_id: str, event_type: str) -> list:
-    """Retrieve events from cache + Pinecone."""
+    """Retrieve events from cache + PostgreSQL via memory-system REST API."""
     _cache_key = f"{user_id}:{event_type}"
-    cached = _EVENT_CACHE.get(_cache_key, [])
+    cached = list(_EVENT_CACHE.get(_cache_key, []))
     try:
-        _qvec = [float(_hashlib.md5(f"{user_id}:{event_type}{i}".encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
-                 for i in range(384)]
-        async with httpx.AsyncClient(timeout=3.0) as _hc:
-            resp = await _hc.post(f"{_PERSISTENCE_URL}/query", json={
-                "vector": _qvec, "top_k": 50, "include_metadata": True,
-                "filter": {"user_id": {"$eq": user_id}, "event_type": {"$eq": event_type}}
-            })
+        _entity_type = SERVICE_NAME.replace("_service", "")
+        async with httpx.AsyncClient(timeout=5.0) as _hc:
+            resp = await _hc.get(
+                f"{_PERSISTENCE_URL}/history/{user_id}",
+                params={"entity_type": _entity_type},
+            )
             if resp.status_code == 200:
-                matches = resp.json().get("matches", [])
-                remote = [m.get("metadata", {}) for m in matches]
-                seen = {e.get("timestamp") for e in cached}
-                for r in remote:
-                    ts = float(r.get("timestamp", 0))
-                    if ts not in seen:
-                        cached.append(r)
-                        seen.add(ts)
+                for entry in resp.json().get("history", []):
+                    try:
+                        data = json.loads(entry.get("data", "{}")) if isinstance(entry.get("data"), str) else entry.get("data", {})
+                        ts = data.get("timestamp", entry.get("timestamp", 0))
+                        seen_ts = {e.get("timestamp") for e in cached}
+                        if ts not in seen_ts:
+                            cached.append(data)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
     except Exception:
         pass
     return sorted(cached, key=lambda x: float(x.get("timestamp", 0)), reverse=True)
-# ── End Plan 149 persistence ──────────────────────────────────────────────────
+# ── End Plan 153 persistence ─────────────────────────────────────────────────
 '''
 
 
 def patch_service(main_py: Path) -> bool:
-    """Inject Pinecone persistence into a service's main.py."""
+    """Inject persistence into a service's main.py via memory-system REST API."""
     content = main_py.read_text(encoding="utf-8")
 
-    # Skip if already patched
-    if "Plan 149: Universal Pinecone Persistence" in content:
+    # Skip if already patched (Plan 149 or Plan 153)
+    if "Plan 149: Universal Pinecone Persistence" in content or "Plan 153: Universal Persistence" in content:
         return False
 
     # Skip if has dedicated patch markers
@@ -181,7 +178,7 @@ def main():
         else:
             skipped_already += 1
 
-    print(f"[universal-patch] PATCHED {patched} services with Pinecone persistence")
+    print(f"[universal-patch] PATCHED {patched} services with PostgreSQL persistence (Plan 153)")
     print(f"[universal-patch] Skipped {skipped_dedicated} (dedicated patches), {skipped_already} (already patched)")
     return 0
 

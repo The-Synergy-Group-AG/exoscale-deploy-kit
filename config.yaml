@@ -9,7 +9,7 @@
 # =============================================================
 project_name: jtp-test1
 service_name: docker-jtp
-service_version: '79'
+service_version: '86'
 docker_hub_user: iandrewitz
 environment: production
 exoscale_zone: ch-dk-2
@@ -37,7 +37,12 @@ ingress:
   domain: jobtrackerpro.ch
   cert_email: andrewitz@gmail.com
 database:
-  enabled: false
+  enabled: true
+  type: pg
+  version: '16'
+  plan: startup-4
+  persist_on_teardown: true
+  termination_protection: true
 autoscaling:
   enabled: true
   min_replicas: 1

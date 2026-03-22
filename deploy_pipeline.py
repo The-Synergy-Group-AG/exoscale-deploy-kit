@@ -1508,6 +1508,8 @@ def stage_dbaas() -> dict | None:
     log(f"Creating DBaaS service: {db_name}")
     log(f"  type={db_type}  plan={db_plan}  version={db_ver}")
 
+    # Plan 153: Idempotent creation — reuse existing DBaaS if persist_on_teardown
+    _already_exists = False
     try:
         if db_type == "pg":
             c.create_dbaas_service_pg(
@@ -1533,11 +1535,17 @@ def stage_dbaas() -> dict | None:
             warn(f"DBaaS type '{db_type}' not yet supported in pipeline -- skipping")
             return None
     except Exception as e:
-        warn(f"DBaaS creation failed: {str(e)[:150]}")
-        warn("DBaaS skipped -- continuing pipeline")
-        return None
+        _err = str(e).lower()
+        if "already exists" in _err or "409" in _err or "conflict" in _err:
+            ok(f"DBaaS '{db_name}' already exists — reusing (persist_on_teardown)")
+            _already_exists = True
+        else:
+            warn(f"DBaaS creation failed: {str(e)[:150]}")
+            warn("DBaaS skipped -- continuing pipeline")
+            return None
 
-    ok(f"DBaaS {db_type} service '{db_name}' creation initiated")
+    if not _already_exists:
+        ok(f"DBaaS {db_type} service '{db_name}' creation initiated")
 
     log("Waiting for DBaaS service to be ready (3-15 minutes)...")
     deadline = time.time() + 900
@@ -1575,6 +1583,43 @@ def stage_dbaas() -> dict | None:
         pg_uri = uris[0] if uris else None
 
     ok(f"DBaaS {db_type} '{db_name}' is RUNNING ({elapsed(t0)})")
+
+    # Plan 153: Initialize pgvector extension + schema for PostgreSQL
+    if db_type == "pg" and pg_uri:
+        _pgvector_schema = """
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE TABLE IF NOT EXISTS entities (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    data JSONB NOT NULL DEFAULT '{}',
+    embedding vector(1536),
+    context TEXT[] DEFAULT '{}',
+    analysis TEXT DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_entities_user_type ON entities (user_id, entity_type);
+CREATE INDEX IF NOT EXISTS idx_entities_user_type_ts ON entities (user_id, entity_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_entities_user ON entities (user_id);
+CREATE INDEX IF NOT EXISTS idx_entities_data_gin ON entities USING gin (data);
+"""
+        log("Initializing pgvector extension + schema...")
+        try:
+            _r = subprocess.run(
+                ["psql", pg_uri, "-c", _pgvector_schema],
+                capture_output=True, text=True, timeout=30,
+            )
+            if _r.returncode == 0:
+                ok("pgvector extension + schema initialized")
+            else:
+                warn(f"Schema init warning: {_r.stderr[:150]}")
+                log("  memory-system will self-initialize on startup (belt + suspenders)")
+        except FileNotFoundError:
+            log("  psql not available locally — memory-system will self-initialize on startup")
+        except Exception as _e:
+            warn(f"Schema init: {str(_e)[:100]} — memory-system will self-initialize on startup")
+
     db_result = {
         "name": db_name,
         "type": db_type,

@@ -191,6 +191,9 @@ spec:
             - secretRef:
                 name: ai-api-keys
                 optional: true
+            - secretRef:
+                name: db-credentials
+                optional: true
           resources:
             requests:
               cpu: "{resources['cpu_request']}"
@@ -371,6 +374,9 @@ spec:
                 optional: true
             - secretRef:
                 name: ai-api-keys
+                optional: true
+            - secretRef:
+                name: db-credentials
                 optional: true
           resources:
             requests:

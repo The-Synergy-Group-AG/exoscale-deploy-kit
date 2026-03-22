@@ -614,6 +614,15 @@ def teardown(args: argparse.Namespace) -> None:
 
     # ── Step 2b: Delete DBaaS Service ────────────────────────────────────
     section("Step 2b: DBaaS Teardown")
+    # Plan 153: persist_on_teardown protects DBaaS from deletion (Swiss data sovereignty)
+    _db_cfg = cfg.get("database", {})
+    if _db_cfg.get("persist_on_teardown", False) and proj_dbaas:
+        ok("DBaaS PRESERVED (persist_on_teardown=true) — data survives teardown")
+        for db in proj_dbaas:
+            ok(f"  Kept: {db['name']} (type={db.get('type', 'pg')})")
+            results["preserved"] = results.get("preserved", [])
+            results["preserved"].append({"type": "dbaas", "name": db["name"]})
+        proj_dbaas = []  # Clear so the deletion loop below is skipped
     for db in proj_dbaas:
         db_svc_name = db["name"]
         db_type     = db.get("type", "pg")

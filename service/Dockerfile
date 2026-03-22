@@ -14,7 +14,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Plan 140: WeasyPrint build deps (cffi needs libffi-dev)
-RUN apt-get update && apt-get install -y build-essential libffi-dev libpango1.0-dev libcairo2-dev && rm -rf /var/lib/apt/lists/*
+# Plan 153: asyncpg needs libpq-dev for PostgreSQL+pgvector
+RUN apt-get update && apt-get install -y build-essential libffi-dev libpango1.0-dev libcairo2-dev libpq-dev && rm -rf /var/lib/apt/lists/*
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -33,9 +34,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BUILD_TIME=""
 
 # Plan 140: WeasyPrint needs pango, cairo, gdk-pixbuf for PDF generation
+# Plan 153: asyncpg runtime needs libpq5 for PostgreSQL connection
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libgdk-pixbuf-2.0-0 \
-    libffi8 fonts-dejavu-core \
+    libffi8 fonts-dejavu-core libpq5 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r appuser && useradd -r -g appuser appuser
 
