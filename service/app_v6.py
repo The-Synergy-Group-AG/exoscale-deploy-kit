@@ -756,7 +756,8 @@ _INTENT_PROMPTS = {
         "ATS optimization, and how Swiss employers evaluate applications differently. "
         "When asked to enhance a CV, explain the 3 available versions: "
         "Conservative Swiss (2-page Europass), Modern Professional (ATS-optimized), Executive Summary (1-page impact). "
-        "Guide users to upload their CV first, then request enhancement."
+        "If the user wants to enhance their CV, tell them to type 'enhance my CV' or click the CV Enhancement button — "
+        "the platform handles it automatically. Never say 'ask the AI to...' — YOU are the AI."
     ),
     "interview": (
         "You are a Swiss interview preparation coach. Help users prepare for job interviews "
@@ -955,7 +956,8 @@ async def _ai_respond(
             "You have deep knowledge of the Swiss job market, career development, and professional networking. "
             "Be helpful, specific, and actionable. Format key information clearly with markdown. "
             "Keep responses under 200 words. Never mention internal service names or technical details. "
-            "NEVER say you don't have access to jobs — the platform searches jobs.ch for specific queries.\n\n"
+            "NEVER say you don't have access to jobs — the platform searches jobs.ch for specific queries.\n"
+            "NEVER say 'ask the AI to...' or 'tell the AI to...' — YOU ARE the AI. Instead, tell the user what to type or click.\n\n"
             "PLATFORM CAPABILITIES:\n"
             "- LIVE job search from jobs.ch (user specifies role + location)\n"
             "- CV upload (PDF/DOCX) with AI analysis and Swiss format review\n"
@@ -1699,14 +1701,23 @@ async def chat_route(request: Request):
 
     # ── Intent: cv-enhance ──
     if intent == "cv-enhance":
+        # Plan 150: Check if user pasted CV text directly in their message
         cv_text = await _ensure_cv_context()
+        if not cv_text and len(msg) > 150:
+            # User likely pasted their CV text directly — use it
+            cv_text = msg[:5000]
+            if user_id:
+                _USER_CV_CONTEXT[user_id] = cv_text
+                logger.info(f"Plan 150: Accepted pasted CV text from {user_id} ({len(cv_text)} chars)")
         if not cv_text:
-            # No CV uploaded — guide user
+            # No CV uploaded — ask user to paste or upload
             ai_resp = (
-                "I'd love to enhance your CV! To generate 3 optimized versions "
-                "(Conservative Swiss, Modern Professional, Executive Summary), "
-                "please **upload your CV first** using the 📄 button above. "
-                "Once uploaded, just say 'enhance my CV' and I'll create all 3 versions."
+                "I'd love to enhance your CV! I can generate **3 optimized versions** "
+                "(Conservative Swiss, Modern Professional, Executive Summary).\n\n"
+                "**Two ways to get started:**\n"
+                "1. **Paste your CV text** right here in the chat\n"
+                "2. **Upload a file** using the 📄 button above (PDF/DOCX)\n\n"
+                "Once I have your CV, I'll immediately create all 3 versions for you!"
             )
             if mem_key:
                 if mem_key not in _CONV_MEMORY:
@@ -1798,9 +1809,11 @@ async def chat_route(request: Request):
         cv_text = await _ensure_cv_context()
         if not cv_text:
             ai_resp = (
-                "I can generate a professional AIDA cover letter for you! "
-                "Please **upload your CV first** using the 📄 button, then say "
-                "'Write a cover letter for [Company Name] - [Job Title]'."
+                "I can generate a professional AIDA cover letter for you!\n\n"
+                "**To get started**, I need your CV. You can either:\n"
+                "1. **Paste your CV text** in the chat, then say 'write a cover letter for [Company]'\n"
+                "2. **Upload a file** using the 📄 button (PDF/DOCX)\n\n"
+                "Once I have your CV, just tell me the company and job title!"
             )
         else:
             # Extract company and job from message

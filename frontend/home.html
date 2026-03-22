@@ -63,6 +63,8 @@
   .qp:hover{border-color:#38bdf8;color:#38bdf8}
 
   .thinking{color:#64748b;font-style:italic;font-size:.8rem}
+  .thinking.pulse{animation:thinkPulse 1.5s ease-in-out infinite}
+  @keyframes thinkPulse{0%,100%{opacity:1}50%{opacity:.5}}
   .err{color:#f87171}
   pre.json-dump{background:#0f172a;border:1px solid #334155;border-radius:.4rem;padding:.6rem;font-size:.72rem;overflow-x:auto;color:#94a3b8;max-width:480px}
   .ai-resp{line-height:1.6;color:#e2e8f0}
@@ -669,12 +671,31 @@ async function sendMessage() {
 
   appendMsg('user', esc(msg));
   // Plan 133: Universal 120s timeout — AI intent classifier handles routing server-side
-  // Animated progress indicator while waiting
-  const thinkId = appendMsg('bot', '<span class="thinking">Processing</span>');
+  // Staged progress indicator — CV enhancement shows realistic stages, others show generic dots
+  const _isCvEnhance = /\b(enhance|improve|optimiz|rewrite|aufwerten|verbessern|améliorer|migliorare)\b.*\b(cv|resume|lebenslauf|résumé)\b/i.test(msg)
+    || /\b(cv|resume|lebenslauf|résumé)\b.*\b(enhance|improve|optimiz|rewrite|aufwerten|verbessern|améliorer|migliorare)\b/i.test(msg);
+  const _cvStages = [
+    {text: 'Analyzing your CV', delay: 0},
+    {text: 'Generating Conservative Swiss version', delay: 5000},
+    {text: 'Generating Modern Professional version', delay: 15000},
+    {text: 'Generating Executive Summary', delay: 25000},
+    {text: 'Finalizing 3 versions', delay: 35000},
+  ];
+  const thinkId = appendMsg('bot', '<span class="thinking pulse">' + (_isCvEnhance ? _cvStages[0].text + '...' : 'Processing') + '</span>');
   let _thinkDots = 0;
+  let _cvStageIdx = 0;
   const _thinkInterval = setInterval(() => {
     const el = document.querySelector(`#${thinkId} .thinking`);
-    if (el) { _thinkDots++; el.textContent = 'Processing' + '.'.repeat(_thinkDots % 4); }
+    if (!el) return;
+    _thinkDots++;
+    if (_isCvEnhance) {
+      const elapsed = _thinkDots * 600;
+      while (_cvStageIdx < _cvStages.length - 1 && elapsed >= _cvStages[_cvStageIdx + 1].delay) _cvStageIdx++;
+      el.textContent = _cvStages[_cvStageIdx].text + '.'.repeat((_thinkDots % 4) + 1);
+    } else {
+      el.textContent = 'Processing' + '.'.repeat(_thinkDots % 4);
+    }
+    scrollChat();
   }, 600);
   setSendDisabled(true);
 
@@ -688,7 +709,7 @@ async function sendMessage() {
       document.querySelectorAll('.msg').forEach(m => {
         const role = m.classList.contains('user') ? 'user' : 'assistant';
         const text = m.querySelector('.bubble')?.textContent?.trim() || '';
-        if (text && text.length > 2 && !text.startsWith('Processing')) historyMsgs.push({role, content: text.substring(0, 200)});
+        if (text && text.length > 2 && !text.startsWith('Processing') && !text.startsWith('Analyzing') && !text.startsWith('Generating') && !text.startsWith('Finalizing')) historyMsgs.push({role, content: text.substring(0, 200)});
       });
       const routeResp = await fetch('/chat/route', {
         method: 'POST',
