@@ -1058,7 +1058,7 @@ def stage_5c_ingress_tls(kubeconfig: str) -> None:
         # LESSON 59: admissionWebhooks.enabled=false removes the pre-install
         # webhook cert-generator Job that times out on fresh Exoscale clusters.
         "--set", "controller.admissionWebhooks.enabled=false",
-        "--version", "4.11.3", "--wait", "--timeout", "10m"
+        "--version", "4.15.1", "--wait", "--timeout", "10m"
     ])
     ok("nginx-ingress-controller deployed")
 
