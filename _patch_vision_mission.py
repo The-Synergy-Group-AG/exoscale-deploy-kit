@@ -21,6 +21,7 @@ from pathlib import Path
 _ENDPOINTS_CODE = '''
 
 import os as _vm_os
+import re as _vm_re
 from datetime import datetime as _vm_dt
 
 PERSISTENCE_SERVICE_URL = _vm_os.getenv("PERSISTENCE_SERVICE_URL",
@@ -199,7 +200,7 @@ async def values_rank(request: Request):
     usp_values = ", ".join(ordered_values[:3])
     old_usp = current.get("usp", "")
     if old_usp:
-        updated["usp"] = re.sub(r"driven by [^,]+(?:, [^,]+)*", f"driven by {usp_values}", old_usp)
+        updated["usp"] = _vm_re.sub(r"driven by [^,]+(?:, [^,]+)*", f"driven by {usp_values}", old_usp)
     await _store_vision_event(user_id, "vision_profile", updated)
     return {"service": "vision_mission_service", "endpoint": "/values/rank",
             "status": "ranked", "source": PERSISTENCE_PROVIDER,
