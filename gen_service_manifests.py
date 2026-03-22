@@ -548,10 +548,20 @@ def main() -> None:
         default=Path(__file__).parent / "outputs" / "k8s-services",
         help="Directory to write YAML files (default: outputs/k8s-services/)",
     )
+    # L64: Read image tag from config.yaml instead of hardcoding
+    _cfg_path = Path(__file__).parent / "config.yaml"
+    _default_image = "iandrewitz/docker-jtp:9"
+    if _cfg_path.exists():
+        import yaml as _yaml
+        _cfg = _yaml.safe_load(_cfg_path.read_text())
+        _hub = _cfg.get("docker_hub_user", "iandrewitz")
+        _svc = _cfg.get("service_name", "docker-jtp")
+        _ver = _cfg.get("service_version", "9")
+        _default_image = f"{_hub}/{_svc}:{_ver}"
     parser.add_argument(
         "--image",
-        default="iandrewitz/docker-jtp:9",
-        help="Docker image reference (default: iandrewitz/docker-jtp:9)",
+        default=_default_image,
+        help=f"Docker image reference (default: {_default_image})",
     )
     parser.add_argument(
         "--namespace",
