@@ -511,13 +511,20 @@ function openEditorFromResponse() {
   openEditor(raw, docType === 'cover_letter' ? 'cover_letter' : 'cv');
 }
 
+function getAuthHeaders() {
+  const h = {'Content-Type':'application/json'};
+  const tk = localStorage.getItem(TOKEN_KEY);
+  if (tk) h['Authorization'] = 'Bearer ' + tk;
+  return h;
+}
+
 async function downloadCvPdf(version) {
   const btn = event.target.closest('.pdf-btn');
   if (btn) { btn.classList.add('downloading'); btn.textContent = 'Generating...'; }
   try {
     const resp = await fetch('/api/cv/export-pdf', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', ...chatHeaders},
+      headers: getAuthHeaders(),
       body: JSON.stringify({cv_text: _lastAiResponse, version: version})
     });
     if (resp.ok) {
@@ -537,7 +544,7 @@ async function downloadCoverLetterPdf() {
   try {
     const resp = await fetch('/api/cv/export-cover-letter-pdf', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', ...chatHeaders},
+      headers: getAuthHeaders(),
       body: JSON.stringify({cover_letter_text: _lastAiResponse, applicant_name: '', company_name: '', job_title: ''})
     });
     if (resp.ok) {
@@ -618,9 +625,7 @@ async function sendMessage() {
     let resultHtml = '';
 
     try {
-      const chatHeaders = {'Content-Type':'application/json'};
-      const tk = localStorage.getItem(TOKEN_KEY);
-      if (tk) chatHeaders['Authorization'] = 'Bearer ' + tk;
+      const chatHeaders = getAuthHeaders();
       const historyMsgs = [];
       document.querySelectorAll('.msg').forEach(m => {
         const role = m.classList.contains('user') ? 'user' : 'assistant';
