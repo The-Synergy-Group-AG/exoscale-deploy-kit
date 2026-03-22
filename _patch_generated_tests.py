@@ -170,7 +170,7 @@ def main():
     # Bug 4 (L63): test_us_endpoints_operational sends GET to POST/PUT/DELETE endpoints
     # Fix: filter the endpoints list to only include GET-reachable paths
     ep_op_fixes = 0
-    for service_dir in services_dir.iterdir():
+    for service_dir in sorted(SERVICES_DIR.iterdir()):
         if not service_dir.is_dir():
             continue
         us_test = service_dir / "tests" / "user_stories" / "test_user_stories.py"
