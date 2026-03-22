@@ -1156,23 +1156,35 @@ def stage_5c_ingress_tls(kubeconfig: str) -> None:
             warn("  Manual fallback: python3 fix_k8s_nlb.py")
 
     # ── 5c-2: Update DNS (ISSUE-020: DNS BEFORE cert-manager) ────────────────
-    dns_cfg = cfg.get("dns", {})
-    if dns_cfg.get("enabled") and dns_cfg.get("zone_account") == "current":
-        log(f"5c-2: Updating DNS {domain} -> {ingress_lb_ip} (automated)...")
-        dns_script = KIT_DIR / "update_dns.py"
-        r = subprocess.run(
-            [sys.executable, str(dns_script), "--ip", ingress_lb_ip],
-            check=False
-        )
-        if r.returncode == 0:
-            ok(f"DNS updated: {domain} A {ingress_lb_ip}")
+    # L68: Auto-update DNS via Exoscale SDK (replaces update_dns.py)
+    log(f"5c-2: Updating DNS {domain} -> {ingress_lb_ip} (Exoscale SDK)...")
+    try:
+        _dns_client = Client(cfg["exo_key"], cfg["exo_secret"], zone=cfg["exoscale_zone"])
+        _domains = _dns_client.list_dns_domains().get("dns-domains", [])
+        _domain_id = None
+        for _d in _domains:
+            if _d.get("unicode-name") == domain:
+                _domain_id = _d["id"]
+                break
+        if _domain_id:
+            _records = _dns_client.list_dns_domain_records(domain_id=_domain_id).get("dns-domain-records", [])
+            _updated = 0
+            for _r in _records:
+                if _r["type"] == "A" and _r.get("content") != ingress_lb_ip:
+                    _dns_client.update_dns_domain_record(
+                        domain_id=_domain_id, record_id=_r["id"], content=ingress_lb_ip
+                    )
+                    _updated += 1
+                    log(f"  DNS A {_r.get('name', '@')} → {ingress_lb_ip} (was {_r.get('content')})")
+            if _updated:
+                ok(f"DNS updated: {_updated} A record(s) → {ingress_lb_ip}")
+            else:
+                ok(f"DNS already correct: {domain} → {ingress_lb_ip}")
         else:
-            warn(f"DNS update script returned non-zero -- verify manually: {domain} -> {ingress_lb_ip}")
-    else:
-        warn("5c-2: DNS automation disabled (dns.zone_account != current)")
-        warn(f"  ACTION REQUIRED: Update A record {domain} -> {ingress_lb_ip}")
-        warn(f"  cert-manager WILL FAIL until DNS resolves to {ingress_lb_ip}")
-        warn(f"  Re-run after DNS update: kubectl --insecure-skip-tls-verify apply -f ingress-tls.yaml")
+            warn(f"DNS zone '{domain}' not found in Exoscale account")
+    except Exception as _dns_err:
+        warn(f"DNS update failed (non-fatal): {_dns_err}")
+        warn(f"  Manual fix: set A record {domain} → {ingress_lb_ip}")
 
     # ── 5c-3: cert-manager via Helm ──────────────────────────────────────────
     log("5c-3: Deploying cert-manager (Helm)...")
