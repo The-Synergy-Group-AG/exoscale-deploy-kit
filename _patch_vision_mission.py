@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-_patch_vision_mission.py — Plan 149: Wire decision_support_service
+_patch_vision_mission.py — Plan 149: Wire vision_mission_service
 
 Vision/Mission/Values/USP builder:
 - POST /vision/build — Guided vision/mission builder (5 questions → AI generation)
@@ -97,7 +97,7 @@ def _build_vision_from_answers(answers):
 
 @app.get("/", summary="Service information")
 async def root():
-    return {"service": "decision_support_service", "type": "backend", "domain": "career_strategy",
+    return {"service": "vision_mission_service", "type": "backend", "domain": "career_strategy",
             "status": "running", "port": SERVICE_PORT, "version": "2.0.0-plan149",
             "persistence": PERSISTENCE_PROVIDER,
             "capabilities": ["vision_builder", "mission_refine", "values_ranking", "usp"],
@@ -105,12 +105,12 @@ async def root():
 
 @app.get("/health", summary="Health check")
 async def health():
-    return {"status": "healthy", "service": "decision_support_service", "port": SERVICE_PORT,
+    return {"status": "healthy", "service": "vision_mission_service", "port": SERVICE_PORT,
             "version": "2.0.0-plan149", "persistence": PERSISTENCE_PROVIDER, "timestamp": time.time()}
 
 @app.get("/metrics", summary="Metrics")
 async def metrics():
-    return {"service": "decision_support_service", "port": SERVICE_PORT, "uptime_seconds": time.time()}
+    return {"service": "vision_mission_service", "port": SERVICE_PORT, "uptime_seconds": time.time()}
 
 @app.post("/vision/build", summary="Guided vision/mission builder", status_code=201)
 async def vision_build(request: Request):
@@ -123,12 +123,12 @@ async def vision_build(request: Request):
         raise HTTPException(status_code=400, detail="user_id required")
     answers = body.get("answers", {})
     if not answers:
-        return {"service": "decision_support_service", "endpoint": "/vision/build",
+        return {"service": "vision_mission_service", "endpoint": "/vision/build",
                 "status": "questions", "data": {"questions": VISION_QUESTIONS},
                 "timestamp": time.time()}
     result = _build_vision_from_answers(answers)
     await _store_vision_event(user_id, "vision_profile", result)
-    return {"service": "decision_support_service", "endpoint": "/vision/build",
+    return {"service": "vision_mission_service", "endpoint": "/vision/build",
             "status": "created", "source": PERSISTENCE_PROVIDER,
             "data": result, "timestamp": time.time()}
 
@@ -139,9 +139,9 @@ async def vision_current(request: Request):
         raise HTTPException(status_code=400, detail="user_id required")
     profile = await _get_vision_latest(user_id, "vision_profile")
     if not profile:
-        return {"service": "decision_support_service", "endpoint": "/vision/current",
+        return {"service": "vision_mission_service", "endpoint": "/vision/current",
                 "status": "not_found", "data": None, "timestamp": time.time()}
-    return {"service": "decision_support_service", "endpoint": "/vision/current",
+    return {"service": "vision_mission_service", "endpoint": "/vision/current",
             "status": "ok", "source": PERSISTENCE_PROVIDER,
             "data": profile, "timestamp": time.time()}
 
@@ -176,7 +176,7 @@ async def mission_refine(request: Request):
         ],
     }
     await _store_vision_event(user_id, "vision_profile", refined)
-    return {"service": "decision_support_service", "endpoint": "/mission/refine",
+    return {"service": "vision_mission_service", "endpoint": "/mission/refine",
             "status": "refined", "source": PERSISTENCE_PROVIDER,
             "data": refined, "timestamp": time.time()}
 
@@ -201,7 +201,7 @@ async def values_rank(request: Request):
     if old_usp:
         updated["usp"] = re.sub(r"driven by [^,]+(?:, [^,]+)*", f"driven by {usp_values}", old_usp)
     await _store_vision_event(user_id, "vision_profile", updated)
-    return {"service": "decision_support_service", "endpoint": "/values/rank",
+    return {"service": "vision_mission_service", "endpoint": "/values/rank",
             "status": "ranked", "source": PERSISTENCE_PROVIDER,
             "data": {"core_values": ordered_values[:10], "usp": updated.get("usp", "")},
             "timestamp": time.time()}
@@ -213,16 +213,16 @@ async def get_usp(request: Request):
         raise HTTPException(status_code=400, detail="user_id required")
     profile = await _get_vision_latest(user_id, "vision_profile")
     if not profile:
-        return {"service": "decision_support_service", "endpoint": "/usp",
+        return {"service": "vision_mission_service", "endpoint": "/usp",
                 "status": "not_found", "data": None, "timestamp": time.time()}
-    return {"service": "decision_support_service", "endpoint": "/usp",
+    return {"service": "vision_mission_service", "endpoint": "/usp",
             "status": "ok", "source": PERSISTENCE_PROVIDER,
             "data": {"usp": profile.get("usp", ""), "core_values": profile.get("core_values", [])},
             "timestamp": time.time()}
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    return JSONResponse(status_code=exc.status_code, content={"service": "decision_support_service", "error": exc.detail})
+    return JSONResponse(status_code=exc.status_code, content={"service": "vision_mission_service", "error": exc.detail})
 
 if __name__ == "__main__":
     import uvicorn
@@ -251,6 +251,6 @@ def patch_service(service_dir):
 
 if __name__ == "__main__":
     gen = (Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / "CURRENT").read_text().strip()
-    svc = Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / gen / "services" / "decision_support_service"
+    svc = Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / gen / "services" / "vision_mission_service"
     if svc.exists():
         patch_service(svc)

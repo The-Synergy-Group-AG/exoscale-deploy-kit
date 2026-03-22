@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-_patch_wheel_of_life.py — Plan 149: Wire self_awareness_integrator
+_patch_wheel_of_life.py — Plan 149: Wire wheel_of_life_service
 
 Wheel of Life balance assessment tool:
 - Rate 8 life dimensions (1-10)
@@ -113,19 +113,19 @@ def _compute_trends(assessments):
 
 @app.get("/", summary="Service information")
 async def root():
-    return {"service": "self_awareness_integrator", "type": "backend", "domain": "wellness",
+    return {"service": "wheel_of_life_service", "type": "backend", "domain": "wellness",
             "status": "running", "port": SERVICE_PORT, "version": "2.0.0-plan149",
             "persistence": PERSISTENCE_PROVIDER,
             "capabilities": ["wheel_of_life", "dimension_assessment", "goal_setting", "trend_tracking"]}
 
 @app.get("/health", summary="Health check")
 async def health():
-    return {"status": "healthy", "service": "self_awareness_integrator", "port": SERVICE_PORT,
+    return {"status": "healthy", "service": "wheel_of_life_service", "port": SERVICE_PORT,
             "version": "2.0.0-plan149", "persistence": PERSISTENCE_PROVIDER, "timestamp": time.time()}
 
 @app.get("/metrics", summary="Metrics")
 async def metrics():
-    return {"service": "self_awareness_integrator", "port": SERVICE_PORT, "uptime_seconds": time.time()}
+    return {"service": "wheel_of_life_service", "port": SERVICE_PORT, "uptime_seconds": time.time()}
 
 @app.post("/wheel/assess", summary="Rate 8 life dimensions (1-10)", status_code=201)
 async def wheel_assess(request: Request):
@@ -152,7 +152,7 @@ async def wheel_assess(request: Request):
         "bottom_3_recommendations": analysis["bottom_3_recommendations"],
     }
     await _store_wol_event(user_id, "wol_assessment", assessment)
-    return {"service": "self_awareness_integrator", "endpoint": "/wheel/assess",
+    return {"service": "wheel_of_life_service", "endpoint": "/wheel/assess",
             "status": "created", "source": PERSISTENCE_PROVIDER,
             "data": assessment, "timestamp": time.time()}
 
@@ -163,12 +163,12 @@ async def wheel_result(request: Request):
         raise HTTPException(status_code=400, detail="user_id required")
     assessments = await _get_wol_events(user_id, "wol_assessment")
     if not assessments:
-        return {"service": "self_awareness_integrator", "endpoint": "/wheel/result",
+        return {"service": "wheel_of_life_service", "endpoint": "/wheel/result",
                 "status": "ok", "source": PERSISTENCE_PROVIDER,
                 "data": {"message": "No assessments found", "assessments": []},
                 "timestamp": time.time()}
     latest = assessments[-1]
-    return {"service": "self_awareness_integrator", "endpoint": "/wheel/result",
+    return {"service": "wheel_of_life_service", "endpoint": "/wheel/result",
             "status": "ok", "source": PERSISTENCE_PROVIDER,
             "data": {
                 "latest": latest,
@@ -214,7 +214,7 @@ async def wheel_goals(request: Request):
     }
     _GOALS_CACHE.setdefault(user_id, []).append(goal_record)
     await _store_wol_event(user_id, "wol_goal", goal_record)
-    return {"service": "self_awareness_integrator", "endpoint": "/wheel/goals",
+    return {"service": "wheel_of_life_service", "endpoint": "/wheel/goals",
             "status": "created", "source": PERSISTENCE_PROVIDER,
             "data": goal_record, "timestamp": time.time()}
 
@@ -225,7 +225,7 @@ async def wheel_history(request: Request):
         raise HTTPException(status_code=400, detail="user_id required")
     assessments = await _get_wol_events(user_id, "wol_assessment")
     trends = _compute_trends(assessments)
-    return {"service": "self_awareness_integrator", "endpoint": "/wheel/history",
+    return {"service": "wheel_of_life_service", "endpoint": "/wheel/history",
             "status": "ok", "source": PERSISTENCE_PROVIDER,
             "data": {
                 "assessments": assessments[-20:],
@@ -236,7 +236,7 @@ async def wheel_history(request: Request):
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    return JSONResponse(status_code=exc.status_code, content={"service": "self_awareness_integrator", "error": exc.detail})
+    return JSONResponse(status_code=exc.status_code, content={"service": "wheel_of_life_service", "error": exc.detail})
 
 if __name__ == "__main__":
     import uvicorn
@@ -265,6 +265,6 @@ def patch_service(service_dir):
 
 if __name__ == "__main__":
     gen = (Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / "CURRENT").read_text().strip()
-    svc = Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / gen / "services" / "self_awareness_integrator"
+    svc = Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / gen / "services" / "wheel_of_life_service"
     if svc.exists():
         patch_service(svc)

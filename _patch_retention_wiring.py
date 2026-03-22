@@ -232,7 +232,7 @@ if __name__ == "__main__":
     # Wire into notification_service since there's no dedicated retention service
     gen = (Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / "CURRENT").read_text().strip()
     # Try real-time-data-refresher as it handles periodic tasks
-    for svc_name in ["real_time_data_refresher", "notification_service"]:
+    for svc_name in ["retention_winback_service", "notification_service"]:
         svc = Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / gen / "services" / svc_name
         if svc.exists():
             patch_service(svc)

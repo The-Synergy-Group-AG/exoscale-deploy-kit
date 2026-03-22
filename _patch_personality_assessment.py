@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-_patch_personality_assessment.py — Plan 149: Wire cognitive_assistance_engine (port 8275)
+_patch_personality_assessment.py — Plan 149: Wire personality_assessment_service (port 8275)
 
 Jungian personality assessment system:
 - 12-question assessment probing Extrovert↔Introvert and Thinker↔Feeler axes
@@ -181,19 +181,19 @@ async def _get_assessment_history(user_id):
 
 @app.get("/", summary="Service information")
 async def root():
-    return {"service": "cognitive_assistance_engine", "type": "backend", "domain": "assessment",
+    return {"service": "personality_assessment_service", "type": "backend", "domain": "assessment",
             "status": "running", "port": SERVICE_PORT, "version": "2.0.0-plan149",
             "persistence": PERSISTENCE_PROVIDER,
             "capabilities": ["personality_assessment", "jungian_quadrants", "career_fit", "cv_tone"]}
 
 @app.get("/health", summary="Health check")
 async def health():
-    return {"status": "healthy", "service": "cognitive_assistance_engine", "port": SERVICE_PORT,
+    return {"status": "healthy", "service": "personality_assessment_service", "port": SERVICE_PORT,
             "version": "2.0.0-plan149", "persistence": PERSISTENCE_PROVIDER, "timestamp": time.time()}
 
 @app.get("/metrics", summary="Metrics")
 async def metrics():
-    return {"service": "cognitive_assistance_engine", "port": SERVICE_PORT, "uptime_seconds": time.time(),
+    return {"service": "personality_assessment_service", "port": SERVICE_PORT, "uptime_seconds": time.time(),
             "active_sessions": len(_SESSION_CACHE), "completed_assessments": sum(len(v) for v in _RESULT_CACHE.values())}
 
 @app.post("/assessment/start", summary="Start personality assessment", status_code=201)
@@ -217,7 +217,7 @@ async def assessment_start(request: Request):
     }
     _SESSION_CACHE[f"{user_id}_{session_id}"] = session
     first_q = _QUESTIONS[0]
-    return {"service": "cognitive_assistance_engine", "endpoint": "/assessment/start",
+    return {"service": "personality_assessment_service", "endpoint": "/assessment/start",
             "status": "started", "data": {
                 "session_id": session_id,
                 "total_questions": len(_QUESTIONS),
@@ -268,7 +268,7 @@ async def assessment_answer(request: Request):
         result["answers"] = session["answers"]
         session["result"] = result
         await _persist_assessment(user_id, result)
-        return {"service": "cognitive_assistance_engine", "endpoint": "/assessment/answer",
+        return {"service": "personality_assessment_service", "endpoint": "/assessment/answer",
                 "status": "completed", "data": {
                     "completed": True,
                     "quadrant": result["quadrant"],
@@ -278,7 +278,7 @@ async def assessment_answer(request: Request):
     # Return next question
     next_idx = session["current_index"]
     next_q = _QUESTIONS[next_idx]
-    return {"service": "cognitive_assistance_engine", "endpoint": "/assessment/answer",
+    return {"service": "personality_assessment_service", "endpoint": "/assessment/answer",
             "status": "answered", "data": {
                 "completed": False,
                 "answered": len(session["answers"]),
@@ -311,7 +311,7 @@ async def assessment_result(request: Request):
         if not history:
             raise HTTPException(status_code=404, detail="No assessment results found for this user")
         result = history[-1]
-    return {"service": "cognitive_assistance_engine", "endpoint": "/assessment/result",
+    return {"service": "personality_assessment_service", "endpoint": "/assessment/result",
             "status": "ok", "source": PERSISTENCE_PROVIDER,
             "data": result, "timestamp": time.time()}
 
@@ -321,14 +321,14 @@ async def assessment_history(request: Request):
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id required")
     history = await _get_assessment_history(user_id)
-    return {"service": "cognitive_assistance_engine", "endpoint": "/assessment/history",
+    return {"service": "personality_assessment_service", "endpoint": "/assessment/history",
             "status": "ok", "source": PERSISTENCE_PROVIDER,
             "data": {"assessments": history[-20:], "total": len(history)},
             "timestamp": time.time()}
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    return JSONResponse(status_code=exc.status_code, content={"service": "cognitive_assistance_engine", "error": exc.detail})
+    return JSONResponse(status_code=exc.status_code, content={"service": "personality_assessment_service", "error": exc.detail})
 
 if __name__ == "__main__":
     import uvicorn
@@ -357,6 +357,6 @@ def patch_service(service_dir):
 
 if __name__ == "__main__":
     gen = (Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / "CURRENT").read_text().strip()
-    svc = Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / gen / "services" / "cognitive_assistance_engine"
+    svc = Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / gen / "services" / "personality_assessment_service"
     if svc.exists():
         patch_service(svc)

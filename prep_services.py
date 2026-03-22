@@ -380,11 +380,11 @@ def main() -> int:
         ("affiliate", "_patch_affiliate_wiring.py", "affiliate_manager_service"),
         ("crm", "_patch_crm_wiring.py", "crm_integration_service"),
         ("credit_system", "_patch_credit_system_wiring.py", "credit_system_service"),
-        ("retention", "_patch_retention_wiring.py", "real_time_data_refresher"),
-        ("personality", "_patch_personality_assessment.py", "cognitive_assistance_engine"),
-        ("wheel_of_life", "_patch_wheel_of_life.py", "self_awareness_integrator"),
-        ("vision_mission", "_patch_vision_mission.py", "decision_support_service"),
-        ("portfolio", "_patch_portfolio_wiring.py", "document_management_service"),
+        ("retention", "_patch_retention_wiring.py", "retention_winback_service"),
+        ("personality", "_patch_personality_assessment.py", "personality_assessment_service"),
+        ("wheel_of_life", "_patch_wheel_of_life.py", "wheel_of_life_service"),
+        ("vision_mission", "_patch_vision_mission.py", "vision_mission_service"),
+        ("portfolio", "_patch_portfolio_wiring.py", "portfolio_service"),
     ]:
         _p145_path = SCRIPT_DIR / _p145_file
         if _p145_path.exists():

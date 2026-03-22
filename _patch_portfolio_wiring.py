@@ -2,7 +2,7 @@
 """
 _patch_portfolio_wiring.py -- Plan 149: Portfolio Manager
 
-Wires document_management_service with portfolio management:
+Wires portfolio_service with portfolio management:
 - Project portfolio (PDF or digital)
 - Work samples / Case studies
 - Publications, Articles, Whitepapers
@@ -67,7 +67,7 @@ async def _get_portfolio_items(user_id):
 
 @app.get("/", summary="Service information")
 async def root():
-    return {"service": "document_management_service", "type": "backend",
+    return {"service": "portfolio_service", "type": "backend",
             "domain": "document", "status": "running", "port": SERVICE_PORT,
             "version": "2.0.0-plan149", "persistence": PERSISTENCE_PROVIDER,
             "capabilities": ["portfolio_management", "work_samples", "publications",
@@ -75,13 +75,13 @@ async def root():
 
 @app.get("/health", summary="Health check")
 async def health():
-    return {"status": "healthy", "service": "document_management_service",
+    return {"status": "healthy", "service": "portfolio_service",
             "port": SERVICE_PORT, "version": "2.0.0-plan149",
             "persistence": PERSISTENCE_PROVIDER, "timestamp": time.time()}
 
 @app.get("/metrics", summary="Metrics")
 async def metrics():
-    return {"service": "document_management_service", "port": SERVICE_PORT,
+    return {"service": "portfolio_service", "port": SERVICE_PORT,
             "uptime_seconds": time.time()}
 
 @app.post("/portfolio/add", summary="Add portfolio item", status_code=201)
@@ -108,7 +108,7 @@ async def portfolio_add(request: Request):
         "tags": body.get("tags", []),
     }
     await _store_portfolio_event(user_id, item)
-    return {"service": "document_management_service", "endpoint": "/portfolio/add",
+    return {"service": "portfolio_service", "endpoint": "/portfolio/add",
             "status": "created", "source": PERSISTENCE_PROVIDER,
             "data": item, "timestamp": time.time()}
 
@@ -124,7 +124,7 @@ async def portfolio_list(request: Request):
         cat_items = [i for i in items if i.get("category") == cat]
         if cat_items:
             by_category[cat] = cat_items
-    return {"service": "document_management_service", "endpoint": "/portfolio/list",
+    return {"service": "portfolio_service", "endpoint": "/portfolio/list",
             "status": "ok", "source": PERSISTENCE_PROVIDER,
             "data": {"items": items[-50:], "total": len(items),
                      "by_category": {k: len(v) for k, v in by_category.items()},
@@ -151,7 +151,7 @@ async def portfolio_generate(request: Request):
                 "highlights": [{"title": i.get("title"), "org": i.get("organization")}
                                for i in cat_items[:5]]
             })
-    return {"service": "document_management_service", "endpoint": "/portfolio/generate-page",
+    return {"service": "portfolio_service", "endpoint": "/portfolio/generate-page",
             "status": "ok",
             "data": {"sections": summary_sections, "total_items": len(items),
                      "categories_used": len(summary_sections)},
@@ -160,7 +160,7 @@ async def portfolio_generate(request: Request):
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content={
-        "service": "document_management_service", "error": exc.detail})
+        "service": "portfolio_service", "error": exc.detail})
 
 if __name__ == "__main__":
     import uvicorn
@@ -189,6 +189,6 @@ def patch_service(service_dir):
 
 if __name__ == "__main__":
     gen = (Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / "CURRENT").read_text().strip()
-    svc = Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / gen / "services" / "document_management_service"
+    svc = Path(__file__).parent.parent / "engines" / "service_engine" / "outputs" / gen / "services" / "portfolio_service"
     if svc.exists():
         patch_service(svc)
