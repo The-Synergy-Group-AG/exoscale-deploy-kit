@@ -9,7 +9,7 @@
 # =============================================================
 project_name: jtp-test1
 service_name: docker-jtp
-service_version: '74'
+service_version: '79'
 docker_hub_user: iandrewitz
 environment: production
 exoscale_zone: ch-dk-2
