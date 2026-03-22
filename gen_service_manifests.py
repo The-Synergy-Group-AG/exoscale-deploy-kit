@@ -53,13 +53,13 @@ MANIFEST_PATH = SCRIPT_DIR / "service" / "services_manifest.json"
 SERVICES_DIR = SCRIPT_DIR / "service" / "services"
 
 # L46: deploy-time safe resource defaults (see L43 for rationale).
-# Requests are kept small so all 219 services fit a 3-node cluster.
-# Limits are generous — individual services may burst, but won't starve others.
+# Requests are kept small so all 230 services fit a 4-node cluster.
+# Limits set to 512Mi so in-pod pytest can run without OOMKill (L63).
 DEPLOY_RESOURCES: dict = {
     "cpu_request":    "10m",
     "memory_request": "64Mi",
     "cpu_limit":      "500m",
-    "memory_limit":   "256Mi",
+    "memory_limit":   "512Mi",
 }
 
 
