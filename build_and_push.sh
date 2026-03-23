@@ -93,6 +93,62 @@ if [[ "$DRY_RUN" == "true" ]]; then
     exit 0
 fi
 
+# ── Step 1b: Build SvelteKit SPA (Plan 155) ──────────────────────────────────
+# Strategic fix: Source nvm if available, check for pre-built output, always
+# ensure frontend_spa/ exists in Docker context (even if empty/fallback).
+FRONTEND_APP="${SCRIPT_DIR}/../engines/frontend_engine/app"
+FRONTEND_SPA_DIR="${SERVICE_DIR}/frontend_spa"
+
+if [[ -d "${FRONTEND_APP}/src" ]]; then
+    echo "Step 1b: Build SvelteKit SPA (adapter-static)..."
+
+    # Source nvm if available (required for Node.js in WSL/non-login shells)
+    export NVM_DIR="${HOME}/.nvm"
+    [[ -s "${NVM_DIR}/nvm.sh" ]] && . "${NVM_DIR}/nvm.sh"
+
+    # Check Node.js is available
+    if command -v node &> /dev/null && command -v npm &> /dev/null; then
+        pushd "${FRONTEND_APP}" > /dev/null
+
+        # Install deps if node_modules missing
+        [[ -d "node_modules" ]] || npm install --silent 2>&1 | tail -3
+
+        # Build SPA
+        if npm run build 2>&1 | tail -5; then
+            popd > /dev/null
+            rm -rf "${FRONTEND_SPA_DIR}"
+            cp -r "${FRONTEND_APP}/build" "${FRONTEND_SPA_DIR}"
+            echo "  ✅ SPA built and copied to frontend_spa/ ($(du -sh "${FRONTEND_SPA_DIR}" | cut -f1))"
+        else
+            popd > /dev/null
+            echo "  ⚠️  SPA build failed — checking for pre-built output..."
+            if [[ -d "${FRONTEND_APP}/build" ]]; then
+                rm -rf "${FRONTEND_SPA_DIR}"
+                cp -r "${FRONTEND_APP}/build" "${FRONTEND_SPA_DIR}"
+                echo "  ✅ Using pre-built SPA from engines/frontend_engine/app/build/"
+            fi
+        fi
+    else
+        echo "  ⚠️  Node.js not available — checking for pre-built SPA..."
+        if [[ -d "${FRONTEND_APP}/build" ]]; then
+            rm -rf "${FRONTEND_SPA_DIR}"
+            cp -r "${FRONTEND_APP}/build" "${FRONTEND_SPA_DIR}"
+            echo "  ✅ Using pre-built SPA from engines/frontend_engine/app/build/"
+        else
+            echo "  ❌ No Node.js and no pre-built SPA — gateway will use home.html fallback"
+        fi
+    fi
+else
+    echo "Step 1b: SKIP — frontend_engine/app not found"
+    if [[ -d "${FRONTEND_SPA_DIR}" ]]; then
+        echo "  ✅ Using existing frontend_spa/ from previous build"
+    fi
+fi
+
+# Ensure frontend_spa/ exists (even empty) so Dockerfile COPY doesn't fail
+mkdir -p "${FRONTEND_SPA_DIR}"
+echo ""
+
 # ── Step 2: Set gateway entrypoint + copy dashboard ──────────────────────────
 echo "Step 2: Set gateway entrypoint (app_v6.py → service/app.py)..."
 cp "${SERVICE_DIR}/app_v6.py" "${SERVICE_DIR}/app.py"
