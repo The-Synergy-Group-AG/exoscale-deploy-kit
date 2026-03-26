@@ -1989,8 +1989,10 @@ async def chat_route(request: Request):
 
     # ── Plan 148: Credit-based access (replaces feature gating) ──
     # All features available to all users — limited by credits on free plan
+    # L80: Test requests bypass credits (X-JTP-Test header)
+    _is_test = request.headers.get("x-jtp-test", "") == "validation"
     credit_cost = _INTENT_CREDIT_COSTS.get(intent, 5)
-    if user_id and user_id != "anon":
+    if user_id and user_id != "anon" and not _is_test:
         user_plan = await _get_user_plan(user_id)
         if user_plan not in ("premium", "affiliate"):
             # Free plan: consume credits
