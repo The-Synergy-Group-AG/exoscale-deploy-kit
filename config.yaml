@@ -9,7 +9,7 @@
 # =============================================================
 project_name: jtp-test1
 service_name: docker-jtp
-service_version: '86'
+service_version: '152'
 docker_hub_user: iandrewitz
 environment: production
 exoscale_zone: ch-dk-2
@@ -20,7 +20,7 @@ sks_addons:
 - metrics-server
 node_type_family: standard
 node_type_size: large
-node_count: 4
+node_count: 5
 node_disk_gb: 50
 k8s_namespace: exo-jtp-prod
 k8s_replicas: 1

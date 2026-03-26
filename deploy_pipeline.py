@@ -1653,17 +1653,7 @@ CREATE INDEX IF NOT EXISTS idx_entities_data_gin ON entities USING gin (data);
 #  STAGE 4b: NODE LABELS
 # =============================================================================
 def stage_label_nodes(kubeconfig: str) -> None:
-    nl_cfg = cfg.get("node_labels", {})
-    if not nl_cfg.get("enabled"):
-        log("Node Labels: disabled -- skipping")
-        return
-
-    labels_map = nl_cfg.get("labels", {})
-    if not labels_map:
-        log("Node Labels: no labels configured -- skipping")
-        return
-
-    section("STAGE 4b: Node Labels (StarGate branding)")
+    section("STAGE 4b: Node Labels (Plan 175 zone distribution)")
     env = {**os.environ, "KUBECONFIG": kubeconfig}
 
     r = subprocess.run(
@@ -1678,15 +1668,26 @@ def stage_label_nodes(kubeconfig: str) -> None:
         s = re.sub(r'-+', '-', s).strip('-')
         return s[:63]
 
-    label_args = [f"{k}={_sanitize_label_value(v)}" for k, v in labels_map.items()]
+    # Plan 175: Assign jtp/zone labels for intelligent pod distribution
+    # 5 zones: gateway, ai-heavy, career, wellness, analytics
+    zones = ["gateway", "ai-heavy", "career", "wellness", "analytics"]
 
-    for node in nodes:
+    # Also apply config-driven labels if any
+    nl_cfg = cfg.get("node_labels", {})
+    labels_map = nl_cfg.get("labels", {})
+    config_label_args = [f"{k}={_sanitize_label_value(v)}" for k, v in labels_map.items()]
+
+    for i, node in enumerate(nodes):
+        zone = zones[i % len(zones)]
+        zone_label = f"jtp/zone={zone}"
+        all_labels = [zone_label] + config_label_args
+
         r = subprocess.run(
-            ["kubectl", "label", "node", node, "--overwrite"] + label_args,
+            ["kubectl", "label", "node", node, "--overwrite"] + all_labels,
             env=env, capture_output=True, text=True,
         )
         if r.returncode == 0:
-            ok(f"  {node} -> labels applied")
+            ok(f"  {node} -> jtp/zone={zone}")
         else:
             warn(f"  {node} label failed: {r.stderr[:80]}")
 
@@ -1698,7 +1699,7 @@ def stage_label_nodes(kubeconfig: str) -> None:
     for line in r.stdout.strip().split("\n"):
         log(f"  {line}")
 
-    RESULTS["stages"]["node_labels"] = {"status": "success", "nodes": nodes, "labels": labels_map}
+    RESULTS["stages"]["node_labels"] = {"status": "success", "nodes": nodes, "zones": zones[:len(nodes)]}
 
 
 # =============================================================================
