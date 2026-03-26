@@ -77,3 +77,19 @@ echo "  ✅ Rolling update complete"
 echo "     Updated: $UPDATED / $TOTAL deployments"
 echo "     Skipped: $SKIPPED (already on ${IMAGE})"
 echo "============================================================"
+
+# Plan 174: Stage 7b — Post-deploy test suite (automatic)
+echo ""
+echo "  Stage 7b: Running post-deploy test suite..."
+LB_IP=$(kubectl get ingress -n "$NAMESPACE" -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+if [[ -n "$LB_IP" ]] && [[ -f "$SCRIPT_DIR/run_external_tests.py" ]]; then
+    python3 "$SCRIPT_DIR/run_external_tests.py" \
+        --gateway "https://$LB_IP" \
+        --suites user_stories integration \
+        --workers 10 \
+        --output "/tmp/post_deploy_test_results.json" 2>&1 | tail -10
+    echo ""
+    echo "  Test results: /tmp/post_deploy_test_results.json"
+else
+    echo "  Skipped: no LB IP or test runner not found"
+fi
