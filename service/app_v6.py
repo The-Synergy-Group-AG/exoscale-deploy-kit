@@ -893,7 +893,7 @@ _INTENT_PROMPTS = {
         "ATS optimization, and how Swiss employers evaluate applications differently. "
         "When asked to enhance a CV, explain the 3 available versions: "
         "Conservative Swiss (2-page Europass), Modern Professional (ATS-optimized), Executive Summary (1-page impact). "
-        "If the user wants to enhance their CV, tell them to paste their CV text in the chat or open the CV Editor in Canvas mode — "
+        "If the user wants to enhance their CV, tell them to upload via the 📄 button or paste text in the chat — "
         "the platform handles it automatically. Never say 'ask the AI to...' — YOU are the AI."
     ),
     "interview": (
@@ -1254,7 +1254,7 @@ async def _ai_respond(
             "NEVER say 'ask the AI to...' or 'tell the AI to...' — YOU ARE the AI. Instead, tell the user what to type or click.\n\n"
             "PLATFORM CAPABILITIES:\n"
             "- LIVE job search from jobs.ch (user specifies role + location)\n"
-            "- CV enhancement: paste CV text in chat OR use CV Editor in Canvas mode\n"
+            "- CV upload (PDF/DOCX) via the 📄 button, or paste CV text in chat\n"
             "- CV ENHANCEMENT: Generate 3 CV versions (Conservative Swiss, Modern Professional, Executive Summary)\n"
             "- COVER LETTER: AIDA framework cover letter generation customized per job\n"
             "- User profiles with saved preferences\n"
@@ -1263,9 +1263,9 @@ async def _ai_respond(
             "- Interview preparation coaching\n"
             "- Swiss market expertise (RAV, permits, salary ranges)\n\n"
             "Always suggest 1-2 relevant next steps from other platform capabilities.\n"
-            "CRITICAL: NEVER mention buttons, upload features, or UI elements that you are not 100% certain exist. "
-            "The chat interface is text-only — there are no file upload buttons, no attachment icons, no toolbars. "
-            "Users can PASTE text in the chat or open artifacts in Canvas mode. Never promise features you cannot verify.\n"
+            "CRITICAL: Only reference UI features that actually exist. "
+            "The chat has a 📄 upload button for PDF/DOCX files, a voice input button, and suggested action prompts. "
+            "Users can also paste text directly in the chat. Never invent UI elements that don't exist.\n"
         )
         if user_context:
             base_prompt += (
@@ -1379,7 +1379,7 @@ async def _ai_general_chat(
             "- Work permits: B, C, L, G permits for non-Swiss nationals.\n\n"
             "PLATFORM DELIVERS 12 CAREER BENEFITS:\n"
             "1. Smart Job Discovery — live Swiss jobs from jobs.ch (specify role + location)\n"
-            "2. CV & Document Mastery — paste CV text in chat or use CV Editor, generate 3 enhanced versions\n"
+            "2. CV & Document Mastery — upload CV (PDF/DOCX) or paste text, generate 3 enhanced versions\n"
             "3. Application Command — track applications (applied/interview/offer/rejected)\n"
             "4. Interview Excellence — prep coaching, practice questions, salary negotiation\n"
             "5. Career Intelligence — market insights, salary data, career path guidance\n"
@@ -1390,9 +1390,9 @@ async def _ai_general_chat(
             "10. Progress Analytics — application metrics, response rates, optimization\n"
             "11. Gamification & Growth — achievements, badges, XP points\n"
             "12. Trust & Security — Swiss privacy compliance, data protection\n\n"
-            "QUICK ACTIONS: Paste CV text, Enhance CV (3 versions), Cover Letter (AIDA), Interview Prep\n\n"
+            "QUICK ACTIONS: Upload CV (📄 button), Enhance CV (3 versions), Cover Letter (AIDA), Interview Prep\n\n"
             "IMPORTANT — Cross-reference benefits in every response:\n"
-            "- When discussing jobs: suggest 'Paste your CV here for Swiss format review' or 'Open CV Editor for full editing'\n"
+            "- When discussing jobs: suggest 'Upload your CV using the 📄 button for Swiss format review'\n"
             "- When discussing CVs: suggest 'Search for matching jobs' or 'Generate a cover letter'\n"
             "- When discussing interviews: suggest 'Track this application' or 'Check salary expectations'\n"
             "- When discussing career: suggest 'Update your profile' or 'View your progress analytics'\n"
@@ -2044,15 +2044,14 @@ async def chat_route(request: Request):
                 _USER_CV_CONTEXT[user_id] = cv_text
                 logger.info(f"Plan 150: Accepted pasted CV text from {user_id} ({len(cv_text)} chars)")
         if not cv_text:
-            # No CV uploaded — ask user to paste text in chat
+            # No CV uploaded — ask user to paste or upload
             ai_resp = (
                 "I'd love to enhance your CV! I can generate **3 optimized versions** "
                 "(Conservative Swiss, Modern Professional, Executive Summary).\n\n"
-                "**Paste your CV content** right here in the chat — your experience, "
-                "education, skills, and qualifications.\n\n"
-                "Or open the **CV Editor** in Canvas mode for a full editing experience "
-                "with drag-and-drop sections, Swiss format templates, and PDF export.\n\n"
-                "Once I have your CV details, I'll immediately create all 3 versions for you!"
+                "**Two ways to get started:**\n"
+                "1. **Paste your CV text** right here in the chat\n"
+                "2. **Upload a file** using the 📄 button next to the input (PDF/DOCX)\n\n"
+                "Once I have your CV, I'll immediately create all 3 versions for you!"
             )
             if mem_key:
                 if mem_key not in _CONV_MEMORY:
@@ -2145,10 +2144,10 @@ async def chat_route(request: Request):
         if not cv_text:
             ai_resp = (
                 "I can generate a professional AIDA cover letter for you!\n\n"
-                "**To get started**, I need your CV details. Simply:\n"
+                "**To get started**, I need your CV. You can either:\n"
                 "1. **Paste your CV text** right here in the chat\n"
-                "2. Then say **'write a cover letter for [Company] — [Job Title]'**\n\n"
-                "Or open the **CV Editor** in Canvas mode to build your CV visually first.\n\n"
+                "2. **Upload a file** using the 📄 button (PDF/DOCX)\n\n"
+                "Then say **'write a cover letter for [Company] — [Job Title]'**\n\n"
                 "Once I have your CV, just tell me the company and role!"
             )
         else:
