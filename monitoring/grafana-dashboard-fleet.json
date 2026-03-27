@@ -1,0 +1,136 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "jtp-fleet",
+    "title": "JTP Agent Fleet — Command Center",
+    "tags": ["jtp", "agents", "fleet"],
+    "timezone": "browser",
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1, "title": "Gateway Uptime", "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+        "targets": [{"expr": "jtp_gateway_uptime_seconds", "legendFormat": "Uptime"}],
+        "fieldConfig": {"defaults": {"unit": "s"}}
+      },
+      {
+        "id": 2, "title": "Total AI Requests", "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+        "targets": [{"expr": "sum(jtp_gateway_requests_total)", "legendFormat": "Total"}]
+      },
+      {
+        "id": 3, "title": "Error Rate", "type": "gauge",
+        "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+        "targets": [{"expr": "sum(jtp_gateway_requests_total{status='error'}) / sum(jtp_gateway_requests_total)", "legendFormat": "Rate"}],
+        "fieldConfig": {"defaults": {"max": 1, "thresholds": {"steps": [{"value": 0, "color": "green"}, {"value": 0.01, "color": "yellow"}, {"value": 0.05, "color": "red"}]}}}
+      },
+      {
+        "id": 4, "title": "Services (224)", "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+        "targets": [{"expr": "jtp_services_total", "legendFormat": "Registered"}],
+        "fieldConfig": {"defaults": {"thresholds": {"steps": [{"value": 0, "color": "red"}, {"value": 200, "color": "yellow"}, {"value": 224, "color": "green"}]}}}
+      },
+      {
+        "id": 5, "title": "Artifacts (69)", "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+        "targets": [{"expr": "sum(jtp_category_artifact_count)", "legendFormat": "Total"}],
+        "fieldConfig": {"defaults": {"thresholds": {"steps": [{"value": 0, "color": "red"}, {"value": 60, "color": "yellow"}, {"value": 69, "color": "green"}]}}}
+      },
+      {
+        "id": 6, "title": "Benefits (12)", "type": "stat",
+        "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+        "targets": [{"expr": "count(jtp_benefit_info)", "legendFormat": "Active"}],
+        "fieldConfig": {"defaults": {"thresholds": {"steps": [{"value": 0, "color": "red"}, {"value": 10, "color": "yellow"}, {"value": 12, "color": "green"}]}}}
+      },
+
+      {"id": 10, "title": "── AI API CALLS ──", "type": "text", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 4},
+       "options": {"content": "**AI API Calls by Provider & Model**", "mode": "markdown"}},
+
+      {
+        "id": 11, "title": "API Calls by Provider", "type": "piechart",
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 5},
+        "targets": [{"expr": "sum by (api) (jtp_api_calls_total)", "legendFormat": "{{api}}"}]
+      },
+      {
+        "id": 12, "title": "API Calls by Model", "type": "bargauge",
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 5},
+        "targets": [{"expr": "sum by (api, model) (jtp_api_calls_total)", "legendFormat": "{{api}}/{{model}}"}]
+      },
+      {
+        "id": 13, "title": "API Calls Over Time", "type": "timeseries",
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 5},
+        "targets": [{"expr": "sum by (api) (rate(jtp_api_calls_total[5m]))", "legendFormat": "{{api}}"}]
+      },
+
+      {"id": 20, "title": "── INTENT DISTRIBUTION ──", "type": "text", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13},
+       "options": {"content": "**Chat Intent Classification Distribution**", "mode": "markdown"}},
+
+      {
+        "id": 21, "title": "Intent Distribution", "type": "piechart",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+        "targets": [{"expr": "jtp_intent_total", "legendFormat": "{{intent}}"}]
+      },
+      {
+        "id": 22, "title": "Intent Volume Over Time", "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+        "targets": [{"expr": "rate(jtp_intent_total[5m])", "legendFormat": "{{intent}}"}]
+      },
+
+      {"id": 30, "title": "── ARTIFACT USAGE BY CATEGORY ──", "type": "text", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 22},
+       "options": {"content": "**69 Artifacts across 15 Categories — Usage & Status**", "mode": "markdown"}},
+
+      {
+        "id": 31, "title": "Usage by Category", "type": "bargauge",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23},
+        "targets": [{"expr": "jtp_category_usage_total", "legendFormat": "{{category}}"}]
+      },
+      {
+        "id": 32, "title": "Artifacts per Category", "type": "bargauge",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 23},
+        "targets": [{"expr": "jtp_category_artifact_count", "legendFormat": "{{category}}"}]
+      },
+      {
+        "id": 33, "title": "Top Artifacts by Usage", "type": "table",
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 31},
+        "targets": [{"expr": "topk(20, jtp_artifact_usage_total)", "legendFormat": "{{artifact}}", "format": "table", "instant": true}]
+      },
+
+      {"id": 40, "title": "── 12 BENEFITS ──", "type": "text", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 39},
+       "options": {"content": "**Benefit Delivery — 12 Categories (★ = Secret Sauce)**", "mode": "markdown"}},
+
+      {
+        "id": 41, "title": "Benefit Requests", "type": "bargauge",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+        "targets": [{"expr": "jtp_benefit_requests_total", "legendFormat": "{{benefit}}"}]
+      },
+      {
+        "id": 42, "title": "Benefit Requests Over Time", "type": "timeseries",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+        "targets": [{"expr": "rate(jtp_benefit_requests_total[5m])", "legendFormat": "{{benefit}}"}]
+      },
+
+      {"id": 50, "title": "── 11 BIOLOGICAL SYSTEMS ──", "type": "text", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 48},
+       "options": {"content": "**Consciousness Architecture — Biological System Health**", "mode": "markdown"}},
+
+      {
+        "id": 51, "title": "Bio System Health", "type": "bargauge",
+        "gridPos": {"h": 8, "w": 16, "x": 0, "y": 49},
+        "targets": [{"expr": "jtp_bio_system_health", "legendFormat": "{{system}} ({{benefits}} benefits)"}],
+        "fieldConfig": {"defaults": {"max": 1, "thresholds": {"steps": [{"value": 0, "color": "red"}, {"value": 0.5, "color": "yellow"}, {"value": 0.8, "color": "green"}]}}}
+      },
+      {
+        "id": 52, "title": "4 Pillars", "type": "bargauge",
+        "gridPos": {"h": 4, "w": 8, "x": 16, "y": 49},
+        "targets": [{"expr": "jtp_pillar_score", "legendFormat": "{{pillar}} (w={{weight}})"}],
+        "fieldConfig": {"defaults": {"max": 1}}
+      },
+      {
+        "id": 53, "title": "4 Energy Systems", "type": "bargauge",
+        "gridPos": {"h": 4, "w": 8, "x": 16, "y": 53},
+        "targets": [{"expr": "jtp_energy_system_active", "legendFormat": "{{system}} ({{benefits}} benefits)"}]
+      }
+    ],
+    "time": {"from": "now-1h", "to": "now"},
+    "version": 2
+  }
+}

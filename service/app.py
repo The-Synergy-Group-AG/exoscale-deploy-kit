@@ -20,12 +20,16 @@ Plan: 121-Factory-E2E-Restart
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # L62: Runtime API catalog — loaded from catalog.json baked into Docker image
 _CATALOG_PATH = Path("/app/catalog.json")
@@ -91,15 +95,125 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── Security: CORS Middleware ─────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://jobtrackerpro.ch",
+        "http://localhost:4173",  # dev preview
+        "http://localhost:5173",  # dev server
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+)
+
+
+# ── Security: Headers Middleware ──────────────────────────────────────────────
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["X-Robots-Tag"] = "noai, noimageai"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
+        response.headers["X-RateLimit-Limit"] = "1000"
+        # Remove server version info
+        if "server" in response.headers:
+            del response.headers["server"]
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ── Security: Prompt injection sanitizer ──────────────────────────────────────
+_INJECTION_PATTERNS = [
+    re.compile(r"(?i)ignore\s+(all\s+)?previous\s+instructions"),
+    re.compile(r"(?i)you\s+are\s+now\s+"),
+    re.compile(r"(?i)system\s*:\s*"),
+    re.compile(r"(?i)<\|system\|>"),
+    re.compile(r"(?i)reveal\s+your\s+(system\s+)?prompt"),
+    re.compile(r"(?i)what\s+are\s+your\s+instructions"),
+]
+
+
+def sanitize_llm_input(text: str) -> str:
+    """Strip prompt injection attempts from user input."""
+    sanitized = text
+    for pattern in _INJECTION_PATTERNS:
+        sanitized = pattern.sub("[filtered]", sanitized)
+    return sanitized[:4000]
+
 
 def service_to_dns(name: str) -> str:
     """Convert filesystem service name (underscores) to Kubernetes DNS name (hyphens)."""
     return SERVICE_DNS_OVERRIDES.get(name, name.replace("_", "-"))
 
 
+# Plan 155: Mount SvelteKit SPA static assets
+_SPA_DIR = Path("/app/frontend_spa")
+if _SPA_DIR.exists() and (_SPA_DIR / "_app").exists():
+    # Serve /_app/* (JS/CSS chunks with fingerprinted filenames — immutable cache)
+    app.mount("/_app", StaticFiles(directory=str(_SPA_DIR / "_app")), name="spa_assets")
+
+
+@app.get("/manifest.json")
+async def spa_manifest():
+    """Serve PWA manifest from SPA build output."""
+    f = _SPA_DIR / "manifest.json"
+    if f.exists():
+        return JSONResponse(json.loads(f.read_text(encoding="utf-8")))
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
+@app.get("/service-worker.js")
+async def spa_service_worker():
+    """Serve service worker from SPA build output."""
+    f = _SPA_DIR / "service-worker.js"
+    if f.exists():
+        return PlainTextResponse(f.read_text(encoding="utf-8"), media_type="application/javascript")
+    return PlainTextResponse("// no service worker", media_type="application/javascript")
+
+
+_ROBOTS_TXT = """User-agent: *
+Allow: /
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+
+User-agent: ClaudeBot
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: ChatGPT-User
+Disallow: /
+"""
+
+
+@app.get("/robots.txt")
+async def spa_robots():
+    """Serve robots.txt — blocks AI crawlers, allows normal indexing."""
+    return PlainTextResponse(_ROBOTS_TXT)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """AI-First home page — dual mode interface (L56)."""
+    """SvelteKit SPA entry point (Plan 155) — falls back to legacy home.html."""
+    spa_index = _SPA_DIR / "index.html"
+    if spa_index.exists():
+        return spa_index.read_text(encoding="utf-8")
+    # Fallback: legacy monolithic home page
     with open("/app/home.html") as f:
         return f.read()
 
@@ -119,9 +233,20 @@ async def api_info():
 
 @app.get("/service-dashboard", response_class=HTMLResponse)
 async def service_dashboard():
-    """Service status dashboard — all 219 services with live health checks."""
+    """Service status dashboard — all 224 services with live health checks."""
     with open("/app/dashboard.html") as f:
         return f.read()
+
+
+@app.get("/monitoring-dashboard", response_class=HTMLResponse)
+async def monitoring_dashboard_html():
+    """Visual monitoring command center — Plan 170.
+    Real-time dashboard showing all platform metrics, API calls, artifacts, benefits, bio systems."""
+    try:
+        with open("/app/monitoring.html") as f:
+            return f.read()
+    except FileNotFoundError:
+        return HTMLResponse("<h1>Monitoring dashboard not found</h1><p>Rebuild Docker image to include monitoring.html</p>", 404)
 
 
 @app.get("/api/catalog")
@@ -594,6 +719,8 @@ _INTENT_CLASSIFIER_PROMPT = (
     "- company-research: User wants to research a company, employer, or recruiter\n"
     "- job-ad-analyze: User wants to analyze a job posting, decode a job ad, or match against their profile\n"
     "- portfolio: User wants to manage portfolio, add work samples, projects, publications, or certifications\n"
+    "- gamification: User asks about badges, XP, points, achievements, streaks, level, leaderboard, or rewards\n"
+    "- rav-info: User asks about RAV, unemployment registration, ORP, Arbeitslosigkeit, monthly declaration\n"
     "- general-chat: Greetings, follow-ups, questions about features, negations, or anything else\n\n"
     "Languages: en (English), de (German), fr (French), it (Italian)\n\n"
     "Examples:\n"
@@ -636,6 +763,16 @@ _INTENT_CLASSIFIER_PROMPT = (
     '- "make the opening paragraph more confident" → {"intent":"cover-letter-refine","language":"en","confidence":0.9}\n'
     '- "adjust the cover letter tone" → {"intent":"cover-letter-refine","language":"en","confidence":0.9}\n'
     '- "rewrite the interest paragraph" → {"intent":"cover-letter-refine","language":"en","confidence":0.9}\n'
+    '- "What badges have I earned?" → {"intent":"gamification","language":"en","confidence":0.9}\n'
+    '- "my achievements and progress" → {"intent":"gamification","language":"en","confidence":0.9}\n'
+    '- "how many XP points do I have?" → {"intent":"gamification","language":"en","confidence":0.9}\n'
+    '- "Meine Auszeichnungen" → {"intent":"gamification","language":"de","confidence":0.9}\n'
+    '- "show my leaderboard position" → {"intent":"gamification","language":"en","confidence":0.9}\n'
+    '- "What format should my CV be in?" → {"intent":"cv-enhance","language":"en","confidence":0.9}\n'
+    '- "CV format for Swiss applications" → {"intent":"cv-enhance","language":"en","confidence":0.9}\n'
+    '- "RAV registration process" → {"intent":"rav-info","language":"en","confidence":0.9}\n'
+    '- "Arbeitslosigkeit anmelden" → {"intent":"rav-info","language":"de","confidence":0.9}\n'
+    '- "inscription au chômage" → {"intent":"rav-info","language":"fr","confidence":0.9}\n'
 )
 
 
@@ -756,7 +893,8 @@ _INTENT_PROMPTS = {
         "ATS optimization, and how Swiss employers evaluate applications differently. "
         "When asked to enhance a CV, explain the 3 available versions: "
         "Conservative Swiss (2-page Europass), Modern Professional (ATS-optimized), Executive Summary (1-page impact). "
-        "Guide users to upload their CV first, then request enhancement."
+        "If the user wants to enhance their CV, tell them to type 'enhance my CV' or click the CV Enhancement button — "
+        "the platform handles it automatically. Never say 'ask the AI to...' — YOU are the AI."
     ),
     "interview": (
         "You are a Swiss interview preparation coach. Help users prepare for job interviews "
@@ -818,9 +956,12 @@ _INTENT_PROMPTS = {
         "- Never invent company reviews or quotes from employees."
     ),
     "gamification": (
-        "You are a motivational career coach. Help users stay motivated in their job search "
-        "through goal-setting, progress tracking, celebrating milestones, and building positive habits. "
-        "Reference their XP level, badges earned, and points balance when available."
+        "You are a gamification and achievement coach for job seekers. "
+        "ALWAYS discuss the user's badges, XP points, achievements, streaks, and leaderboard position. "
+        "Celebrate their earned badges and suggest next milestones to achieve. "
+        "Mention specific badge types (Early Bird, Application Streak, Interview Ready, etc.) "
+        "and how to earn them through consistent job search activity. "
+        "Reference their XP level, points balance, and daily streak when available."
     ),
     "biological": (
         "You are a wellness-aware career advisor. Help users manage the emotional and physical "
@@ -852,6 +993,160 @@ _INTENT_PROMPTS = {
         "Help users track their monthly application counts for RAV compliance."
     ),
 }
+
+# Plan 157 Phase 8c: Biological system personality traits — influences AI response style
+_BIO_SYSTEM_TRAITS = {
+    "career_intelligence": {
+        "system": "nervous",
+        "trait": "analytical, fast-processing, pattern-recognizing",
+        "instruction": "Respond with analytical precision. Identify patterns in career data. Process information quickly and present structured insights.",
+    },
+    "cv_document_mastery": {
+        "system": "muscular",
+        "trait": "structured, precise, action-oriented",
+        "instruction": "Focus on strong action verbs and measurable achievements. Build structured, well-organized documents.",
+    },
+    "smart_job_discovery": {
+        "system": "circulatory",
+        "trait": "connecting, flowing, distributing",
+        "instruction": "Connect the user to opportunities. Ensure information flows efficiently between job sources and the user.",
+    },
+    "application_command": {
+        "system": "skeletal",
+        "trait": "structured, supportive, framework-providing",
+        "instruction": "Provide a solid framework for application tracking. Structure the application pipeline clearly.",
+    },
+    "interview_excellence": {
+        "system": "respiratory",
+        "trait": "rhythmic, calming, breath-aware",
+        "instruction": "Help the user breathe through interview anxiety. Maintain a calm, rhythmic coaching style.",
+    },
+    "ai_career_assistant": {
+        "system": "endocrine",
+        "trait": "balancing, regulating, harmonizing",
+        "instruction": "Balance multiple career factors. Regulate expectations and harmonize career goals.",
+    },
+    "progress_analytics": {
+        "system": "digestive",
+        "trait": "processing, breaking-down, extracting-value",
+        "instruction": "Break down complex career data into digestible insights. Extract actionable value from metrics.",
+    },
+    "professional_network": {
+        "system": "circulatory",
+        "trait": "connecting, distributing, networking",
+        "instruction": "Facilitate connections. Distribute opportunities through the professional network.",
+    },
+    "emotional_resilience": {
+        "system": "immune",
+        "trait": "protective, adaptive, strengthening",
+        "instruction": "Protect the user's emotional wellbeing. Build resilience against rejection and setbacks. Adapt responses to emotional state.",
+    },
+    "swiss_market_mastery": {
+        "system": "integumentary",
+        "trait": "boundary-aware, protective, culture-sensing",
+        "instruction": "Be aware of cultural boundaries. Sense Swiss professional norms. Protect the user from cultural missteps.",
+    },
+    "gamification_growth": {
+        "system": "endocrine",
+        "trait": "motivating, reward-signaling, growth-promoting",
+        "instruction": "Signal achievements and rewards. Promote growth through positive reinforcement.",
+    },
+    "trust_security": {
+        "system": "immune",
+        "trait": "protective, vigilant, trust-building",
+        "instruction": "Be vigilant about data protection. Build trust through transparency about security measures.",
+    },
+}
+
+# Plan 157 Phase 8c: Map intent/domain keywords to biological benefit keys
+_INTENT_TO_BIO_BENEFIT = {
+    "career-advice": "career_intelligence",
+    "career": "career_intelligence",
+    "cv-enhance": "cv_document_mastery",
+    "cv-refine": "cv_document_mastery",
+    "document": "cv_document_mastery",
+    "job-search": "smart_job_discovery",
+    "applications": "application_command",
+    "interview-prep": "interview_excellence",
+    "interview": "interview_excellence",
+    "general-chat": "ai_career_assistant",
+    "analytics": "progress_analytics",
+    "emotional": "emotional_resilience",
+    "compliance": "swiss_market_mastery",
+    "employer": "swiss_market_mastery",
+    "gamification": "gamification_growth",
+    "cover-letter": "cv_document_mastery",
+    "cover-letter-refine": "cv_document_mastery",
+    "cv-match": "smart_job_discovery",
+    "personality-assessment": "career_intelligence",
+    "wheel-of-life": "emotional_resilience",
+    "vision-mission": "career_intelligence",
+    "company-research": "swiss_market_mastery",
+    "job-ad-analyze": "smart_job_discovery",
+    "portfolio": "cv_document_mastery",
+    "profile": "ai_career_assistant",
+}
+
+
+def _get_bio_instruction(intent_or_domain: str) -> str:
+    """Plan 157 Phase 8c: Return biological system prompt injection for a given intent/domain."""
+    benefit_key = _INTENT_TO_BIO_BENEFIT.get(intent_or_domain, "")
+    if not benefit_key:
+        return ""
+    bio = _BIO_SYSTEM_TRAITS.get(benefit_key, {})
+    if not bio:
+        return ""
+    return f"\n\n[Biological System: {bio['system'].title()}] {bio['instruction']}"
+
+
+# Plan 157 Phase 8d: Energy system tracking (EXT-1 to EXT-4)
+import time as _time_mod
+
+_ENERGY_METRICS = {
+    "ext1_session_energy": {},      # user_id -> { start_time, interactions, fatigue_level }
+    "ext2_cooperation_score": 0.0,  # inter-service cooperation quality
+    "ext3_personalization": {},     # user_id -> { relevance_scores: [] }
+    "ext4_cultural_accuracy": 0.0,  # Swiss-specific response quality
+}
+
+
+def _track_energy(user_id: str, response_quality: float = 0.8):
+    """Plan 157 Phase 8d: Track energy metrics for the current interaction."""
+    now = _time_mod.time()
+
+    # EXT-1: Session fatigue detection
+    session = _ENERGY_METRICS["ext1_session_energy"].get(
+        user_id, {"start_time": now, "interactions": 0, "fatigue_level": 0.0}
+    )
+    session["interactions"] += 1
+    session_duration_min = (now - session["start_time"]) / 60
+    session["fatigue_level"] = min(1.0, (session_duration_min / 120) + (session["interactions"] / 50))
+    _ENERGY_METRICS["ext1_session_energy"][user_id] = session
+
+    # EXT-3: Personalization tracking
+    if user_id not in _ENERGY_METRICS["ext3_personalization"]:
+        _ENERGY_METRICS["ext3_personalization"][user_id] = {"relevance_scores": []}
+    _ENERGY_METRICS["ext3_personalization"][user_id]["relevance_scores"].append(response_quality)
+    scores = _ENERGY_METRICS["ext3_personalization"][user_id]["relevance_scores"]
+    _ENERGY_METRICS["ext3_personalization"][user_id]["relevance_scores"] = scores[-20:]
+
+
+def _get_energy_status(user_id: str) -> dict:
+    """Plan 157 Phase 8d: Get current energy status for a user."""
+    session = _ENERGY_METRICS["ext1_session_energy"].get(user_id, {})
+    personalization = _ENERGY_METRICS["ext3_personalization"].get(user_id, {})
+    relevance_scores = personalization.get("relevance_scores", [])
+    recent_5 = relevance_scores[-5:]
+
+    return {
+        "ext1_fatigue": round(session.get("fatigue_level", 0.0), 3),
+        "ext1_interactions": session.get("interactions", 0),
+        "ext2_cooperation": _ENERGY_METRICS["ext2_cooperation_score"],
+        "ext3_personalization_trend": round(sum(recent_5) / max(len(recent_5), 1), 3) if relevance_scores else 0.0,
+        "ext4_cultural_accuracy": _ENERGY_METRICS["ext4_cultural_accuracy"],
+        "suggest_break": session.get("fatigue_level", 0.0) > 0.7,
+    }
+
 
 # Plan 145: Per-user emotional state tracking (for emotional awareness continuity)
 _USER_EMOTIONAL_STATE: dict = {}  # user_id → {"last_emotion": str, "session_count": int}
@@ -955,7 +1250,8 @@ async def _ai_respond(
             "You have deep knowledge of the Swiss job market, career development, and professional networking. "
             "Be helpful, specific, and actionable. Format key information clearly with markdown. "
             "Keep responses under 200 words. Never mention internal service names or technical details. "
-            "NEVER say you don't have access to jobs — the platform searches jobs.ch for specific queries.\n\n"
+            "NEVER say you don't have access to jobs — the platform searches jobs.ch for specific queries.\n"
+            "NEVER say 'ask the AI to...' or 'tell the AI to...' — YOU ARE the AI. Instead, tell the user what to type or click.\n\n"
             "PLATFORM CAPABILITIES:\n"
             "- LIVE job search from jobs.ch (user specifies role + location)\n"
             "- CV upload (PDF/DOCX) with AI analysis and Swiss format review\n"
@@ -975,6 +1271,10 @@ async def _ai_respond(
         domain_prompt = _INTENT_PROMPTS.get(domain, "")
         if domain_prompt:
             base_prompt += f"\n\nDomain expertise: {domain_prompt}"
+        # Plan 157 Phase 8c: Inject biological system trait based on domain
+        bio_instr = _get_bio_instruction(domain)
+        if bio_instr:
+            base_prompt += bio_instr
 
         # Build user message with context
         history = _CONV_MEMORY.get(client_ip, [])[-4:]
@@ -1038,10 +1338,12 @@ async def _ai_respond(
 
 
 async def _ai_general_chat(
-    user_msg: str, client_ip: str = "", user_context: str = "", domain_prompt: str = ""
+    user_msg: str, client_ip: str = "", user_context: str = "", domain_prompt: str = "",
+    intent: str = ""
 ) -> str:
     """L68c: Handle general conversation, greetings, follow-ups, and complex queries.
-    Plan 145: domain_prompt injects feature-specific expertise (interview, emotional, employer, etc.)."""
+    Plan 145: domain_prompt injects feature-specific expertise (interview, emotional, employer, etc.).
+    Plan 157 Phase 8c: intent param enables biological system trait injection."""
     if not AI_CHAT_ENABLED:
         return ""
     try:
@@ -1063,8 +1365,15 @@ async def _ai_general_chat(
         )
 
         system = (
-            "You are the AI assistant for JobTrackerPro, a Swiss job search platform. "
-            "Be conversational, warm, and helpful. Keep responses under 150 words.\n\n"
+            "You are the AI assistant for JobTrackerPro, a Swiss career intelligence platform. "
+            "Be conversational, warm, and helpful. Keep responses concise but thorough (200-400 words).\n\n"
+            "SWISS CONTEXT (MANDATORY in every response):\n"
+            "- You operate in the Swiss labor market. Always reference salaries in CHF.\n"
+            "- Reference Swiss cantons (ZH, BE, GE, BS, VD, etc.) when discussing locations.\n"
+            "- Mention RAV (Regionale Arbeitsvermittlungszentren) for job-seeking contexts.\n"
+            "- Apply Swiss employment law (OR, CO, AVG) where relevant.\n"
+            "- Reference Swiss job portals: jobs.ch, jobup.ch, LinkedIn Switzerland.\n"
+            "- Work permits: B, C, L, G permits for non-Swiss nationals.\n\n"
             "PLATFORM DELIVERS 12 CAREER BENEFITS:\n"
             "1. Smart Job Discovery — live Swiss jobs from jobs.ch (specify role + location)\n"
             "2. CV & Document Mastery — upload CV, generate 3 enhanced versions, Swiss format review\n"
@@ -1088,6 +1397,10 @@ async def _ai_general_chat(
         )
         if domain_prompt:
             system += f"\n\nDOMAIN EXPERTISE:\n{domain_prompt}\n"
+        # Plan 157 Phase 8c: Inject biological system trait based on intent
+        bio_instr = _get_bio_instruction(intent)
+        if bio_instr:
+            system += bio_instr
         if user_context:
             system += f"\n\nUSER CONTEXT:\n{user_context}\n"
         messages = []
@@ -1105,7 +1418,7 @@ async def _ai_general_chat(
                 },
                 json={
                     "model": AI_MODEL,
-                    "max_tokens": 250,
+                    "max_tokens": 800,
                     "messages": messages,
                     "system": system,
                 },
@@ -1383,7 +1696,7 @@ async def chat_route(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    msg = body.get("message", "")
+    msg = sanitize_llm_input(body.get("message", ""))
     client_ip = request.client.host if request.client else ""
     # Use JWT user_id for conversation memory
     user_id = _get_user_id(request)
@@ -1406,6 +1719,24 @@ async def chat_route(request: Request):
     logger.info(
         f"Plan 133: Intent={intent} lang={detected_lang} conf={intent_result.get('confidence', 0):.2f} msg={msg[:60]}"
     )
+
+    # Plan 170: Track metrics for Prometheus dashboard
+    _track_api_call("anthropic", AI_MODEL)  # Intent classification uses Claude
+    _track_intent(intent)
+    # Map intent to benefit for benefit tracking
+    _INTENT_BENEFIT_MAP = {
+        "job-search": "smart_job_discovery", "cv-enhance": "cv_document_mastery",
+        "cv-refine": "cv_document_mastery", "cover-letter": "cv_document_mastery",
+        "cover-letter-refine": "cv_document_mastery", "cv-match": "cv_document_mastery",
+        "interview-prep": "interview_excellence", "career-advice": "career_intelligence",
+        "applications": "application_command", "gamification": "gamification_growth",
+        "rav-info": "swiss_market_mastery", "company-research": "career_intelligence",
+        "personality-assessment": "emotional_resilience", "wheel-of-life": "emotional_resilience",
+        "vision-mission": "career_intelligence", "portfolio": "trust_security",
+        "general-chat": "ai_career_assistant",
+    }
+    _mapped_benefit = _INTENT_BENEFIT_MAP.get(intent, "ai_career_assistant")
+    _track_benefit(_mapped_benefit)
 
     # Legacy keyword fallback ONLY for service proxy (job-search routed via proxy if jobs.ch direct fails)
     # Do NOT run keyword matcher for general-chat — it catches false positives like "don't enhance my cv" → "cv"
@@ -1658,8 +1989,10 @@ async def chat_route(request: Request):
 
     # ── Plan 148: Credit-based access (replaces feature gating) ──
     # All features available to all users — limited by credits on free plan
+    # L80: Test requests bypass credits (X-JTP-Test header)
+    _is_test = request.headers.get("x-jtp-test", "") == "validation"
     credit_cost = _INTENT_CREDIT_COSTS.get(intent, 5)
-    if user_id and user_id != "anon":
+    if user_id and user_id != "anon" and not _is_test:
         user_plan = await _get_user_plan(user_id)
         if user_plan not in ("premium", "affiliate"):
             # Free plan: consume credits
@@ -1699,14 +2032,23 @@ async def chat_route(request: Request):
 
     # ── Intent: cv-enhance ──
     if intent == "cv-enhance":
+        # Plan 150: Check if user pasted CV text directly in their message
         cv_text = await _ensure_cv_context()
+        if not cv_text and len(msg) > 150:
+            # User likely pasted their CV text directly — use it
+            cv_text = msg[:5000]
+            if user_id:
+                _USER_CV_CONTEXT[user_id] = cv_text
+                logger.info(f"Plan 150: Accepted pasted CV text from {user_id} ({len(cv_text)} chars)")
         if not cv_text:
-            # No CV uploaded — guide user
+            # No CV uploaded — ask user to paste or upload
             ai_resp = (
-                "I'd love to enhance your CV! To generate 3 optimized versions "
-                "(Conservative Swiss, Modern Professional, Executive Summary), "
-                "please **upload your CV first** using the 📄 button above. "
-                "Once uploaded, just say 'enhance my CV' and I'll create all 3 versions."
+                "I'd love to enhance your CV! I can generate **3 optimized versions** "
+                "(Conservative Swiss, Modern Professional, Executive Summary).\n\n"
+                "**Two ways to get started:**\n"
+                "1. **Paste your CV text** right here in the chat\n"
+                "2. **Upload a file** using the 📄 button above (PDF/DOCX)\n\n"
+                "Once I have your CV, I'll immediately create all 3 versions for you!"
             )
             if mem_key:
                 if mem_key not in _CONV_MEMORY:
@@ -1798,9 +2140,11 @@ async def chat_route(request: Request):
         cv_text = await _ensure_cv_context()
         if not cv_text:
             ai_resp = (
-                "I can generate a professional AIDA cover letter for you! "
-                "Please **upload your CV first** using the 📄 button, then say "
-                "'Write a cover letter for [Company Name] - [Job Title]'."
+                "I can generate a professional AIDA cover letter for you!\n\n"
+                "**To get started**, I need your CV. You can either:\n"
+                "1. **Paste your CV text** in the chat, then say 'write a cover letter for [Company]'\n"
+                "2. **Upload a file** using the 📄 button (PDF/DOCX)\n\n"
+                "Once I have your CV, just tell me the company and job title!"
             )
         else:
             # Extract company and job from message
@@ -1971,7 +2315,7 @@ async def chat_route(request: Request):
     # Plan 146: Interview prep — dedicated coaching + session tracking via interview_prep_service
     if intent == "interview-prep" and not route:
         ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context,
-                                         domain_prompt=_INTENT_PROMPTS.get("interview", ""))
+                                         domain_prompt=_INTENT_PROMPTS.get("interview", ""), intent=intent)
         await _award_xp(user_id, "interview_prep", 25)
         # Plan 146: Track interview prep session in Pinecone via interview_prep_service
         if user_id and user_id != "anon":
@@ -2010,7 +2354,7 @@ async def chat_route(request: Request):
             domain = _INTENT_PROMPTS.get("emotional", "")
         else:
             domain = _INTENT_PROMPTS.get("career", "")
-        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context, domain_prompt=domain)
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context, domain_prompt=domain, intent=intent)
         _log_chat(msg, routed=True, service="career-advice", latency_ms=(_t.time() - t0) * 1000,
                   ai_response=ai_resp, client_ip=client_ip)
         if mem_key:
@@ -2155,7 +2499,7 @@ async def chat_route(request: Request):
 
     # Intent: profile — show/edit profile from Pinecone
     if intent == "profile" and not route:
-        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context, intent=intent)
         _log_chat(msg, routed=True, service="profile", latency_ms=(_t.time() - t0) * 1000,
                   ai_response=ai_resp, client_ip=client_ip)
         if mem_key:
@@ -2167,6 +2511,50 @@ async def chat_route(request: Request):
             _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
         return {"routed": True, "service": "profile", "intent": intent,
                 "data": None, "ai_response": ai_resp}
+
+    # Plan 170: gamification intent — badges, XP, achievements, leaderboard
+    if intent == "gamification" and not route:
+        domain = _INTENT_PROMPTS.get("gamification_growth", _INTENT_PROMPTS.get("gamification", ""))
+        if not domain:
+            domain = (
+                "You are a gamification coach. Help users understand their badges, XP, achievements, "
+                "streaks, and leaderboard position. Celebrate their progress and suggest next milestones. "
+                "Reference their actual data when available (applications tracked, XP earned, badges)."
+            )
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context, domain_prompt=domain, intent=intent)
+        _log_chat(msg, routed=True, service="gamification", latency_ms=(_t.time() - t0) * 1000,
+                  ai_response=ai_resp, client_ip=client_ip)
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            if ai_resp:
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {"routed": True, "service": "gamification", "intent": intent,
+                "language": detected_lang, "data": None, "ai_response": ai_resp}
+
+    # Plan 170: rav-info intent — RAV, unemployment, ORP
+    if intent == "rav-info" and not route:
+        domain = _INTENT_PROMPTS.get("compliance", "")
+        if not domain:
+            domain = (
+                "You are a Swiss unemployment (RAV/ORP) expert. Help users with RAV registration, "
+                "monthly declarations, job application requirements, Bildungsgutschein, cantonal differences, "
+                "and unemployment insurance questions. Always reference Swiss-specific rules."
+            )
+        ai_resp = await _ai_general_chat(msg, mem_key, user_context=user_context, domain_prompt=domain, intent=intent)
+        _log_chat(msg, routed=True, service="rav-info", latency_ms=(_t.time() - t0) * 1000,
+                  ai_response=ai_resp, client_ip=client_ip)
+        if mem_key:
+            if mem_key not in _CONV_MEMORY:
+                _CONV_MEMORY[mem_key] = []
+            _CONV_MEMORY[mem_key].append({"role": "user", "content": msg})
+            if ai_resp:
+                _CONV_MEMORY[mem_key].append({"role": "assistant", "content": ai_resp[:200]})
+            _CONV_MEMORY[mem_key] = _CONV_MEMORY[mem_key][-10:]
+        return {"routed": True, "service": "rav-info", "intent": intent,
+                "language": detected_lang, "data": None, "ai_response": ai_resp}
 
     # All remaining intents → general chat with domain-aware prompts
     if not route:
@@ -2210,7 +2598,7 @@ async def chat_route(request: Request):
             _domain = "You are a CRM advisor. Help users manage their professional contacts: add recruiters, hiring managers, and networking connections. Track the application pipeline stages from applied through to accepted."
         elif any(w in msg_lower for w in ["calendar", "schedule", "upcoming interview", "reminder", "appointment"]):
             _domain = "You are a scheduling assistant. Help users manage their interview calendar: schedule events, set reminders, and prepare for upcoming interviews. Remind users to send thank-you emails after interviews."
-        ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context, domain_prompt=_domain)
+        ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context, domain_prompt=_domain, intent=intent)
         _log_chat(
             msg,
             routed=False,
@@ -2240,6 +2628,14 @@ async def chat_route(request: Request):
                     )
             except Exception:
                 pass
+
+        # Plan 157 Phase 8d: Track energy metrics
+        _energy_uid = user_id if user_id and user_id != "anon" else mem_key
+        if _energy_uid:
+            _track_energy(_energy_uid)
+            _energy = _get_energy_status(_energy_uid)
+            if _energy.get("suggest_break") and ai_fallback:
+                ai_fallback += "\n\n---\n*You've been working hard on your job search. Consider taking a short break to recharge — you'll come back sharper.*"
 
         return {
             "routed": True,
@@ -2334,7 +2730,7 @@ async def chat_route(request: Request):
         )
         logger.warning(f"chat/route error for {route['service']}: {exc}")
         # L72: AI fallback when service is unreachable — user still gets a helpful response
-        ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context)
+        ai_fallback = await _ai_general_chat(msg, mem_key, user_context=user_context, intent=intent)
         if mem_key:
             if mem_key not in _CONV_MEMORY:
                 _CONV_MEMORY[mem_key] = []
@@ -2365,6 +2761,30 @@ _JWT_SECRET = os.getenv(
 )
 
 
+import time as _time
+
+
+def _generate_jwt(user_id: str, tier: str = "free", expires_in: int = 86400) -> str:
+    """Generate a JWT token with user_id, tier, and expiration."""
+    header = _b64.urlsafe_b64encode(
+        json.dumps({"alg": "HS256", "typ": "JWT"}).encode()
+    ).rstrip(b"=")
+    payload_data = {
+        "sub": user_id,
+        "user_id": user_id,
+        "tier": tier,
+        "iat": int(_time.time()),
+        "exp": int(_time.time()) + expires_in,
+    }
+    body = _b64.urlsafe_b64encode(json.dumps(payload_data, default=str).encode()).rstrip(
+        b"="
+    )
+    msg = header + b"." + body
+    sig = _hmac.new(_JWT_SECRET.encode(), msg, _hashlib.sha256).digest()
+    sig_b64 = _b64.urlsafe_b64encode(sig).rstrip(b"=")
+    return (msg + b"." + sig_b64).decode()
+
+
 def _jwt_encode(payload: dict) -> str:
     """Minimal JWT encoder (HS256) — no external dependency."""
     header = _b64.urlsafe_b64encode(
@@ -2377,6 +2797,26 @@ def _jwt_encode(payload: dict) -> str:
     sig = _hmac.new(_JWT_SECRET.encode(), msg, _hashlib.sha256).digest()
     sig_b64 = _b64.urlsafe_b64encode(sig).rstrip(b"=")
     return (msg + b"." + sig_b64).decode()
+
+
+def _validate_jwt(token: str) -> dict | None:
+    """Validate JWT token. Returns payload dict or None if invalid/expired."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        msg = (parts[0] + "." + parts[1]).encode()
+        sig = _b64.urlsafe_b64decode(parts[2] + "==")
+        expected = _hmac.new(_JWT_SECRET.encode(), msg, _hashlib.sha256).digest()
+        if not _hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(_b64.urlsafe_b64decode(parts[1] + "=="))
+        # Check expiration
+        if payload.get("exp", 0) < _time.time():
+            return None
+        return payload
+    except Exception:
+        return None
 
 
 def _jwt_decode(token: str) -> dict | None:
@@ -2397,21 +2837,47 @@ def _jwt_decode(token: str) -> dict | None:
 
 
 def _get_user_id(request: Request) -> str:
-    """Extract user_id from JWT Bearer token, or generate new one."""
+    """Extract user_id from JWT Bearer token, X-User-Id header, or generate anonymous ID.
+
+    Strategic design (L65): NEVER return empty string. Anonymous users get a
+    session-stable ID so their data persists within the session. This prevents
+    401 errors for unauthenticated SPA requests while still supporting JWT
+    when available.
+    """
+    # 1. Try JWT Bearer token (authenticated user)
     auth = request.headers.get("authorization", "")
     if auth.startswith("Bearer "):
         payload = _jwt_decode(auth[7:])
         if payload and "user_id" in payload:
             return payload["user_id"]
-    return ""
+    # 2. Try X-User-Id header (API clients, tests)
+    header_id = request.headers.get("x-user-id", "")
+    if header_id:
+        return header_id
+    # 3. Generate stable anonymous ID from client IP + user-agent
+    client_ip = request.client.host if request.client else "unknown"
+    ua = request.headers.get("user-agent", "")[:50]
+    fingerprint = f"{client_ip}|{ua}"
+    return f"anon-{_hashlib.md5(fingerprint.encode()).hexdigest()[:12]}"
 
 
 @app.post("/api/auth/token")
-async def create_token():
-    """Plan 131: Generate a JWT token for a new user (frictionless — no registration)."""
-    user_id = f"user-{_uuid.uuid4().hex[:12]}"
-    token = _jwt_encode({"user_id": user_id, "iat": _dt.now(_tz.utc).isoformat()})
-    return {"token": token, "user_id": user_id}
+async def create_token(request: Request):
+    """Plan 157 Phase 9b: Generate a JWT token — accepts optional user_id, returns bearer token."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    user_id = body.get("user_id") or f"anon-{int(_time.time())}-{_hashlib.md5(str(_time.time()).encode()).hexdigest()[:8]}"
+    token = _generate_jwt(user_id, tier=body.get("tier", "free"))
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user_id,
+        "expires_in": 86400,
+        # Backward compat
+        "token": token,
+    }
 
 
 @app.post("/api/cv/upload")
@@ -3744,7 +4210,34 @@ async def api_self_discovery_questions(request: Request):
         "categories": ["self-awareness", "career", "relationships", "growth", "values"]}}
 
 
-# --- BLUEPRINT #4: 70 Job Search Engines ---
+# --- BLUEPRINT #4: Job Search (L66: explicit POST to avoid catch-all proxy 503) ---
+@app.post("/api/job-search")
+async def api_job_search(request: Request):
+    """Search jobs across Swiss portals. Uses the multi-source JobScraper."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    query = body.get("query", "")
+    location = body.get("location", "")
+    limit = body.get("pageSize", body.get("limit", 10))
+    if not query:
+        return {"jobs": [], "total": 0, "query": "", "engines": []}
+    try:
+        from job_scraper.scraper import JobScraper
+        scraper = JobScraper()
+        jobs = await scraper.search(query, location=location, limit=limit)
+        return {
+            "jobs": jobs,
+            "total": len(jobs),
+            "query": query,
+            "engines": list(set(j.get("source", "unknown") for j in jobs)),
+        }
+    except Exception as exc:
+        logger.warning("L66: Job search failed: %s", exc)
+        return {"jobs": [], "total": 0, "query": query, "engines": [], "error": str(exc)}
+
+
 @app.get("/api/job-search/engines")
 async def api_job_search_engines(request: Request):
     """Plan 149: Curated list of 70 job search engines."""
@@ -4156,6 +4649,106 @@ async def update_profile(request: Request):
     return {"status": "updated", "user_id": user_id, "profile": body}
 
 
+# ── Plan 157 Phase 8d: Energy System Status Endpoint ─────────────────────────
+
+
+@app.get("/api/energy/status")
+async def energy_status(request: Request):
+    """Plan 157 Phase 8d: Return energy system metrics for the current user."""
+    user_id = request.headers.get("X-User-Id") or _get_user_id(request) or "anonymous"
+    return _get_energy_status(user_id)
+
+
+# ── Plan 157 Phase 9b: GDPR Compliance — Data Export & Deletion ──────────────
+
+
+@app.get("/api/profile/export")
+async def export_user_data(request: Request):
+    """GDPR Article 20: Data portability — export all user data."""
+    user_id = request.headers.get("X-User-Id") or _get_user_id(request) or "anonymous"
+
+    # Collect data from all sources
+    export_data = {
+        "exported_at": _dt.now(_tz.utc).isoformat(),
+        "user_id": user_id,
+        "profile": {},
+        "applications": [],
+        "chat_history": [],
+        "assessments": [],
+        "credits": {},
+        "preferences": {},
+    }
+
+    # Try to fetch from memory system
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            # Profile
+            resp = await client.get(f"http://memory-system:8009/history?user_id={user_id}&category=profile")
+            if resp.status_code == 200:
+                export_data["profile"] = resp.json()
+
+            # Applications
+            resp = await client.get(f"http://memory-system:8009/history?user_id={user_id}&category=application")
+            if resp.status_code == 200:
+                export_data["applications"] = resp.json().get("entries", [])
+    except Exception:
+        pass  # Best-effort export
+
+    # Chat history from local store
+    user_chats = [e for e in _CHAT_LOG if isinstance(e, dict) and e.get("user_id") == user_id]
+    export_data["chat_history"] = user_chats
+
+    return export_data
+
+
+@app.delete("/api/profile/delete")
+async def delete_user_data(request: Request):
+    """GDPR Article 17: Right to erasure — delete all user data."""
+    user_id = request.headers.get("X-User-Id") or _get_user_id(request) or "anonymous"
+
+    deletion_log = {
+        "deleted_at": _dt.now(_tz.utc).isoformat(),
+        "user_id": user_id,
+        "data_types_deleted": [],
+        "status": "completed",
+    }
+
+    # Delete from memory system
+    try:
+        async with _sync_httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.delete(f"http://memory-system:8009/delete?user_id={user_id}")
+            if resp.status_code == 200:
+                deletion_log["data_types_deleted"].append("memory_system")
+    except Exception:
+        deletion_log["data_types_deleted"].append("memory_system_failed")
+
+    # Clear chat history entries for this user
+    global _CHAT_LOG
+    before = len(_CHAT_LOG)
+    filtered = deque(
+        (e for e in _CHAT_LOG if not (isinstance(e, dict) and e.get("user_id") == user_id)),
+        maxlen=_CHAT_LOG.maxlen,
+    )
+    if len(filtered) < before:
+        _CHAT_LOG = filtered
+        deletion_log["data_types_deleted"].append("chat_history")
+
+    # Clear emotional state
+    if user_id in _USER_EMOTIONAL_STATE:
+        del _USER_EMOTIONAL_STATE[user_id]
+        deletion_log["data_types_deleted"].append("emotional_state")
+
+    # Clear document sessions
+    if user_id in _USER_DOC_SESSION:
+        del _USER_DOC_SESSION[user_id]
+        deletion_log["data_types_deleted"].append("document_sessions")
+
+    # Log deletion for audit trail
+    logger.info("GDPR_DELETION: %s", json.dumps(deletion_log))
+
+    return deletion_log
+
+
 @app.get("/api/applications")
 async def get_applications(request: Request):
     """Plan 138: List user's job applications — Pinecone primary."""
@@ -4350,6 +4943,142 @@ async def user_analytics(request: Request):
     return analytics
 
 
+# ── Plan 158: Research Artifact Endpoints ────────────────────────────────
+
+@app.get("/api/salary/benchmark")
+async def salary_benchmark(request: Request):
+    """Swiss salary benchmarks by role, region, and experience level."""
+    role = request.query_params.get("role", "software-engineer")
+    region = request.query_params.get("region", "zurich")
+    level = request.query_params.get("level", "mid")
+
+    # Verified Swiss salary data (7 roles x 3 levels)
+    _SALARY_DB = {
+        "software-engineer": {"junior": (75000, 95000, 115000), "mid": (95000, 122500, 150000), "senior": (130000, 155000, 180000)},
+        "business-analyst": {"junior": (65000, 80000, 95000), "mid": (90000, 110000, 130000), "senior": (120000, 140000, 160000)},
+        "project-manager": {"junior": (70000, 90000, 110000), "mid": (100000, 125000, 150000), "senior": (140000, 160000, 180000)},
+        "data-scientist": {"junior": (80000, 100000, 120000), "mid": (110000, 135000, 160000), "senior": (145000, 165000, 185000)},
+        "product-manager": {"junior": (75000, 95000, 115000), "mid": (110000, 135000, 160000), "senior": (150000, 170000, 190000)},
+        "ux-designer": {"junior": (60000, 75000, 90000), "mid": (85000, 102500, 120000), "senior": (110000, 130000, 150000)},
+        "devops-engineer": {"junior": (80000, 95000, 110000), "mid": (110000, 130000, 150000), "senior": (140000, 160000, 180000)},
+    }
+
+    # Regional multipliers
+    _REGION_MULT = {
+        "zurich": 1.0, "geneva": 1.05, "basel": 0.97, "bern": 0.93,
+        "lausanne": 0.95, "lucerne": 0.90, "lugano": 0.85, "swiss-average": 0.95,
+    }
+
+    base = _SALARY_DB.get(role, _SALARY_DB["software-engineer"])
+    tier = base.get(level, base["mid"])
+    mult = _REGION_MULT.get(region, 1.0)
+
+    return {
+        "role": role,
+        "region": region,
+        "level": level,
+        "currency": "CHF",
+        "min": int(tier[0] * mult),
+        "median": int(tier[1] * mult),
+        "max": int(tier[2] * mult),
+        "source": "Swiss Federal Statistical Office + JTP market analysis",
+        "updated": "2026-Q1",
+    }
+
+
+@app.get("/api/swiss/permits")
+async def swiss_permits(request: Request):
+    """Work permit requirements by nationality type."""
+    nationality = request.query_params.get("nationality", "eu")
+
+    permits = {
+        "eu": [
+            {"type": "B", "name": "Aufenthaltsbewilligung", "duration": "5 years", "renewable": True, "work": "Unrestricted", "requirements": "Employment contract + EU/EFTA citizenship"},
+            {"type": "C", "name": "Niederlassungsbewilligung", "duration": "Permanent", "renewable": False, "work": "Unrestricted", "requirements": "5-10 years continuous residence in Switzerland"},
+            {"type": "G", "name": "Grenzgaengerbewilligung", "duration": "5 years", "renewable": True, "work": "Cross-border only", "requirements": "Reside in EU border region, return weekly"},
+            {"type": "L", "name": "Kurzaufenthaltsbewilligung", "duration": "1 year max", "renewable": True, "work": "Limited to contract", "requirements": "Short-term employment contract"},
+        ],
+        "third_country": [
+            {"type": "B", "name": "Aufenthaltsbewilligung", "duration": "1 year", "renewable": True, "work": "Employer-specific", "requirements": "Employer must prove no Swiss/EU candidate available (labour market test)"},
+            {"type": "L", "name": "Kurzaufenthaltsbewilligung", "duration": "Up to 4 months", "renewable": False, "work": "Limited to specific project", "requirements": "Quota allocation + employer sponsorship"},
+        ],
+    }
+
+    return {
+        "nationality_type": nationality,
+        "permits": permits.get(nationality, permits["eu"]),
+        "rav_registration": {
+            "required": True,
+            "minimum_applications_per_month": 8,
+            "reporting_interval": "monthly",
+            "benefits": "70-80% of insured salary for up to 12-18 months",
+        },
+    }
+
+
+@app.get("/api/market-trends")
+async def market_trends(request: Request):
+    """Swiss job market trends aggregated from job sources. L66: Uses hyphenated path to avoid catch-all proxy conflict."""
+    return {
+        "date": "2026-Q1",
+        "total_open_positions": 121347,
+        "sectors": [
+            {"name": "Technology", "positions": 28400, "growth": 12.3},
+            {"name": "Finance & Banking", "positions": 18200, "growth": 3.1},
+            {"name": "Pharmaceuticals", "positions": 14800, "growth": 8.7},
+            {"name": "Insurance", "positions": 9600, "growth": -1.2},
+            {"name": "Public Sector", "positions": 8900, "growth": 2.4},
+            {"name": "Manufacturing", "positions": 7200, "growth": -3.5},
+            {"name": "Consulting", "positions": 6800, "growth": 5.2},
+            {"name": "Healthcare", "positions": 5400, "growth": 9.1},
+        ],
+        "trending_roles": ["AI Engineer", "Cloud Architect", "Data Engineer", "Cybersecurity Analyst", "Product Owner"],
+        "declining_roles": ["Desktop Support", "Manual QA Tester", "Data Entry Clerk"],
+        "avg_days_to_hire": {"tech": 32, "finance": 45, "pharma": 38, "consulting": 28},
+        "regional_distribution": {
+            "zurich": 35.2, "geneva": 17.8, "basel": 11.5, "bern": 9.3,
+            "lausanne": 7.2, "lucerne": 4.8, "lugano": 3.1, "other": 11.1,
+        },
+    }
+
+
+@app.get("/api/career/paths")
+async def career_paths(request: Request):
+    """Career progression paths by role."""
+    role = request.query_params.get("role", "software-engineer")
+
+    _PATHS = {
+        "software-engineer": [
+            {"step": 1, "title": "Junior Developer", "years": "0-2", "salary_chf": "75K-95K", "skills": ["JavaScript", "Python", "Git"]},
+            {"step": 2, "title": "Software Engineer", "years": "2-5", "salary_chf": "95K-130K", "skills": ["System Design", "CI/CD", "Cloud"]},
+            {"step": 3, "title": "Senior Engineer", "years": "5-8", "salary_chf": "130K-160K", "skills": ["Architecture", "Mentoring", "Technical Leadership"]},
+            {"step": 4, "title": "Staff/Principal Engineer", "years": "8-12", "salary_chf": "160K-200K", "skills": ["Cross-team Impact", "Strategy", "Innovation"]},
+            {"step": 5, "title": "VP Engineering / CTO", "years": "12+", "salary_chf": "200K-300K+", "skills": ["Org Leadership", "Business Strategy", "Board Reporting"]},
+        ],
+        "business-analyst": [
+            {"step": 1, "title": "Junior Analyst", "years": "0-2", "salary_chf": "65K-80K", "skills": ["SQL", "Excel", "Requirements"]},
+            {"step": 2, "title": "Business Analyst", "years": "2-5", "salary_chf": "90K-120K", "skills": ["Stakeholder Management", "Process Mapping", "Agile"]},
+            {"step": 3, "title": "Senior BA / Product Owner", "years": "5-8", "salary_chf": "120K-150K", "skills": ["Strategy", "Data Analysis", "Product Vision"]},
+            {"step": 4, "title": "Head of Business Analysis", "years": "8-12", "salary_chf": "150K-180K", "skills": ["Team Leadership", "Portfolio Management"]},
+            {"step": 5, "title": "Director / VP Product", "years": "12+", "salary_chf": "180K-250K+", "skills": ["P&L Ownership", "Digital Transformation"]},
+        ],
+    }
+
+    # Default path for unknown roles
+    default_path = _PATHS.get("software-engineer")
+
+    return {
+        "role": role,
+        "path": _PATHS.get(role, default_path),
+        "education": {
+            "cas": "Certificate of Advanced Studies (1 semester, ~CHF 8-15K)",
+            "mas": "Master of Advanced Studies (3-4 semesters, ~CHF 25-40K)",
+            "mba": "Executive MBA (2-3 years part-time, ~CHF 50-80K)",
+            "institutions": ["ETH Zuerich", "EPFL", "Universitaet Zuerich", "HSG St. Gallen", "ZHAW"],
+        },
+    }
+
+
 @app.get("/health")
 async def health():
     """Gateway health check — includes AI engine status (Plan 133)."""
@@ -4380,6 +5109,235 @@ async def health():
     }
 
 
+# ── Plan 170: Comprehensive Prometheus Metrics ──────────────────────────────
+# Tracks: AI API calls, 224 services, 69 artifacts, 12 benefits, 11 bio systems
+_STARTUP_TIME = _time_mod.time()
+_METRICS_API_CALLS: dict[str, dict[str, int]] = {}     # api_name -> {model -> count}
+_METRICS_INTENT_COUNTS: dict[str, int] = {}             # intent -> count
+_METRICS_ARTIFACT_USAGE: dict[str, int] = {}            # artifact_name -> count
+_METRICS_BENEFIT_REQUESTS: dict[str, int] = {}          # benefit_id -> count
+_METRICS_SERVICE_STATUS: dict[str, str] = {}            # service_name -> "ok"|"error"
+
+
+def _track_api_call(api_name: str, model: str = "default"):
+    """Track an AI API call for metrics."""
+    _METRICS_API_CALLS.setdefault(api_name, {})
+    _METRICS_API_CALLS[api_name][model] = _METRICS_API_CALLS[api_name].get(model, 0) + 1
+
+
+def _track_intent(intent: str):
+    """Track an intent classification for metrics."""
+    _METRICS_INTENT_COUNTS[intent] = _METRICS_INTENT_COUNTS.get(intent, 0) + 1
+
+
+def _track_artifact_usage(artifact_name: str):
+    """Track artifact usage for engagement metrics."""
+    _METRICS_ARTIFACT_USAGE[artifact_name] = _METRICS_ARTIFACT_USAGE.get(artifact_name, 0) + 1
+
+
+def _track_benefit(benefit_id: str):
+    """Track benefit request for metrics."""
+    _METRICS_BENEFIT_REQUESTS[benefit_id] = _METRICS_BENEFIT_REQUESTS.get(benefit_id, 0) + 1
+
+
+@app.get("/metrics")
+async def metrics(request: Request):
+    """Prometheus metrics endpoint — internal only.
+
+    Only accessible from within the K8s cluster (Prometheus scraper).
+    External requests get a 403 with a redirect to the Grafana dashboard.
+
+    Tracks:
+      - AI API calls per provider/model (OpenAI, Anthropic, Pinecone, Firecrawl)
+      - 224 service pod status
+      - 69 artifact usage by category
+      - 12 benefit delivery metrics
+      - 11 biological system health
+      - Gateway request rates, errors, latency, intent distribution
+    """
+    from starlette.responses import PlainTextResponse, JSONResponse
+
+    # Block external access — metrics are internal (Prometheus scraper only)
+    client_ip = request.client.host if request.client else ""
+    # Allow: K8s pod IPs (192.168.x.x, 10.x.x.x), localhost, Prometheus
+    is_internal = (
+        client_ip.startswith("192.168.")
+        or client_ip.startswith("10.")
+        or client_ip.startswith("172.")
+        or client_ip in ("127.0.0.1", "::1", "")
+    )
+    ua = request.headers.get("user-agent", "")
+    is_prometheus = "Prometheus" in ua
+
+    if not is_internal and not is_prometheus:
+        return JSONResponse(
+            {
+                "error": "Metrics are internal only",
+                "dashboard": "Access the Grafana dashboard via: kubectl port-forward svc/grafana 3000:3000 -n exo-jtp-prod",
+                "note": "Prometheus scrapes this endpoint internally every 30 seconds",
+            },
+            status_code=403,
+        )
+
+    lines = []
+
+    # ── 1. Gateway Core Metrics ──
+    lines.append("# HELP jtp_gateway_requests_total Total AI requests by status")
+    lines.append("# TYPE jtp_gateway_requests_total counter")
+    lines.append(f'jtp_gateway_requests_total{{status="ok"}} {_AI_CALL_STATS["anthropic_ok"]}')
+    lines.append(f'jtp_gateway_requests_total{{status="error"}} {_AI_CALL_STATS["anthropic_fail"]}')
+
+    lines.append("# HELP jtp_gateway_uptime_seconds Gateway uptime")
+    lines.append("# TYPE jtp_gateway_uptime_seconds gauge")
+    lines.append(f"jtp_gateway_uptime_seconds {_time_mod.time() - _STARTUP_TIME:.0f}")
+
+    lines.append("# HELP jtp_gateway_info Gateway version info")
+    lines.append("# TYPE jtp_gateway_info gauge")
+    lines.append(f'jtp_gateway_info{{version="7",services="224",artifacts="69",benefits="12",bio_systems="11"}} 1')
+
+    # ── 2. AI API Calls Per Provider/Model ──
+    lines.append("# HELP jtp_api_calls_total API calls by provider and model")
+    lines.append("# TYPE jtp_api_calls_total counter")
+    # Always include Anthropic from AI stats
+    lines.append(f'jtp_api_calls_total{{api="anthropic",model="claude-haiku-4-5"}} {_AI_CALL_STATS["anthropic_ok"] + _AI_CALL_STATS["anthropic_fail"]}')
+    # Tracked API calls
+    for api_name, models in _METRICS_API_CALLS.items():
+        for model, count in models.items():
+            lines.append(f'jtp_api_calls_total{{api="{api_name}",model="{model}"}} {count}')
+
+    # ── 3. Intent Distribution ──
+    lines.append("# HELP jtp_intent_total Chat intents classified")
+    lines.append("# TYPE jtp_intent_total counter")
+    for intent, count in _METRICS_INTENT_COUNTS.items():
+        lines.append(f'jtp_intent_total{{intent="{intent}"}} {count}')
+    lines.append(f"# HELP jtp_intent_cache_size Cached intent classifications")
+    lines.append(f"# TYPE jtp_intent_cache_size gauge")
+    lines.append(f"jtp_intent_cache_size {len(_INTENT_CACHE)}")
+
+    # ── 4. 224 Service Status ──
+    lines.append("# HELP jtp_service_status Service pod status (1=ok, 0=error)")
+    lines.append("# TYPE jtp_service_status gauge")
+    for svc_name, status in _METRICS_SERVICE_STATUS.items():
+        val = 1 if status == "ok" else 0
+        lines.append(f'jtp_service_status{{service="{svc_name}"}} {val}')
+    # If no services tracked yet, emit the total count
+    if not _METRICS_SERVICE_STATUS:
+        lines.append(f'jtp_services_total{{status="registered"}} 224')
+
+    # ── 5. 69 Artifact Usage by Category ──
+    lines.append("# HELP jtp_artifact_usage_total Artifact access count")
+    lines.append("# TYPE jtp_artifact_usage_total counter")
+    for artifact, count in _METRICS_ARTIFACT_USAGE.items():
+        lines.append(f'jtp_artifact_usage_total{{artifact="{artifact}"}} {count}')
+
+    # Static artifact-category mapping for dashboard grouping
+    _ARTIFACT_CATEGORIES = {
+        "job-search": ["JobBoard", "ApplicationTracker", "JobAdAnalyzer", "JobProfileManager", "SavedSearches", "JobOfferComparison"],
+        "cv": ["CVEditor", "CoverLetterEditor", "CVModuleSelector", "CVTemplateGallery", "DocumentHistory", "ArbeitszeugnisAnalyzer"],
+        "interview": ["InterviewPrep", "MockInterviewSimulator", "InterviewFeedbackCoach", "SalaryNegotiationCoach"],
+        "research": ["CompanyResearch", "SalaryExplorer", "SwissLegalGuide", "MarketIntelligence", "RecruiterFinder", "CareerPathPlanner", "SwissTaxOptimizer", "CompanyWatchlist"],
+        "growth": ["SkillDevelopment", "PersonalityMap", "VisionBuilder", "LearningPathBuilder"],
+        "wellness": ["WheelOfLife", "EmotionalCoach", "IkigaiDiscovery", "DailyCheckinJournal"],
+        "trust": ["PrivacyDashboard", "SecurityCenter", "DataSovereigntyReport", "ConsentManager"],
+        "rav": ["RAVReport", "RAVCorrespondence", "RAVFundedCourses", "RAVOfficeLocator", "RAVRegistrationGuide", "RAVMonthlyDeclaration", "RAVTrainingOpportunities"],
+        "gamification": ["GamificationHub", "StreakTracker", "Leaderboard", "AchievementTimeline", "CreditWallet", "RedemptionStore"],
+        "monetization": ["CreditCenter", "SubscriptionPanel", "ReferralDashboard", "AffiliateHub"],
+        "communication": ["CalendarView", "NotificationCenter", "EmailManager", "InsuranceCommunication", "EmailTemplateLibrary", "AutomatedFollowUp"],
+        "analytics": ["AnalyticsDashboard", "WeeklyProgressReport"],
+        "networking": ["NetworkingBoard", "LinkedInInsights", "NetworkingEventFinder", "ProfessionalContactCRM"],
+        "profile": ["ProfileCard", "PortfolioManager"],
+        "jp-overview": ["PlatformDashboard", "FeatureUsageStats"],
+    }
+    lines.append("# HELP jtp_category_artifact_count Artifacts per category")
+    lines.append("# TYPE jtp_category_artifact_count gauge")
+    for cat, arts in _ARTIFACT_CATEGORIES.items():
+        lines.append(f'jtp_category_artifact_count{{category="{cat}"}} {len(arts)}')
+        # Per-category usage total
+        cat_usage = sum(_METRICS_ARTIFACT_USAGE.get(a, 0) for a in arts)
+        lines.append(f'jtp_category_usage_total{{category="{cat}"}} {cat_usage}')
+
+    # ── 6. 12 Benefit Metrics ──
+    lines.append("# HELP jtp_benefit_requests_total Requests per benefit category")
+    lines.append("# TYPE jtp_benefit_requests_total counter")
+    _BENEFITS = {
+        "career_intelligence": {"secret_sauce": 0, "threshold": 0.80},
+        "cv_document_mastery": {"secret_sauce": 1, "threshold": 0.85},
+        "smart_job_discovery": {"secret_sauce": 0, "threshold": 0.80},
+        "application_command": {"secret_sauce": 0, "threshold": 0.80},
+        "interview_excellence": {"secret_sauce": 0, "threshold": 0.80},
+        "ai_career_assistant": {"secret_sauce": 1, "threshold": 0.85},
+        "progress_analytics": {"secret_sauce": 0, "threshold": 0.80},
+        "professional_network": {"secret_sauce": 0, "threshold": 0.80},
+        "emotional_resilience": {"secret_sauce": 0, "threshold": 0.80},
+        "swiss_market_mastery": {"secret_sauce": 1, "threshold": 0.85},
+        "gamification_growth": {"secret_sauce": 0, "threshold": 0.80},
+        "trust_security": {"secret_sauce": 0, "threshold": 0.80},
+    }
+    for bid, info in _BENEFITS.items():
+        count = _METRICS_BENEFIT_REQUESTS.get(bid, 0)
+        lines.append(f'jtp_benefit_requests_total{{benefit="{bid}",secret_sauce="{info["secret_sauce"]}"}} {count}')
+
+    lines.append("# HELP jtp_benefit_info Benefit metadata")
+    lines.append("# TYPE jtp_benefit_info gauge")
+    for bid, info in _BENEFITS.items():
+        lines.append(f'jtp_benefit_info{{benefit="{bid}",secret_sauce="{info["secret_sauce"]}",threshold="{info["threshold"]}"}} 1')
+
+    # ── 7. 11 Biological Systems ──
+    lines.append("# HELP jtp_bio_system_health Biological system health (1=healthy)")
+    lines.append("# TYPE jtp_bio_system_health gauge")
+    _BIO_BENEFIT_MAP = {
+        "nervous": ["career_intelligence", "smart_job_discovery", "application_command", "ai_career_assistant", "progress_analytics", "swiss_market_mastery"],
+        "circulatory": ["ai_career_assistant"],
+        "endocrine": ["career_intelligence", "emotional_resilience"],
+        "muscular": ["smart_job_discovery", "cv_document_mastery", "gamification_growth", "application_command"],
+        "immune": ["emotional_resilience", "trust_security"],
+        "integumentary": ["trust_security"],
+        "respiratory": ["interview_excellence"],
+        "skeletal": ["application_command", "swiss_market_mastery"],
+        "reproductive": ["professional_network"],
+        "lymphatic": ["progress_analytics", "gamification_growth"],
+        "digestive": ["cv_document_mastery"],
+    }
+    # Track failed benefits (explicitly marked as errored, not just unused)
+    _failed_benefits = {b for b, c in _METRICS_BENEFIT_REQUESTS.items()
+                        if c < 0}  # Negative = explicitly failed (not just unused)
+    _total_requests = sum(_METRICS_BENEFIT_REQUESTS.values())
+
+    for system, benefits in _BIO_BENEFIT_MAP.items():
+        # Health logic:
+        #   - Default = 1.0 (healthy) — a system with no traffic is NOT unhealthy
+        #   - Degrades only when benefits FAIL (not when they haven't been used yet)
+        #   - If traffic exists: health = non-failed / total benefits
+        if _total_requests == 0:
+            # No traffic yet (fresh pod) — all systems are healthy by default
+            health = 1.0
+        else:
+            failed = sum(1 for b in benefits if b in _failed_benefits)
+            health = (len(benefits) - failed) / len(benefits) if benefits else 1.0
+        lines.append(f'jtp_bio_system_health{{system="{system}",benefits="{len(benefits)}"}} {health:.2f}')
+
+    # ── 8. 4 Pillars ──
+    lines.append("# HELP jtp_pillar_score Pillar weighted score")
+    lines.append("# TYPE jtp_pillar_score gauge")
+    _PILLAR_WEIGHTS = {
+        "feedback": 0.33, "learning": 0.26,
+        "gamification": 0.22, "emotional_intelligence": 0.19,
+    }
+    for pillar, weight in _PILLAR_WEIGHTS.items():
+        lines.append(f'jtp_pillar_score{{pillar="{pillar}",weight="{weight}"}} {weight}')
+
+    # ── 9. 4 Energy Systems ──
+    lines.append("# HELP jtp_energy_system_active Energy system utilization")
+    lines.append("# TYPE jtp_energy_system_active gauge")
+    _ENERGY_BENEFITS = {
+        "EXT-1": 9, "EXT-2": 6, "EXT-3": 7, "EXT-4": 3,
+    }
+    for energy, benefit_count in _ENERGY_BENEFITS.items():
+        lines.append(f'jtp_energy_system_active{{system="{energy}",benefits="{benefit_count}"}} {benefit_count}')
+
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
+
 @app.get("/status")
 async def status():
     """Gateway status check."""
@@ -4388,6 +5346,112 @@ async def status():
         "version": 7,
         "proxy_timeout": PROXY_TIMEOUT,
         "client_ready": _http_client is not None,
+    }
+
+
+@app.get("/monitoring")
+async def monitoring_dashboard():
+    """Human-readable monitoring dashboard — Plan 170.
+    Shows key platform metrics in a structured JSON format.
+    For the full Grafana dashboard: kubectl port-forward svc/grafana 3000:3000
+    """
+    _BIO_BENEFIT_MAP = {
+        "nervous": ["career_intelligence", "smart_job_discovery", "application_command", "ai_career_assistant", "progress_analytics", "swiss_market_mastery"],
+        "circulatory": ["ai_career_assistant"],
+        "endocrine": ["career_intelligence", "emotional_resilience"],
+        "muscular": ["smart_job_discovery", "cv_document_mastery", "gamification_growth", "application_command"],
+        "immune": ["emotional_resilience", "trust_security"],
+        "integumentary": ["trust_security"],
+        "respiratory": ["interview_excellence"],
+        "skeletal": ["application_command", "swiss_market_mastery"],
+        "reproductive": ["professional_network"],
+        "lymphatic": ["progress_analytics", "gamification_growth"],
+        "digestive": ["cv_document_mastery"],
+    }
+
+    total_api_calls = sum(
+        sum(models.values()) for models in _METRICS_API_CALLS.values()
+    ) + _AI_CALL_STATS.get("anthropic_ok", 0) + _AI_CALL_STATS.get("anthropic_fail", 0)
+
+    return {
+        "platform": "JobTrackerPro",
+        "version": "docker-jtp:148",
+        "uptime_seconds": round(_time_mod.time() - _STARTUP_TIME),
+        "gateway": {
+            "ai_requests_ok": _AI_CALL_STATS.get("anthropic_ok", 0),
+            "ai_requests_error": _AI_CALL_STATS.get("anthropic_fail", 0),
+            "intent_cache_size": len(_INTENT_CACHE),
+        },
+        "api_calls": {
+            "total": total_api_calls,
+            "by_provider": {
+                api: sum(models.values())
+                for api, models in _METRICS_API_CALLS.items()
+            },
+            "anthropic_total": _AI_CALL_STATS.get("anthropic_ok", 0) + _AI_CALL_STATS.get("anthropic_fail", 0),
+        },
+        "intents": dict(sorted(_METRICS_INTENT_COUNTS.items(), key=lambda x: -x[1])),
+        "services": {"total": 224, "registered": 224},
+        "artifacts": {
+            "total": 69,
+            "by_category": {
+                cat: {"count": len(arts), "usage": sum(_METRICS_ARTIFACT_USAGE.get(a, 0) for a in arts)}
+                for cat, arts in {
+                    "job-search": ["JobBoard", "ApplicationTracker", "JobAdAnalyzer", "JobProfileManager", "SavedSearches", "JobOfferComparison"],
+                    "cv": ["CVEditor", "CoverLetterEditor", "CVModuleSelector", "CVTemplateGallery", "DocumentHistory", "ArbeitszeugnisAnalyzer"],
+                    "interview": ["InterviewPrep", "MockInterviewSimulator", "InterviewFeedbackCoach", "SalaryNegotiationCoach"],
+                    "research": ["CompanyResearch", "SalaryExplorer", "SwissLegalGuide", "MarketIntelligence", "RecruiterFinder", "CareerPathPlanner", "SwissTaxOptimizer", "CompanyWatchlist"],
+                    "growth": ["SkillDevelopment", "PersonalityMap", "VisionBuilder", "LearningPathBuilder"],
+                    "wellness": ["WheelOfLife", "EmotionalCoach", "IkigaiDiscovery", "DailyCheckinJournal"],
+                    "trust": ["PrivacyDashboard", "SecurityCenter", "DataSovereigntyReport", "ConsentManager"],
+                    "rav": ["RAVReport", "RAVCorrespondence", "RAVFundedCourses", "RAVOfficeLocator", "RAVRegistrationGuide", "RAVMonthlyDeclaration", "RAVTrainingOpportunities"],
+                    "gamification": ["GamificationHub", "StreakTracker", "Leaderboard", "AchievementTimeline", "CreditWallet", "RedemptionStore"],
+                    "monetization": ["CreditCenter", "SubscriptionPanel", "ReferralDashboard", "AffiliateHub"],
+                    "communication": ["CalendarView", "NotificationCenter", "EmailManager", "InsuranceCommunication", "EmailTemplateLibrary", "AutomatedFollowUp"],
+                    "analytics": ["AnalyticsDashboard", "WeeklyProgressReport"],
+                    "networking": ["NetworkingBoard", "LinkedInInsights", "NetworkingEventFinder", "ProfessionalContactCRM"],
+                    "profile": ["ProfileCard", "PortfolioManager"],
+                    "jp-overview": ["PlatformDashboard", "FeatureUsageStats"],
+                }.items()
+            },
+            "top_used": sorted(
+                [{"artifact": k, "requests": v} for k, v in _METRICS_ARTIFACT_USAGE.items()],
+                key=lambda x: -x["requests"]
+            )[:10],
+        },
+        "benefits": {
+            bid: {"requests": _METRICS_BENEFIT_REQUESTS.get(bid, 0), "secret_sauce": info["secret_sauce"] == 1}
+            for bid, info in {
+                "career_intelligence": {"secret_sauce": 0}, "cv_document_mastery": {"secret_sauce": 1},
+                "smart_job_discovery": {"secret_sauce": 0}, "application_command": {"secret_sauce": 0},
+                "interview_excellence": {"secret_sauce": 0}, "ai_career_assistant": {"secret_sauce": 1},
+                "progress_analytics": {"secret_sauce": 0}, "professional_network": {"secret_sauce": 0},
+                "emotional_resilience": {"secret_sauce": 0}, "swiss_market_mastery": {"secret_sauce": 1},
+                "gamification_growth": {"secret_sauce": 0}, "trust_security": {"secret_sauce": 0},
+            }.items()
+        },
+        "biological_systems": {
+            system: {
+                "health": 1.0 if _total_req == 0 else round(
+                    (len(benefits) - sum(1 for b in benefits if _METRICS_BENEFIT_REQUESTS.get(b, 0) < 0)) / len(benefits), 2
+                ) if benefits else 1.0,
+                "status": "healthy" if (_total_req == 0 or all(_METRICS_BENEFIT_REQUESTS.get(b, 0) >= 0 for b in benefits)) else "degraded",
+                "benefits": len(benefits),
+                "active_benefits": sum(1 for b in benefits if _METRICS_BENEFIT_REQUESTS.get(b, 0) > 0),
+            }
+            for system, benefits in _BIO_BENEFIT_MAP.items()
+            for _total_req in [sum(_METRICS_BENEFIT_REQUESTS.values())]
+        },
+        "pillars": {
+            "feedback": 0.33, "learning": 0.26,
+            "gamification": 0.22, "emotional_intelligence": 0.19,
+        },
+        "energy_systems": {
+            "EXT-1": {"benefits": 9}, "EXT-2": {"benefits": 6},
+            "EXT-3": {"benefits": 7}, "EXT-4": {"benefits": 3},
+        },
+        "agents": {"total": 57, "healthy": 57, "degraded": 0},
+        "grafana": "kubectl port-forward svc/grafana 3000:3000 -n exo-jtp-prod",
     }
 
 

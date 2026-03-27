@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<!-- manifest served by gateway, not static link -->
+		<meta name="theme-color" content="#3b82f6">
+		<meta name="mobile-web-app-capable" content="yes">
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+		<!-- L66: Force HTTPS for all API requests — prevents mixed content from stale SW cache -->
+		<meta http-equiv="Content-Security-Policy" content="upgrade-insecure-requests">
+
+		<!-- Font preload: eliminate render-blocking Google Fonts request -->
+		<link rel="preconnect" href="https://fonts.googleapis.com">
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+		<link
+			rel="preload"
+			href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;0,700;1,400&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+			as="style"
+			onload="this.onload=null;this.rel='stylesheet'"
+		>
+		<noscript>
+			<link
+				rel="stylesheet"
+				href="https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,400;0,600;0,700;1,400&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+			>
+		</noscript>
+
+		<link href="/_app/immutable/entry/start.CtaXBxrr.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/p2XXXvIE.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BHV7jE0o.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/yoz5-g1-.js" rel="modulepreload">
+		<link href="/_app/immutable/entry/app.D-VzsHfG.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/PPVm8Dsz.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CyaIMb9W.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CWuvSmbd.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/cSYor2OU.js" rel="modulepreload">
+		
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">
+			<script>
+				{
+					__sveltekit_323kik = {
+						base: ""
+					};
+
+					const element = document.currentScript.parentElement;
+
+					Promise.all([
+						import("/_app/immutable/entry/start.CtaXBxrr.js"),
+						import("/_app/immutable/entry/app.D-VzsHfG.js")
+					]).then(([kit, app]) => {
+						kit.start(app, element);
+					});
+				}
+			</script>
+		</div>
+	</body>
+</html>

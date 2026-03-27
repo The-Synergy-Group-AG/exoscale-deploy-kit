@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>JobTrackerPro — AI-First Career Platform</title>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;flex-direction:column}
@@ -62,6 +63,8 @@
   .qp:hover{border-color:#38bdf8;color:#38bdf8}
 
   .thinking{color:#64748b;font-style:italic;font-size:.8rem}
+  .thinking.pulse{animation:thinkPulse 1.5s ease-in-out infinite}
+  @keyframes thinkPulse{0%,100%{opacity:1}50%{opacity:.5}}
   .err{color:#f87171}
   pre.json-dump{background:#0f172a;border:1px solid #334155;border-radius:.4rem;padding:.6rem;font-size:.72rem;overflow-x:auto;color:#94a3b8;max-width:480px}
   .ai-resp{line-height:1.6;color:#e2e8f0}
@@ -97,8 +100,7 @@
   .editor-section-title{font-size:.85rem;font-weight:700;color:#1ABC9C;text-transform:uppercase;letter-spacing:.5px}
   .editor-section-edit{background:transparent;color:#64748b;border:1px solid #334155;border-radius:.2rem;padding:.15rem .4rem;font-size:.65rem;cursor:pointer}
   .editor-section-edit:hover{color:#1ABC9C;border-color:#1ABC9C}
-  .editor-section-content{font-size:.82rem;line-height:1.6;color:#cbd5e1;white-space:pre-wrap;outline:none;min-height:2rem}
-  .editor-section-content[contenteditable="true"]{background:rgba(26,188,156,0.08);padding:.4rem;border-radius:.2rem}
+  .editor-section-content{font-size:.82rem;line-height:1.6;color:#cbd5e1;outline:none;min-height:2rem}
   .editor-footer{flex-shrink:0;border-top:1px solid #334155;padding:.5rem 1rem;background:#1e293b}
   .editor-suggestions{margin-bottom:.5rem}
   .editor-suggestion{display:flex;align-items:center;justify-content:space-between;padding:.35rem .6rem;margin:.3rem 0;background:#1e293b;border:1px solid #334155;border-radius:.3rem;font-size:.72rem;color:#e2e8f0}
@@ -125,6 +127,64 @@
     .editor-mobile-back{display:block}
   }
   .editor-mobile-back{display:none;background:transparent;color:#94a3b8;border:none;font-size:.75rem;cursor:pointer;padding:.3rem}
+
+  /* ── CV Rendered HTML Styles ─────────────────────────────────────────── */
+  .cv-rendered{font-family:'Georgia','Times New Roman',serif;color:#cbd5e1;line-height:1.7}
+  .cv-rendered h1{font-size:1.4rem;font-weight:700;letter-spacing:.5px;margin:0 0 .2rem;padding-bottom:.3rem;border-bottom:2px solid var(--cv-accent,#1ABC9C)}
+  .cv-rendered h2{font-size:1.05rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin:1rem 0 .4rem;padding-bottom:.2rem;border-bottom:1px solid var(--cv-accent,#1ABC9C);color:var(--cv-heading,#1ABC9C)}
+  .cv-rendered h3{font-size:.92rem;font-weight:700;margin:.7rem 0 .2rem;color:var(--cv-heading,#1ABC9C)}
+  .cv-rendered h4{font-size:.85rem;font-weight:600;margin:.5rem 0 .15rem;color:var(--cv-subheading,#94a3b8)}
+  .cv-rendered p{margin:.25rem 0;font-size:.84rem}
+  .cv-rendered strong{color:#e2e8f0;font-weight:700}
+  .cv-rendered em{color:#94a3b8;font-style:italic}
+  .cv-rendered ul,.cv-rendered ol{margin:.3rem 0 .3rem 1.2rem;padding:0}
+  .cv-rendered li{margin:.15rem 0;font-size:.84rem}
+  .cv-rendered li::marker{color:var(--cv-accent,#1ABC9C)}
+  .cv-rendered hr{border:none;border-top:1px solid #334155;margin:.6rem 0}
+  .cv-rendered table{width:100%;border-collapse:collapse;margin:.5rem 0;font-size:.82rem}
+  .cv-rendered th{background:var(--cv-accent,#1ABC9C);color:#0f172a;padding:.35rem .6rem;text-align:left;font-weight:700;font-size:.78rem;text-transform:uppercase;letter-spacing:.5px}
+  .cv-rendered td{padding:.3rem .6rem;border-bottom:1px solid #1e293b}
+  .cv-rendered tr:nth-child(even) td{background:rgba(30,41,59,0.5)}
+  .cv-rendered tr:hover td{background:rgba(26,188,156,0.08)}
+  .cv-rendered code{background:#1e293b;padding:.1rem .3rem;border-radius:.2rem;font-size:.8rem;color:#38bdf8}
+  .cv-rendered pre{background:#1e293b;border:1px solid #334155;border-radius:.4rem;padding:.6rem;font-size:.78rem;overflow-x:auto;color:#94a3b8}
+  .cv-rendered blockquote{border-left:3px solid var(--cv-accent,#1ABC9C);padding-left:.8rem;margin:.5rem 0;color:#94a3b8;font-style:italic}
+  .cv-rendered a{color:var(--cv-accent,#1ABC9C);text-decoration:none}
+  .cv-rendered a:hover{text-decoration:underline}
+
+  /* Skill pills — pipe-separated items */
+  .cv-skill-pills{display:flex;flex-wrap:wrap;gap:.35rem;margin:.3rem 0}
+  .cv-skill-pill{display:inline-block;padding:.15rem .55rem;border-radius:999px;font-size:.72rem;font-weight:600;background:var(--cv-pill-bg,rgba(26,188,156,0.15));color:var(--cv-pill-text,#1ABC9C);border:1px solid var(--cv-pill-border,rgba(26,188,156,0.3))}
+
+  /* Photo placeholder */
+  .cv-photo-placeholder{width:100px;height:120px;border:2px dashed var(--cv-accent,#1ABC9C);border-radius:.4rem;display:flex;align-items:center;justify-content:center;font-size:.65rem;color:#64748b;text-align:center;margin:.4rem 0;background:rgba(26,188,156,0.05)}
+
+  /* Section edit textarea */
+  .cv-edit-textarea{width:100%;min-height:120px;background:#0f172a;color:#cbd5e1;border:1px solid #1ABC9C;border-radius:.3rem;padding:.6rem;font-family:'Fira Code','Consolas',monospace;font-size:.8rem;line-height:1.6;resize:vertical;outline:none}
+  .cv-edit-textarea:focus{border-color:#38bdf8;box-shadow:0 0 0 2px rgba(56,189,248,0.15)}
+  .cv-edit-actions{display:flex;gap:.4rem;margin-top:.3rem}
+  .cv-edit-save{background:#1ABC9C;color:#0f172a;border:none;border-radius:.25rem;padding:.25rem .7rem;font-size:.72rem;font-weight:700;cursor:pointer}
+  .cv-edit-save:hover{background:#14b8a6}
+  .cv-edit-cancel{background:transparent;color:#94a3b8;border:1px solid #334155;border-radius:.25rem;padding:.25rem .7rem;font-size:.72rem;cursor:pointer}
+  .cv-edit-cancel:hover{color:#e2e8f0;border-color:#64748b}
+
+  /* Color palettes — Conservative */
+  .cv-palette-conservative{--cv-heading:#1A1F71;--cv-accent:#1A1F71;--cv-subheading:#7D8CA3;--cv-pill-bg:rgba(26,31,113,0.15);--cv-pill-text:#8b92c7;--cv-pill-border:rgba(26,31,113,0.3)}
+  .cv-palette-conservative .cv-rendered h1{color:#e2e8f0;border-bottom-color:#1A1F71}
+  .cv-palette-conservative .cv-rendered th{background:#1A1F71}
+
+  /* Color palettes — Modern */
+  .cv-palette-modern{--cv-heading:#1ABC9C;--cv-accent:#1ABC9C;--cv-subheading:#5dade2;--cv-pill-bg:rgba(26,188,156,0.15);--cv-pill-text:#1ABC9C;--cv-pill-border:rgba(26,188,156,0.3)}
+  .cv-palette-modern .cv-rendered h1{color:#e2e8f0;border-bottom-color:#1ABC9C}
+  .cv-palette-modern .cv-rendered th{background:#2C3E50}
+
+  /* Color palettes — Executive */
+  .cv-palette-executive{--cv-heading:#4A6FA5;--cv-accent:#4A6FA5;--cv-subheading:#8a8a8a;--cv-pill-bg:rgba(74,111,165,0.15);--cv-pill-text:#7da0cc;--cv-pill-border:rgba(74,111,165,0.3)}
+  .cv-palette-executive .cv-rendered h1{color:#e2e8f0;border-bottom-color:#4A6FA5}
+  .cv-palette-executive .cv-rendered th{background:#2E2E2E}
+
+  /* Default palette for cover letters */
+  .cv-palette-default{--cv-heading:#1ABC9C;--cv-accent:#1ABC9C;--cv-subheading:#94a3b8}
 </style>
 </head>
 <body>
@@ -511,13 +571,20 @@ function openEditorFromResponse() {
   openEditor(raw, docType === 'cover_letter' ? 'cover_letter' : 'cv');
 }
 
+function getAuthHeaders() {
+  const h = {'Content-Type':'application/json'};
+  const tk = localStorage.getItem(TOKEN_KEY);
+  if (tk) h['Authorization'] = 'Bearer ' + tk;
+  return h;
+}
+
 async function downloadCvPdf(version) {
   const btn = event.target.closest('.pdf-btn');
   if (btn) { btn.classList.add('downloading'); btn.textContent = 'Generating...'; }
   try {
     const resp = await fetch('/api/cv/export-pdf', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', ...chatHeaders},
+      headers: getAuthHeaders(),
       body: JSON.stringify({cv_text: _lastAiResponse, version: version})
     });
     if (resp.ok) {
@@ -537,7 +604,7 @@ async function downloadCoverLetterPdf() {
   try {
     const resp = await fetch('/api/cv/export-cover-letter-pdf', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json', ...chatHeaders},
+      headers: getAuthHeaders(),
       body: JSON.stringify({cover_letter_text: _lastAiResponse, applicant_name: '', company_name: '', job_title: ''})
     });
     if (resp.ok) {
@@ -604,12 +671,31 @@ async function sendMessage() {
 
   appendMsg('user', esc(msg));
   // Plan 133: Universal 120s timeout — AI intent classifier handles routing server-side
-  // Animated progress indicator while waiting
-  const thinkId = appendMsg('bot', '<span class="thinking">Processing</span>');
+  // Staged progress indicator — CV enhancement shows realistic stages, others show generic dots
+  const _isCvEnhance = /\b(enhance|improve|optimiz|rewrite|aufwerten|verbessern|améliorer|migliorare)\b.*\b(cv|resume|lebenslauf|résumé)\b/i.test(msg)
+    || /\b(cv|resume|lebenslauf|résumé)\b.*\b(enhance|improve|optimiz|rewrite|aufwerten|verbessern|améliorer|migliorare)\b/i.test(msg);
+  const _cvStages = [
+    {text: 'Analyzing your CV', delay: 0},
+    {text: 'Generating Conservative Swiss version', delay: 5000},
+    {text: 'Generating Modern Professional version', delay: 15000},
+    {text: 'Generating Executive Summary', delay: 25000},
+    {text: 'Finalizing 3 versions', delay: 35000},
+  ];
+  const thinkId = appendMsg('bot', '<span class="thinking pulse">' + (_isCvEnhance ? _cvStages[0].text + '...' : 'Processing') + '</span>');
   let _thinkDots = 0;
+  let _cvStageIdx = 0;
   const _thinkInterval = setInterval(() => {
     const el = document.querySelector(`#${thinkId} .thinking`);
-    if (el) { _thinkDots++; el.textContent = 'Processing' + '.'.repeat(_thinkDots % 4); }
+    if (!el) return;
+    _thinkDots++;
+    if (_isCvEnhance) {
+      const elapsed = _thinkDots * 600;
+      while (_cvStageIdx < _cvStages.length - 1 && elapsed >= _cvStages[_cvStageIdx + 1].delay) _cvStageIdx++;
+      el.textContent = _cvStages[_cvStageIdx].text + '.'.repeat((_thinkDots % 4) + 1);
+    } else {
+      el.textContent = 'Processing' + '.'.repeat(_thinkDots % 4);
+    }
+    scrollChat();
   }, 600);
   setSendDisabled(true);
 
@@ -618,14 +704,12 @@ async function sendMessage() {
     let resultHtml = '';
 
     try {
-      const chatHeaders = {'Content-Type':'application/json'};
-      const tk = localStorage.getItem(TOKEN_KEY);
-      if (tk) chatHeaders['Authorization'] = 'Bearer ' + tk;
+      const chatHeaders = getAuthHeaders();
       const historyMsgs = [];
       document.querySelectorAll('.msg').forEach(m => {
         const role = m.classList.contains('user') ? 'user' : 'assistant';
         const text = m.querySelector('.bubble')?.textContent?.trim() || '';
-        if (text && text.length > 2 && !text.startsWith('Processing')) historyMsgs.push({role, content: text.substring(0, 200)});
+        if (text && text.length > 2 && !text.startsWith('Processing') && !text.startsWith('Analyzing') && !text.startsWith('Generating') && !text.startsWith('Finalizing')) historyMsgs.push({role, content: text.substring(0, 200)});
       });
       const routeResp = await fetch('/chat/route', {
         method: 'POST',
@@ -831,11 +915,73 @@ function switchEditorTab(idx) {
   renderEditor();
 }
 
+// Determine color palette CSS class from tab label
+function _cvPaletteClass() {
+  const tab = _docState.allTabs[_docState.activeTabIdx];
+  if (!tab) return 'cv-palette-default';
+  const lbl = (tab.label || tab.name || '').toLowerCase();
+  if (lbl.includes('conservative') || lbl.includes('swiss')) return 'cv-palette-conservative';
+  if (lbl.includes('modern') || lbl.includes('professional')) return 'cv-palette-modern';
+  if (lbl.includes('executive') || lbl.includes('summary')) return 'cv-palette-executive';
+  if (_docState.type === 'cover_letter') return 'cv-palette-default';
+  return 'cv-palette-modern';
+}
+
+// Render a markdown section as formatted HTML with CV-specific transforms
+function _renderSectionHtml(markdownContent) {
+  if (typeof marked === 'undefined') {
+    // Fallback if marked.js hasn't loaded
+    return '<div class="cv-rendered">' + esc(markdownContent).replace(/\n/g, '<br>') + '</div>';
+  }
+  // Configure marked for clean output
+  marked.setOptions({breaks: true, gfm: true});
+
+  let md = markdownContent;
+
+  // Transform [PROFESSIONAL PHOTO SPACE] into a placeholder token
+  md = md.replace(/\[PROFESSIONAL PHOTO SPACE\]/gi, '<CV_PHOTO_PLACEHOLDER>');
+
+  // Transform pipe-separated skill lines into pill tokens
+  // Detect lines like: Python | JavaScript | React | Docker
+  const skillLineRe = /^([A-Za-z0-9#+\/.& -]{2,}(?:\s*\|\s*[A-Za-z0-9#+\/.& -]{2,}){2,})$/gm;
+  md = md.replace(skillLineRe, function(match) {
+    const skills = match.split('|').map(s => s.trim()).filter(Boolean);
+    return '<CV_SKILLS>' + skills.join('|||') + '</CV_SKILLS>';
+  });
+
+  let html = marked.parse(md);
+
+  // Post-process: replace photo placeholder
+  html = html.replace(/&lt;CV_PHOTO_PLACEHOLDER&gt;/g,
+    '<div class="cv-photo-placeholder">Professional<br>Photo</div>');
+  html = html.replace(/<CV_PHOTO_PLACEHOLDER>/g,
+    '<div class="cv-photo-placeholder">Professional<br>Photo</div>');
+  // Also catch if marked wraps it in <p>
+  html = html.replace(/<p>\s*<div class="cv-photo-placeholder">/g, '<div class="cv-photo-placeholder">');
+  html = html.replace(/<\/div>\s*<\/p>/g, '</div>');
+
+  // Post-process: replace skill pill tokens
+  const skillsTagRe = /(?:<p>)?&lt;CV_SKILLS&gt;(.+?)&lt;\/CV_SKILLS&gt;(?:<\/p>)?/g;
+  html = html.replace(skillsTagRe, function(match, inner) {
+    const skills = inner.split('|||');
+    return '<div class="cv-skill-pills">' + skills.map(s => '<span class="cv-skill-pill">' + s + '</span>').join('') + '</div>';
+  });
+  // Also catch unescaped version
+  const skillsTagRe2 = /(?:<p>)?<CV_SKILLS>(.+?)<\/CV_SKILLS>(?:<\/p>)?/g;
+  html = html.replace(skillsTagRe2, function(match, inner) {
+    const skills = inner.split('|||');
+    return '<div class="cv-skill-pills">' + skills.map(s => '<span class="cv-skill-pill">' + s + '</span>').join('') + '</div>';
+  });
+
+  return '<div class="cv-rendered">' + html + '</div>';
+}
+
 function renderEditor() {
   const panel = document.getElementById('editor-panel');
   const currentVersion = _docState.versions[_docState.activeVersionIdx];
   if (!currentVersion) return;
   const sections = currentVersion.sections || parseDocSections(currentVersion.text);
+  const palette = _cvPaletteClass();
 
   // Tabs
   let tabsHtml = '';
@@ -845,16 +991,17 @@ function renderEditor() {
     tabsHtml += `<button class="editor-tab ${active}" onclick="switchEditorTab(${i})">${esc(label.substring(0,20))}</button>`;
   });
 
-  // Sections
+  // Sections — render markdown as formatted HTML
   let sectionsHtml = '';
   sections.forEach((s, i) => {
+    const renderedContent = _renderSectionHtml(s.content);
     sectionsHtml += `
       <div class="editor-section" id="editor-section-${i}">
         <div class="editor-section-header">
           <span class="editor-section-title">${esc(s.title)}</span>
-          <button class="editor-section-edit" onclick="toggleSectionEdit(${i})">Edit ✎</button>
+          <button class="editor-section-edit" id="editor-edit-btn-${i}" onclick="toggleSectionEdit(${i})">Edit ✎</button>
         </div>
-        <div class="editor-section-content" id="editor-content-${i}" data-idx="${i}">${esc(s.content).replace(/\n/g,'<br>')}</div>
+        <div class="editor-section-content" id="editor-content-${i}" data-idx="${i}" data-mode="view">${renderedContent}</div>
       </div>`;
   });
 
@@ -898,7 +1045,7 @@ function renderEditor() {
         <button class="editor-close" onclick="closeEditor()">✕</button>
       </div>
     </div>
-    <div class="editor-body">${sectionsHtml}</div>
+    <div class="editor-body ${palette}">${sectionsHtml}</div>
     <div class="editor-footer">
       ${suggestionsHtml ? '<div class="editor-suggestions">' + suggestionsHtml + '</div>' : ''}
       <div class="editor-mini-input">
@@ -912,35 +1059,69 @@ function renderEditor() {
 function toggleSectionEdit(idx) {
   const el = document.getElementById('editor-content-' + idx);
   const section = document.getElementById('editor-section-' + idx);
+  const editBtn = document.getElementById('editor-edit-btn-' + idx);
   if (!el) return;
-  const isEditing = el.contentEditable === 'true';
-  if (isEditing) {
-    el.contentEditable = 'false';
-    section.classList.remove('editing');
-    // Save changes
-    const newText = el.innerText;
-    const currentVersion = _docState.versions[_docState.activeVersionIdx];
-    if (currentVersion && currentVersion.sections[idx]) {
-      const oldText = currentVersion.sections[idx].content;
-      if (newText !== oldText) {
-        currentVersion.sections[idx].content = newText;
-        // Rebuild full text from sections
-        const fullText = currentVersion.sections.map(s => `## ${s.title}\n${s.content}`).join('\n\n');
-        // Add new version
-        const vNum = _docState.versions.length + 1;
-        _docState.versions.push({text: fullText, ts: new Date().toISOString(), label: `v${vNum} (edit)`, sections: [...currentVersion.sections.map(s => ({...s}))]});
-        _docState.activeVersionIdx = _docState.versions.length - 1;
-        _lastAiResponse = fullText;
-        section.classList.add('flash-update');
-        setTimeout(() => section.classList.remove('flash-update'), 800);
-        renderEditor();
-      }
-    }
+  const mode = el.getAttribute('data-mode');
+
+  if (mode === 'edit') {
+    // Save: read from textarea, render back to HTML
+    _saveSectionEdit(idx);
   } else {
-    el.contentEditable = 'true';
+    // Switch to edit mode: show raw markdown in textarea
+    const currentVersion = _docState.versions[_docState.activeVersionIdx];
+    if (!currentVersion || !currentVersion.sections[idx]) return;
+    const rawMarkdown = currentVersion.sections[idx].content;
     section.classList.add('editing');
-    el.focus();
+    el.setAttribute('data-mode', 'edit');
+    if (editBtn) editBtn.textContent = 'Save ✓';
+    el.innerHTML = `
+      <textarea class="cv-edit-textarea" id="editor-textarea-${idx}" spellcheck="true">${esc(rawMarkdown)}</textarea>
+      <div class="cv-edit-actions">
+        <button class="cv-edit-save" onclick="_saveSectionEdit(${idx})">Save</button>
+        <button class="cv-edit-cancel" onclick="_cancelSectionEdit(${idx})">Cancel</button>
+      </div>`;
+    const ta = document.getElementById('editor-textarea-' + idx);
+    if (ta) { ta.focus(); ta.style.height = Math.max(120, ta.scrollHeight) + 'px'; }
   }
+}
+
+function _saveSectionEdit(idx) {
+  const ta = document.getElementById('editor-textarea-' + idx);
+  const section = document.getElementById('editor-section-' + idx);
+  const el = document.getElementById('editor-content-' + idx);
+  if (!ta || !el) return;
+  const newText = ta.value;
+  const currentVersion = _docState.versions[_docState.activeVersionIdx];
+  if (currentVersion && currentVersion.sections[idx]) {
+    const oldText = currentVersion.sections[idx].content;
+    if (newText !== oldText) {
+      currentVersion.sections[idx].content = newText;
+      const fullText = currentVersion.sections.map(s => `## ${s.title}\n${s.content}`).join('\n\n');
+      const vNum = _docState.versions.length + 1;
+      _docState.versions.push({text: fullText, ts: new Date().toISOString(), label: `v${vNum} (edit)`, sections: [...currentVersion.sections.map(s => ({...s}))]});
+      _docState.activeVersionIdx = _docState.versions.length - 1;
+      _lastAiResponse = fullText;
+      if (section) { section.classList.add('flash-update'); setTimeout(() => section.classList.remove('flash-update'), 800); }
+      renderEditor();
+    } else {
+      // No changes — just switch back to view mode
+      _cancelSectionEdit(idx);
+    }
+  }
+}
+
+function _cancelSectionEdit(idx) {
+  const currentVersion = _docState.versions[_docState.activeVersionIdx];
+  if (!currentVersion || !currentVersion.sections[idx]) return;
+  const el = document.getElementById('editor-content-' + idx);
+  const section = document.getElementById('editor-section-' + idx);
+  const editBtn = document.getElementById('editor-edit-btn-' + idx);
+  if (el) {
+    el.setAttribute('data-mode', 'view');
+    el.innerHTML = _renderSectionHtml(currentVersion.sections[idx].content);
+  }
+  if (section) section.classList.remove('editing');
+  if (editBtn) editBtn.textContent = 'Edit ✎';
 }
 
 function editorRefine() {
