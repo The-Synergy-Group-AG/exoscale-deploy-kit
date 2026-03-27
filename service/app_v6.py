@@ -1369,7 +1369,7 @@ async def _ai_general_chat(
             "Be conversational, warm, and helpful. Keep responses concise but thorough (200-400 words).\n\n"
             "SWISS CONTEXT (MANDATORY in every response):\n"
             "- You operate in the Swiss labor market. Always reference salaries in CHF.\n"
-            "- Reference Swiss cantons (ZH, BE, GE, BS, VD, etc.) when discussing locations.\n"
+            "- Always mention at least one Swiss canton by name (e.g., 'in canton Zurich', 'canton Geneva', 'canton Bern').\n"
             "- Mention RAV (Regionale Arbeitsvermittlungszentren) for job-seeking contexts.\n"
             "- Apply Swiss employment law (OR, CO, AVG) where relevant.\n"
             "- Reference Swiss job portals: jobs.ch, jobup.ch, LinkedIn Switzerland.\n"
