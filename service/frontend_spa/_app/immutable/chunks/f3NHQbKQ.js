@@ -1,1 +1,0 @@
-import{c as e}from"./CIjm8Ds5.js";const o={search(r){return e.post("/job-search",r)},engines(){return e.get("/job-search/engines").then(r=>{if(r.error||r.data==null)return r;const a=r.data,n=Array.isArray(a)?a:a?.engines??a?.data?.engines??[];return{...r,data:Array.isArray(n)?n:[]}})},analyzeJobAd(r){return e.post("/job-ad/analyze",r)}};export{o as j};

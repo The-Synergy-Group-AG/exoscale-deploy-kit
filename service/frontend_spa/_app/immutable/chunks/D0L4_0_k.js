@@ -1,0 +1,1 @@
+import{c as e}from"./CxlhQIQt.js";const i={personalityAssess(s){return e.post("/personality/assess",s)},selfAssessment(s){return e.post("/self-assessment",s)},wheelOfLife(s){return e.post("/wheel-of-life",s)},vision(s){return e.post("/vision",s)},linkedinOptimize(s){return e.post("/linkedin/optimize",s)}};export{i as g};
