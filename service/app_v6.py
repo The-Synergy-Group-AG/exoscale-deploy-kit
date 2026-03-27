@@ -2044,14 +2044,15 @@ async def chat_route(request: Request):
                 _USER_CV_CONTEXT[user_id] = cv_text
                 logger.info(f"Plan 150: Accepted pasted CV text from {user_id} ({len(cv_text)} chars)")
         if not cv_text:
-            # No CV uploaded — ask user to paste or upload
+            # L95: CV context may have been lost during pod restart — tell user clearly
             ai_resp = (
-                "I'd love to enhance your CV! I can generate **3 optimized versions** "
-                "(Conservative Swiss, Modern Professional, Executive Summary).\n\n"
-                "**Two ways to get started:**\n"
-                "1. **Paste your CV text** right here in the chat\n"
-                "2. **Upload a file** using the 📄 button next to the input (PDF/DOCX)\n\n"
-                "Once I have your CV, I'll immediately create all 3 versions for you!"
+                "I don't have your CV in my current session. This can happen after a "
+                "system update.\n\n"
+                "**Please share your CV again:**\n"
+                "1. **Paste your CV text** right here in the chat (experience, education, skills)\n"
+                "2. **Upload a file** using the 📄 button (PDF/DOCX)\n\n"
+                "Once I have it, I'll generate **3 enhanced versions** "
+                "(Conservative Swiss, Modern Professional, Executive Summary)!"
             )
             if mem_key:
                 if mem_key not in _CONV_MEMORY:
@@ -2080,7 +2081,7 @@ async def chat_route(request: Request):
                     "http://cv-processor:8020/enhance",
                     json={
                         "user_id": user_id,
-                        "cv_text": cv_text[:5000],
+                        "cv_text": cv_text[:8000],
                         "target_role": target_role,
                     },
                 )
@@ -2117,10 +2118,32 @@ async def chat_route(request: Request):
                             "suggestions": [],
                         }
                 else:
-                    ai_resp = "CV enhancement is processing but took longer than expected. Please try again in a moment."
+                    # L95: Show actual error from cv-processor, not generic message
+                    try:
+                        err_detail = resp.json().get("detail", resp.text[:200])
+                    except Exception:
+                        err_detail = resp.text[:200]
+                    logger.warning(f"Plan 132: CV enhance returned {resp.status_code}: {err_detail}")
+                    if "too short" in str(err_detail).lower():
+                        ai_resp = (
+                            "Your CV text is too short to generate quality versions. "
+                            "Please paste your **full CV content** — including:\n\n"
+                            "- **Work experience** (company, role, dates, achievements)\n"
+                            "- **Education** (degrees, institutions)\n"
+                            "- **Skills** (technical, languages, certifications)\n"
+                            "- **Contact details** (name, email, phone)\n\n"
+                            "I need at least a full paragraph to generate meaningful enhanced versions. "
+                            "The more detail you provide, the better the 3 versions will be!"
+                        )
+                    else:
+                        ai_resp = f"CV enhancement could not process your request: {err_detail}"
         except Exception as exc:
             logger.warning(f"Plan 132: CV enhance failed: {exc}")
-            ai_resp = "CV enhancement service is temporarily unavailable. Please try again shortly."
+            ai_resp = (
+                "CV enhancement service encountered an error. "
+                "Please try again in a moment. If the issue persists, "
+                "try pasting a longer version of your CV with more detail."
+            )
 
         if mem_key:
             if mem_key not in _CONV_MEMORY:
