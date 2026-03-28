@@ -771,6 +771,10 @@ _INTENT_CLASSIFIER_PROMPT = (
     '- "What format should my CV be in?" → {"intent":"cv-enhance","language":"en","confidence":0.9}\n'
     '- "CV format for Swiss applications" → {"intent":"cv-enhance","language":"en","confidence":0.9}\n'
     '- "RAV registration process" → {"intent":"rav-info","language":"en","confidence":0.9}\n'
+    '- "Tell me about RAV requirements" → {"intent":"rav-info","language":"en","confidence":0.9}\n'
+    '- "Swiss job market regarding rav" → {"intent":"rav-info","language":"en","confidence":0.85}\n'
+    '- "unemployment office registration" → {"intent":"rav-info","language":"en","confidence":0.9}\n'
+    '- "Arbeitsvermittlung Anforderungen" → {"intent":"rav-info","language":"de","confidence":0.9}\n'
     '- "Arbeitslosigkeit anmelden" → {"intent":"rav-info","language":"de","confidence":0.9}\n'
     '- "inscription au chômage" → {"intent":"rav-info","language":"fr","confidence":0.9}\n'
 )
@@ -991,6 +995,26 @@ _INTENT_PROMPTS = {
         "NOTICE PERIODS: 1 month (year 1), 2 months (years 2-9), 3 months (year 10+).\n"
         "UNEMPLOYMENT BENEFITS: 70-80% of insured salary, max 400 daily allowances (18-24 months).\n\n"
         "Help users track their monthly application counts for RAV compliance."
+    ),
+    "security": (
+        "You are a Swiss data privacy and platform security expert.\n\n"
+        "SWISS DATA PROTECTION:\n"
+        "- Federal Act on Data Protection (FADP/nFADP/DSG): Swiss privacy law, stronger than GDPR\n"
+        "- Data sovereignty: All user data stored in Swiss data centers (Exoscale, CH)\n"
+        "- GDPR compliance: Full EU General Data Protection Regulation adherence\n"
+        "- Data minimization: Only collect what's necessary for the service\n\n"
+        "PLATFORM SECURITY:\n"
+        "- Encryption: All data encrypted at rest (AES-256) and in transit (TLS 1.3)\n"
+        "- Authentication: JWT-based with session management, optional 2FA\n"
+        "- Access control: Role-based permissions (RBAC) — users access only their data\n"
+        "- SSL/TLS certificates: Automatically managed, always valid and active\n"
+        "- API security: Rate limiting, input validation, CORS protection\n\n"
+        "USER RIGHTS:\n"
+        "- Data export: Users can download all their data (FADP Art. 25)\n"
+        "- Data deletion: Right to be forgotten — complete data erasure on request\n"
+        "- Consent management: Granular opt-in/opt-out for data processing\n"
+        "- Privacy dashboard: View what data is collected and how it's used\n\n"
+        "Always reference Swiss data sovereignty and specific security measures."
     ),
 }
 
@@ -1411,28 +1435,39 @@ async def _ai_general_chat(
             messages.append({"role": h["role"], "content": h["content"][:200]})
         messages.append({"role": "user", "content": user_msg})
 
-        async with _sync_httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": AI_MODEL,
-                    "max_tokens": 800,
-                    "messages": messages,
-                    "system": system,
-                },
-            )
-            if resp.status_code == 200:
-                return resp.json()["content"][0]["text"]
-            else:
-                logger.warning(f"L68c: Claude API error {resp.status_code}")
-                return "I'd be happy to help! Try asking about jobs, interviews, analytics, or system status."
+        # L92: Retry once on API failure (transient timeouts cause 85-char fallback)
+        _last_err = None
+        for _attempt in range(2):
+            try:
+                async with _sync_httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "x-api-key": ANTHROPIC_API_KEY,
+                            "anthropic-version": "2023-06-01",
+                            "content-type": "application/json",
+                        },
+                        json={
+                            "model": AI_MODEL,
+                            "max_tokens": 800,
+                            "messages": messages,
+                            "system": system,
+                        },
+                    )
+                    if resp.status_code == 200:
+                        return resp.json()["content"][0]["text"]
+                    _last_err = f"status={resp.status_code}"
+                    logger.warning(f"L68c: Claude API error {resp.status_code} (attempt {_attempt + 1}/2)")
+            except Exception as exc:
+                _last_err = str(exc)
+                logger.warning(f"L68c: AI chat attempt {_attempt + 1}/2 failed: {exc}")
+            if _attempt == 0:
+                import asyncio
+                await asyncio.sleep(1.0)
+        logger.warning(f"L68c: AI general chat failed after 2 attempts: {_last_err}")
+        return "I'd be happy to help! Try asking about jobs, interviews, analytics, or system status."
     except Exception as exc:
-        logger.warning(f"L68c: AI general chat failed: {exc}")
+        logger.warning(f"L68c: AI general chat outer error: {exc}")
         return "I'd be happy to help! Try asking about jobs, interviews, analytics, or system status."
 
 
@@ -2164,6 +2199,11 @@ async def chat_route(request: Request):
     # ── Intent: cover-letter ──
     if intent == "cover-letter":
         cv_text = await _ensure_cv_context()
+        # L90: Accept inline CV text from message (mirrors cv-enhance handler)
+        if not cv_text and len(msg) > 150:
+            cv_text = msg[:5000]
+            if user_id:
+                _USER_CV_CONTEXT[user_id] = cv_text
         if not cv_text:
             ai_resp = (
                 "I can generate a professional AIDA cover letter for you!\n\n"
@@ -2203,17 +2243,31 @@ async def chat_route(request: Request):
                             "cv_text": cv_text[:3000],
                             "job_title": job_title,
                             "company_name": company,
+                            "language": detected_lang,
                         },
                     )
                     if resp.status_code == 200:
                         cl_data = resp.json()
                         cl_text = cl_data.get("cover_letter", "Generation in progress...")
+                        # L92: Language-aware cover letter response
+                        _cl_headers = {
+                            "en": "Here's your **AIDA cover letter**",
+                            "de": "Hier ist Ihr **AIDA-Bewerbungsschreiben**",
+                            "fr": "Voici votre **lettre de motivation AIDA**",
+                            "it": "Ecco la vostra **lettera di motivazione AIDA**",
+                        }
+                        _cl_footers = {
+                            "en": "Feel free to ask me to adjust the tone or emphasis — just say 'make it more confident' or 'change the opening'.",
+                            "de": "Sagen Sie mir, wenn ich den Ton oder die Betonung anpassen soll — z.B. 'selbstbewusster formulieren' oder 'Einleitung ändern'.",
+                            "fr": "N'hésitez pas à me demander d'ajuster le ton — dites 'plus confiant' ou 'changer l'introduction'.",
+                            "it": "Non esitate a chiedermi di modificare il tono — dite 'più sicuro' o 'cambiare l'introduzione'.",
+                        }
+                        _hdr = _cl_headers.get(detected_lang, _cl_headers["en"])
+                        _ftr = _cl_footers.get(detected_lang, _cl_footers["en"])
                         ai_resp = (
-                            f"Here's your **AIDA cover letter** for {company}:\n\n"
+                            f"{_hdr} for {company}:\n\n"
                             f"{cl_text}\n\n"
-                            "---\n*Generated using the AIDA framework (Attention → Interest → Desire → Action). "
-                            "Feel free to ask me to adjust the tone or emphasis — "
-                            "just say 'make it more confident' or 'change the opening'.*"
+                            f"---\n*AIDA (Attention → Interest → Desire → Action). {_ftr}*"
                         )
                         # Plan 141: Set document session for cover letter refinement
                         if user_id:
@@ -2458,16 +2512,33 @@ async def chat_route(request: Request):
                 "language": detected_lang, "data": None, "ai_response": ai_resp}
 
     if intent == "job-ad-analyze" and not route:
-        ai_resp = (
-            "I can decode any job posting to reveal **hidden expectations** and help you tailor your application.\n\n"
-            "Just paste the job ad text and I'll extract:\n"
-            "- **Top keywords** to mirror in your CV\n"
-            "- **Required vs nice-to-have** skills\n"
-            "- **Culture clues** from the ad's tone\n"
-            "- **Hidden expectations** (why this role exists now)\n"
-            "- **Profile fit score** against your profile\n\n"
-            "Paste the job ad text to get started!"
-        )
+        # L91: If message already contains job ad text (>100 chars), analyze it directly
+        if len(msg) > 100:
+            _job_ad_prompt = (
+                "You are a Swiss job ad analysis expert. Analyze the following job posting and provide:\n"
+                "1. **Top Keywords** to mirror in your CV\n"
+                "2. **Required vs Nice-to-Have** skills (separate clearly)\n"
+                "3. **Culture Clues** from the ad's tone and language\n"
+                "4. **Hidden Expectations** (why this role exists now, what they really need)\n"
+                "5. **Salary Assessment** (if mentioned, compare to Swiss market rates)\n"
+                "6. **Application Tips** specific to this posting\n\n"
+                "Be specific and actionable. Reference Swiss market context where relevant."
+            )
+            ai_resp = await _ai_general_chat(
+                msg, mem_key, user_context=user_context,
+                domain_prompt=_job_ad_prompt, intent=intent
+            )
+        else:
+            ai_resp = (
+                "I can decode any job posting to reveal **hidden expectations** and help you tailor your application.\n\n"
+                "Just paste the job ad text and I'll extract:\n"
+                "- **Top keywords** to mirror in your CV\n"
+                "- **Required vs nice-to-have** skills\n"
+                "- **Culture clues** from the ad's tone\n"
+                "- **Hidden expectations** (why this role exists now)\n"
+                "- **Profile fit score** against your profile\n\n"
+                "Paste the job ad text to get started!"
+            )
         return {"routed": True, "service": "job-ad-analyzer", "intent": intent,
                 "language": detected_lang, "data": None, "ai_response": ai_resp}
 
@@ -2614,8 +2685,13 @@ async def chat_route(request: Request):
         elif any(w in msg_lower for w in ["company", "employer", "working at", "culture", "about abb",
                                            "about ubs", "novartis", "roche", "google zurich"]):
             _domain = _INTENT_PROMPTS.get("employer", "")
+        elif any(w in msg_lower for w in ["data protect", "privacy", "gdpr", "fadp", "encryption", "encrypt",
+                                           "secure", "security", "ssl", "tls", "certificate", "access control",
+                                           "datenschutz", "sicherheit", "protection des données"]):
+            _domain = _INTENT_PROMPTS.get("security", "")
         elif any(w in msg_lower for w in ["rav", "unemployment", "arbeitslos", "compliance", "permit",
-                                           "bewilligung", "kündigungsfrist"]):
+                                           "bewilligung", "kündigungsfrist", "arbeitsvermittlung",
+                                           "employment center", "chômage", "orp"]):
             _domain = _INTENT_PROMPTS.get("compliance", "")
         elif any(w in msg_lower for w in ["salary", "gehalt", "salaire", "market", "demand", "trend"]):
             _domain = _INTENT_PROMPTS.get("career", "")
